@@ -1,4 +1,4 @@
-"""Provider-neutral chat requests and a small OpenAI-compatible transport."""
+"""Provider-neutral chat requests and native provider transports."""
 
 from __future__ import annotations
 
@@ -96,6 +96,56 @@ class OpenAICompatibleAdapter:
         return ChatResponse(content=content, model=raw.get("model"), raw=raw)
 
 
+class AnthropicAdapter:
+    """Adapter for Anthropic's native ``POST /v1/messages`` API."""
+
+    def __init__(self, spec: ProviderSpec, *, transport: Transport = _urlopen_transport) -> None:
+        self.spec = spec
+        self._transport = transport
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        if not request.messages:
+            raise ValueError("chat requests require at least one message")
+
+        system_messages = [message.content for message in request.messages if message.role == "system"]
+        messages = [
+            {"role": message.role, "content": message.content}
+            for message in request.messages
+            if message.role != "system"
+        ]
+        if not messages:
+            raise ValueError("Anthropic chat requests require at least one user or assistant message")
+        if any(message["role"] not in {"user", "assistant"} for message in messages):
+            raise ValueError("Anthropic chat messages must use system, user, or assistant roles")
+
+        payload: dict[str, object] = {
+            "model": self.spec.model,
+            "messages": messages,
+            "max_tokens": request.max_tokens if request.max_tokens is not None else 16_000,
+            "cache_control": {"type": "ephemeral"},
+        }
+        if system_messages:
+            payload["system"] = "\n\n".join(system_messages)
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+
+        base_url = (self.spec.base_url or "https://api.anthropic.com").rstrip("/")
+        headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
+        if self.spec.api_key_env:
+            api_key = os.getenv(self.spec.api_key_env)
+            if api_key:
+                headers["x-api-key"] = api_key
+
+        raw = json.loads(self._transport(f"{base_url}/v1/messages", headers, json.dumps(payload).encode()))
+        try:
+            content = "".join(block["text"] for block in raw["content"] if block.get("type") == "text")
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError("provider returned an unexpected chat response") from exc
+        if not content:
+            raise RuntimeError("provider returned no text chat content")
+        return ChatResponse(content=content, model=raw.get("model"), raw=raw)
+
+
 def adapter_for(spec: ProviderSpec, *, transport: Transport = _urlopen_transport) -> ChatAdapter:
     """Build the supported adapter for a provider specification."""
 
@@ -108,4 +158,6 @@ def adapter_for(spec: ProviderSpec, *, transport: Transport = _urlopen_transport
     }
     if spec.kind in compatible:
         return OpenAICompatibleAdapter(spec, transport=transport)
+    if spec.kind is ProviderKind.ANTHROPIC:
+        return AnthropicAdapter(spec, transport=transport)
     raise NotImplementedError(f"no chat adapter implemented for {spec.kind.value}")

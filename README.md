@@ -51,12 +51,13 @@ Implemented foundation:
 - Plan and decision records.
 - Hourly GitHub Actions heartbeat.
 - Provider-neutral chat request/response types and an injectable OpenAI-compatible adapter.
+- Native Anthropic Messages API adapter with system-message normalization and prompt caching.
 
-Verification note: source compilation and an injected transport smoke test pass locally; the full pytest suite is pending in an environment where the dev dependency can be installed.
+Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Native Anthropic and Google chat adapters.
+1. Native Google chat adapter.
 2. Docker and Podman sandbox execution adapters.
 3. Persistent state for agent runs, plans, and decisions.
 

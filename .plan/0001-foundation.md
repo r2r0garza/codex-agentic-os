@@ -10,9 +10,10 @@ Create the first durable shape of codex-agentic-os: a provider-neutral agentic O
 - [x] Add an hourly scheduled workflow that gives future agents a predictable heartbeat.
 - [x] Update the README with project intent and current status.
 - [x] Implement a provider-neutral chat contract and OpenAI-compatible completion adapter.
-- [ ] Implement native Anthropic and Google chat adapters.
+- [x] Implement a native Anthropic chat adapter.
+- [ ] Implement a native Google chat adapter.
 - [ ] Implement sandbox command execution for Docker and Podman.
 - [ ] Add persistence for plans, decisions, runs, and agent state.
 
 ## Resume Notes
-Next run should choose one unchecked task above, preferably a native Anthropic adapter. The current environment could not install pytest due its package/build isolation, so rerun the suite when dependencies are available.
+Native Anthropic Messages API support is complete, including system-message normalization, prompt caching, authentication headers, and injected-transport tests. Next run should choose one unchecked task above, preferably the native Google adapter. The full local pytest suite passes.
