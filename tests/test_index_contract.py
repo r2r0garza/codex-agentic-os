@@ -6,6 +6,7 @@ import pytest
 from codex_agentic_os.index import (
     Evidence,
     IndexConfig,
+    PythonParser,
     SourceSpan,
     SymbolKind,
     SymbolRecord,
@@ -118,3 +119,62 @@ def test_discovery_uses_worktree_content_and_ignores_untracked_and_oversized_fil
     assert [record.path for record in first] == ["tracked.py"]
     assert first[0].sha256 == "7aa7a5359173d05b63cfd682e3c38487f3cb4f7f1d60659fe59fab1505977d4c"
     assert discover_tracked_files(repository, IndexConfig(max_file_bytes=3)) == ()
+
+
+def test_python_parser_extracts_symbols_signatures_imports_and_spans() -> None:
+    source = b'''\
+import os
+from .helpers import tool as renamed
+
+class Public(Base):
+    @classmethod
+    async def build(cls, value: str = "x") -> "Public":
+        import json
+        def normalize(item: str) -> str:
+            return item
+        return cls()
+
+def _helper(*items: int, flag: bool = False) -> None:
+    pass
+'''
+    result = PythonParser().parse("src/package/module.py", source)
+    by_name = {symbol.qualified_name: symbol for symbol in result.symbols}
+
+    assert set(by_name) == {
+        "package.module",
+        "package.module.Public",
+        "package.module.Public.build",
+        "package.module.Public.build.normalize",
+        "package.module._helper",
+    }
+    assert by_name["package.module.Public"].kind is SymbolKind.CLASS
+    assert by_name["package.module.Public"].span == SourceSpan("src/package/module.py", 4, 10)
+    assert by_name["package.module.Public.build"].kind is SymbolKind.METHOD
+    assert by_name["package.module.Public.build"].span == SourceSpan("src/package/module.py", 5, 10)
+    assert by_name["package.module.Public.build"].signature == "(cls, value: str='x') -> 'Public'"
+    assert by_name["package.module.Public.build"].extensions == {
+        "python": {"decorators": ["classmethod"], "async": True}
+    }
+    assert by_name["package.module.Public.build.normalize"].kind is SymbolKind.FUNCTION
+    assert by_name["package.module._helper"].visibility == "private"
+    assert sorted((dependency.target, dependency.evidence) for dependency in result.dependencies) == [
+        (".helpers.tool", Evidence.DECLARED),
+        ("json", Evidence.DECLARED),
+        ("os", Evidence.DECLARED),
+    ]
+    assert next(dependency for dependency in result.dependencies if dependency.target == "json").source_id == (
+        by_name["package.module.Public.build"].id
+    )
+
+
+def test_python_parser_handles_packages_empty_files_and_parse_errors() -> None:
+    parser = PythonParser()
+
+    result = parser.parse("src/package/__init__.py", b"")
+
+    assert parser.supports("package/module.py")
+    assert not parser.supports("package/module.ts")
+    assert result.symbols[0].qualified_name == "package"
+    assert result.symbols[0].span == SourceSpan("src/package/__init__.py", 1, 1)
+    with pytest.raises(ValueError, match="cannot parse Python source"):
+        parser.parse("broken.py", b"def nope(:\n")

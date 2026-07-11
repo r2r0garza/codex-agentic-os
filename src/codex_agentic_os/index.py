@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -125,6 +126,144 @@ class LanguageParser(Protocol):
 
     def parse(self, path: str, source: bytes) -> ParseResult:
         """Parse source bytes into normalized records."""
+
+
+class PythonParser:
+    """Extract normalized symbols and declared imports from Python source."""
+
+    language = "python"
+    api_version = PARSER_API_VERSION
+
+    def supports(self, path: str) -> bool:
+        return PurePosixPath(path).suffix == ".py"
+
+    def parse(self, path: str, source: bytes) -> ParseResult:
+        _validate_path(path)
+        if not self.supports(path):
+            raise ValueError(f"Python parser does not support path: {path}")
+        try:
+            text = source.decode("utf-8")
+            tree = ast.parse(text, filename=path, type_comments=True)
+        except (UnicodeDecodeError, SyntaxError) as error:
+            raise ValueError(f"cannot parse Python source: {path}") from error
+
+        module_name = self._module_name(path)
+        end_line = max(1, len(text.splitlines()))
+        module = SymbolRecord(
+            self.language,
+            SymbolKind.MODULE,
+            module_name,
+            SourceSpan(path, 1, end_line),
+            visibility=self._visibility(module_name.rsplit(".", 1)[-1]),
+        )
+        symbols: list[SymbolRecord] = [module]
+        dependencies: list[DependencyRecord] = []
+
+        def visit_body(body: list[ast.stmt], owner: SymbolRecord, class_body: bool = False) -> None:
+            for node in body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    qualified_name = f"{owner.qualified_name}.{node.name}"
+                    if isinstance(node, ast.ClassDef):
+                        kind = SymbolKind.CLASS
+                        signature = None
+                    else:
+                        kind = SymbolKind.METHOD if class_body else SymbolKind.FUNCTION
+                        signature = self._signature(node)
+                    record = SymbolRecord(
+                        self.language,
+                        kind,
+                        qualified_name,
+                        self._span(path, node),
+                        signature=signature,
+                        visibility=self._visibility(node.name),
+                        extensions={"python": self._extensions(node)},
+                    )
+                    symbols.append(record)
+                    visit_body(node.body, record, isinstance(node, ast.ClassDef))
+                else:
+                    for child_body in self._statement_bodies(node):
+                        visit_body(child_body, owner, class_body)
+
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    dependencies.extend(self._imports(path, node, owner.id))
+
+        visit_body(tree.body, module)
+        return ParseResult(
+            tuple(sorted(symbols, key=lambda record: record.id)),
+            tuple(sorted(dependencies, key=lambda record: deterministic_json(record.to_dict()))),
+        )
+
+    @staticmethod
+    def _module_name(path: str) -> str:
+        parts = list(PurePosixPath(path).with_suffix("").parts)
+        if parts and parts[0] == "src":
+            parts.pop(0)
+        if parts and parts[-1] == "__init__":
+            parts.pop()
+        return ".".join(parts) or "__init__"
+
+    @staticmethod
+    def _visibility(name: str) -> str:
+        return "private" if name.startswith("_") and not name.startswith("__") else "public"
+
+    @staticmethod
+    def _span(path: str, node: ast.AST) -> SourceSpan:
+        decorators = getattr(node, "decorator_list", ())
+        start_line = min(
+            (decorator.lineno for decorator in decorators),
+            default=node.lineno,  # type: ignore[attr-defined]
+        )
+        return SourceSpan(path, start_line, node.end_lineno or node.lineno)  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+        signature = f"({ast.unparse(node.args)})"
+        if node.returns is not None:
+            signature += f" -> {ast.unparse(node.returns)}"
+        return signature
+
+    @staticmethod
+    def _extensions(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> dict[str, object]:
+        details: dict[str, object] = {
+            "decorators": [ast.unparse(decorator) for decorator in node.decorator_list]
+        }
+        if isinstance(node, ast.AsyncFunctionDef):
+            details["async"] = True
+        if isinstance(node, ast.ClassDef):
+            details["bases"] = [ast.unparse(base) for base in node.bases]
+        return details
+
+    @staticmethod
+    def _statement_bodies(node: ast.stmt) -> tuple[list[ast.stmt], ...]:
+        bodies: list[list[ast.stmt]] = []
+        for field in ("body", "orelse", "finalbody"):
+            value = getattr(node, field, None)
+            if isinstance(value, list):
+                bodies.append(value)
+        handlers = getattr(node, "handlers", ())
+        bodies.extend(handler.body for handler in handlers)
+        return tuple(bodies)
+
+    def _imports(
+        self, path: str, node: ast.Import | ast.ImportFrom, source_id: str
+    ) -> list[DependencyRecord]:
+        if isinstance(node, ast.Import):
+            targets = [alias.name for alias in node.names]
+        else:
+            prefix = "." * node.level + (node.module or "")
+            separator = "" if not prefix or prefix.endswith(".") else "."
+            targets = [f"{prefix}{separator}{alias.name}" for alias in node.names]
+        return [
+            DependencyRecord(
+                self.language,
+                "import",
+                source_id,
+                target,
+                Evidence.DECLARED,
+                self._span(path, node),
+            )
+            for target in targets
+        ]
 
 
 @dataclass(frozen=True, slots=True)
