@@ -26,6 +26,13 @@ The initial runtime is a small internal core with typed boundaries. This avoids 
 
 Runtime declarations live in `src/codex_agentic_os/runtime.py`.
 
+## Persistent runtime state
+
+Plans, decisions, runs, and agent state can be stored as versioned JSON documents in a
+local SQLite database through `StateStore`. Runtime databases should live under the
+ignored `.codex-agentic-os/` directory; planning and architectural Markdown records
+remain committed source-of-truth documentation.
+
 ## Sandbox execution
 
 Sandboxing is a required capability. The first supported container backends are:
@@ -70,12 +77,11 @@ Implemented foundation:
 - Proved byte-identical clean and incremental index output across call additions, edits, target renames, and deletions.
 - Surfaced conservative incoming and outgoing static calls through `index explain`.
 - Regenerated and committed the call-aware repository index, with CI clean-rebuild drift enforcement verified.
+- Durable SQLite persistence for plans, decisions, runs, and agent state, including revision tracking and deterministic reads.
 
 Verification note: the full local pytest suite passes.
 
-Planned next:
-
-1. Persistent state for agent runs, plans, and decisions.
+Planned next: define the next focused runtime milestone.
 
 ## Development
 
@@ -118,6 +124,15 @@ Run tests:
 
 ```bash
 pytest
+```
+
+Persist runtime state:
+
+```python
+from codex_agentic_os import StateStore
+
+store = StateStore(".codex-agentic-os/state.sqlite3")
+store.put("run", "run-001", status="running", payload={"plan": "plan-001"})
 ```
 
 Inspect declared capabilities:

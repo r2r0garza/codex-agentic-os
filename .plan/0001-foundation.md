@@ -1,5 +1,8 @@
 # Plan 0001: Foundation
 
+## Status
+Complete
+
 ## Goal
 Create the first durable shape of codex-agentic-os: a provider-neutral agentic OS that can grow incrementally and resume work across scheduled runs.
 
@@ -14,7 +17,7 @@ Create the first durable shape of codex-agentic-os: a provider-neutral agentic O
 - [x] Implement a native Google chat adapter.
 - [x] Begin the deterministic repository index described in Plan 0002 while the repository is still small.
 - [x] Implement sandbox command execution for Docker and Podman.
-- [ ] Add persistence for plans, decisions, runs, and agent state.
+- [x] Add persistence for plans, decisions, runs, and agent state.
 
 ## Resume Notes
-Docker and Podman now share a `ContainerSandbox` execution adapter that builds shell-free engine arguments, applies network isolation, read-only root filesystems, CPU and memory limits by default, captures output and exit status, supports timeouts, and reports missing engines clearly. Offline tests cover both backends and configuration overrides. Resume with the remaining Foundation task: add persistence for plans, decisions, runs, and agent state. Follow the README credential policy when later work first needs environment configuration.
+Foundation is complete. `StateStore` now supplies durable SQLite records for plans, decisions, runs, and agents with revision tracking, deterministic listing, JSON payload validation, and deletion. Runtime databases belong under the ignored `.codex-agentic-os/` directory. Resume by creating a new focused plan for the next runtime capability; do not extend persistence implicitly without first recording its lifecycle requirements.
