@@ -159,6 +159,21 @@ class RunCoordinator:
             self.store.put("run", run_id, status=status, payload=payload)
         )
 
+    def cancel(self, run_id: str) -> AgentRun:
+        """Cancel a run and each of its queued or running steps."""
+
+        current = self.get(run_id)
+        if current is None:
+            raise KeyError(f"run does not exist: {run_id}")
+        if RunStatus.CANCELLED not in self._TRANSITIONS[current.status]:
+            raise ValueError(
+                f"invalid run transition: {current.status} -> {RunStatus.CANCELLED}"
+            )
+        for step in self.list_steps(run_id):
+            if step.status in {StepStatus.QUEUED, StepStatus.RUNNING}:
+                self.transition_step(step.step_id, StepStatus.CANCELLED)
+        return self.transition(run_id, RunStatus.CANCELLED)
+
     def add_step(self, run_id: str, step_id: str, *, objective: str) -> RunStep:
         """Append a queued step to a non-terminal run."""
 

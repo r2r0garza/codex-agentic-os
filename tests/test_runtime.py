@@ -113,6 +113,47 @@ def test_step_validation_and_terminal_run_rules(tmp_path) -> None:
         coordinator.add_step("run-1", "step-2", objective="Too late")
 
 
+@pytest.mark.parametrize("run_status", [RunStatus.QUEUED, RunStatus.RUNNING])
+def test_cancelling_run_cancels_active_steps_and_preserves_completed_steps(
+    tmp_path, run_status
+) -> None:
+    database = tmp_path / f"{run_status}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Build feature")
+    coordinator.add_step("run-1", "completed", objective="Already done")
+    coordinator.add_step("run-1", "active", objective="In progress")
+    coordinator.add_step("run-1", "queued", objective="Not started")
+    coordinator.transition_step("completed", StepStatus.RUNNING)
+    completed = coordinator.transition_step(
+        "completed", StepStatus.SUCCEEDED, output={"artifact": "result.json"}
+    )
+    coordinator.transition_step("active", StepStatus.RUNNING)
+    if run_status is RunStatus.RUNNING:
+        coordinator.transition("run-1", RunStatus.RUNNING)
+
+    cancelled = coordinator.cancel("run-1")
+
+    assert cancelled.status is RunStatus.CANCELLED
+    assert RunCoordinator(StateStore(database)).list_steps("run-1") == (
+        completed,
+        RunStep("active", "run-1", 2, "In progress", StepStatus.CANCELLED, 3),
+        RunStep("queued", "run-1", 3, "Not started", StepStatus.CANCELLED, 2),
+    )
+
+
+def test_cancel_rejects_missing_and_terminal_runs(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+
+    with pytest.raises(KeyError, match="run does not exist"):
+        coordinator.cancel("missing")
+
+    coordinator.create("run-1", objective="Build feature")
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    coordinator.transition("run-1", RunStatus.SUCCEEDED)
+    with pytest.raises(ValueError, match="invalid run transition"):
+        coordinator.cancel("run-1")
+
+
 def test_sandbox_results_complete_steps_and_run_without_backend_coupling(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Build feature")

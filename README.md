@@ -82,10 +82,11 @@ Implemented foundation:
 - Durable position-ordered run steps with validated lifecycle transitions, revision tracking, and terminal output.
 - Backend-neutral sandbox-result recording that completes durable steps and automatically succeeds or fails their runs.
 - Read-only CLI inspection of durable runs and their position-ordered steps.
+- Coordinated durable run cancellation that cancels active steps while preserving completed step history.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: define a new focused plan for the next execution-core capability; Plan 0004 is complete.
+Planned next: define a new focused plan for the next execution-core capability; Plan 0005 is complete.
 
 ## Development
 
@@ -148,6 +149,13 @@ runs = RunCoordinator(StateStore(".codex-agentic-os/state.sqlite3"))
 runs.create("run-001", objective="Build the repository index")
 runs.transition("run-001", RunStatus.RUNNING)
 runs.transition("run-001", RunStatus.SUCCEEDED, output={"artifacts": 4})
+```
+
+Cancel a queued or running run consistently with its active steps. Succeeded, failed,
+or already-cancelled steps retain their terminal status and output:
+
+```python
+cancelled = runs.cancel("run-001")
 ```
 
 Append and coordinate ordered durable steps independently of an execution backend:
