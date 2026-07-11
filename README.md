@@ -62,12 +62,13 @@ Implemented foundation:
 - Optional repository-managed pre-commit refresh that rejects unstaged generated index changes.
 - Pull request and `main` branch CI that runs tests and rejects repository-index drift using a clean rebuild.
 - Committed initial `.code-index/` artifacts for immediate repository orientation and CI drift enforcement.
+- Completed a repository-wide static-call evaluation and accepted a conservative call-reference extension with explicit evidence limits.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Evaluate whether static call/reference indexing is useful enough for a separately scoped extension; see `.plan/0002-deterministic-repository-index.md`.
+1. Implement the conservative static call-reference extension in `.plan/0003-static-call-reference-index.md`, beginning with its versioned contract.
 2. Docker and Podman sandbox execution adapters.
 3. Persistent state for agent runs, plans, and decisions.
 

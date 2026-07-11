@@ -75,7 +75,7 @@ The initial workflow must not depend on provider API keys, network access, or an
 - [x] Add repository-managed pre-commit integration and contributor documentation.
 - [x] Add CI drift verification using a clean rebuild.
 - [x] Generate and commit the repository's initial `.code-index/` artifacts.
-- [ ] Evaluate call/reference indexing on real repository patterns and plan a separate extension if static evidence is useful enough.
+- [x] Evaluate call/reference indexing on real repository patterns and plan a separate extension if static evidence is useful enough.
 
 ## Verification
 
@@ -99,4 +99,4 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Resume Notes
 
-The repository now commits its initial deterministic `.code-index/` artifacts, so a fresh checkout has an immediately usable structural map and the CI clean-rebuild drift gate can pass. The next focused task is to evaluate call/reference indexing against real repository patterns and decide whether the static evidence warrants a separately planned extension; do not implement that extension during the evaluation. No provider credentials are needed.
+The plan is complete. A repository-wide AST survey found 594 call sites: 319 direct-name calls, 13 `self` attribute calls, 24 calls through the imported `json` module, and a long tail of receiver-dependent or dynamic calls. This is enough useful static evidence to justify a conservative extension, but not broad name-resolution claims. Decision 0003 records the evidence boundary and Plan 0003 scopes the implementation. Resume with Plan 0003; no provider credentials are needed.
