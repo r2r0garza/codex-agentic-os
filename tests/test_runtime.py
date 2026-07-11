@@ -154,6 +154,46 @@ def test_cancel_rejects_missing_and_terminal_runs(tmp_path) -> None:
         coordinator.cancel("run-1")
 
 
+def test_start_next_step_dispatches_in_position_order(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    coordinator.add_step("run-1", "first", objective="First command")
+    coordinator.add_step("run-1", "second", objective="Second command")
+
+    first = coordinator.start_next_step("run-1")
+
+    assert first == RunStep(
+        "first", "run-1", 1, "First command", StepStatus.RUNNING, 2
+    )
+    assert coordinator.get("run-1").status is RunStatus.RUNNING
+
+    coordinator.transition_step("first", StepStatus.SUCCEEDED)
+    second = coordinator.start_next_step("run-1")
+
+    assert second.step_id == "second"
+    assert second.status is StepStatus.RUNNING
+
+
+def test_start_next_step_validates_run_and_single_active_step(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+
+    with pytest.raises(KeyError, match="run does not exist"):
+        coordinator.start_next_step("missing")
+
+    coordinator.create("run-1", objective="Build feature")
+    assert coordinator.start_next_step("run-1") is None
+
+    coordinator.add_step("run-1", "first", objective="First command")
+    coordinator.add_step("run-1", "second", objective="Second command")
+    coordinator.start_next_step("run-1")
+    with pytest.raises(ValueError, match="already has a running step"):
+        coordinator.start_next_step("run-1")
+
+    coordinator.cancel("run-1")
+    with pytest.raises(ValueError, match="terminal run"):
+        coordinator.start_next_step("run-1")
+
+
 def test_sandbox_results_complete_steps_and_run_without_backend_coupling(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Build feature")

@@ -174,6 +174,28 @@ class RunCoordinator:
                 self.transition_step(step.step_id, StepStatus.CANCELLED)
         return self.transition(run_id, RunStatus.CANCELLED)
 
+    def start_next_step(self, run_id: str) -> RunStep | None:
+        """Start the next queued step, preserving single-step execution order."""
+
+        run = self.get(run_id)
+        if run is None:
+            raise KeyError(f"run does not exist: {run_id}")
+        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            raise ValueError(f"cannot dispatch a step for terminal run: {run_id}")
+
+        steps = self.list_steps(run_id)
+        if any(step.status is StepStatus.RUNNING for step in steps):
+            raise ValueError(f"run already has a running step: {run_id}")
+
+        next_step = next(
+            (step for step in steps if step.status is StepStatus.QUEUED), None
+        )
+        if next_step is None:
+            return None
+        if run.status is RunStatus.QUEUED:
+            self.transition(run_id, RunStatus.RUNNING)
+        return self.transition_step(next_step.step_id, StepStatus.RUNNING)
+
     def add_step(self, run_id: str, step_id: str, *, objective: str) -> RunStep:
         """Append a queued step to a non-terminal run."""
 

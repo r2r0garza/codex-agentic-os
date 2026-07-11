@@ -84,10 +84,11 @@ Implemented foundation:
 - Read-only CLI inspection of durable runs and their position-ordered steps.
 - Coordinated durable run cancellation that cancels active steps while preserving completed step history.
 - Operator-facing `run cancel` CLI support with persisted, position-ordered JSON confirmation.
+- Backend-neutral next-step dispatch in durable position order with single-active-step enforcement.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: define a new focused plan for the next execution-core capability; Plan 0006 is complete.
+Planned next: define a new focused plan for the next execution-core capability; Plan 0007 is complete.
 
 ## Development
 
@@ -167,9 +168,13 @@ from codex_agentic_os import RunCoordinator, StepStatus, StateStore
 runs = RunCoordinator(StateStore(".codex-agentic-os/state.sqlite3"))
 runs.create("run-002", objective="Execute a sandboxed task")
 runs.add_step("run-002", "step-001", objective="Run the command")
-runs.transition_step("step-001", StepStatus.RUNNING)
+step = runs.start_next_step("run-002")
 runs.transition_step("step-001", StepStatus.SUCCEEDED, output={"exit_code": 0})
 ```
+
+`start_next_step()` starts the earliest queued step and moves a queued run to running.
+It rejects dispatch when the run already has a running step, preserving sequential
+execution without coupling coordination to a sandbox backend.
 
 Record a sandbox result through the structural execution-result boundary. A zero exit
 completes the step successfully and succeeds the run when every step is complete; a
