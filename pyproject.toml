@@ -1,0 +1,25 @@
+[project]
+name = "codex-agentic-os"
+version = "0.1.0"
+description = "A provider-neutral agentic operating system foundation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "codex-agentic-os maintainers" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+codex-agentic-os = "codex_agentic_os.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -1,0 +1,27 @@
+name: Hourly Agentic OS Heartbeat
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Show next plan task
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for plan in sorted(Path('.plan').glob('*.md')):
+              for line in plan.read_text().splitlines():
+                  if line.startswith('- [ ]'):
+                      print(f"Next task from {plan}: {line[6:]}")
+                      raise SystemExit(0)
+          print('No open plan tasks found.')
+          PY
