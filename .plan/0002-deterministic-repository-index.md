@@ -1,7 +1,7 @@
 # Plan 0002: Deterministic Repository Index
 
 ## Status
-Planned
+Active
 
 ## Goal
 Give agents and maintainers a reproducible structural map of the repository before the codebase becomes difficult to navigate. The index must be derived entirely from tracked source, safe to rebuild, useful without model calls, and precise about relationships that static analysis cannot prove.
@@ -66,7 +66,7 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Tasks
 
-- [ ] Define and test a language-neutral versioned index schema, parser interface, stable identifiers, configuration, and determinism rules.
+- [x] Define and test a language-neutral versioned index schema, parser interface, stable identifiers, configuration, and determinism rules.
 - [ ] Implement tracked-file discovery and content hashing with explicit exclusions and repository-relative paths.
 - [ ] Implement Python AST extraction for modules, classes, functions, methods, signatures, imports, and line spans.
 - [ ] Implement deterministic manifest, JSONL serialization, atomic writes, and clean rebuilds.
@@ -99,4 +99,4 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Resume Notes
 
-Begin with the language-neutral schema, parser interface, and determinism task, not parsing breadth. Python is the first parser, not a constraint on the core record model. Keep the first change small: specify records and golden fixtures before implementing repository discovery. Do not add provider credentials or network dependencies. When this plan becomes active, update the README status and preserve the credential policy already documented there.
+The language-neutral index contract is complete in `src/codex_agentic_os/index.py`, with a golden schema fixture and tests covering stable IDs, canonical JSON/JSONL, explicit configuration fingerprints, evidence labels, and repository-relative source spans. Next implement only tracked-file discovery and content hashing with the declared exclusions; do not begin Python AST extraction in the same run. No provider credentials or network dependencies are needed.

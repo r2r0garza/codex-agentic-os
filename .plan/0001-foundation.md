@@ -12,9 +12,9 @@ Create the first durable shape of codex-agentic-os: a provider-neutral agentic O
 - [x] Implement a provider-neutral chat contract and OpenAI-compatible completion adapter.
 - [x] Implement a native Anthropic chat adapter.
 - [x] Implement a native Google chat adapter.
-- [ ] Begin the deterministic repository index described in Plan 0002 while the repository is still small.
+- [x] Begin the deterministic repository index described in Plan 0002 while the repository is still small.
 - [ ] Implement sandbox command execution for Docker and Podman.
 - [ ] Add persistence for plans, decisions, runs, and agent state.
 
 ## Resume Notes
-Native Google `models.generateContent` support is complete, including role mapping, system instructions, generation configuration, API-key headers, multi-part text responses, and injected-transport tests. Next run should choose exactly one remaining unchecked task above; the deterministic repository index is the preferred next step and begins with the first task in Plan 0002. The full local pytest suite passes. Follow the README credential policy: create `.env.example` only when configuration is needed, keep `.env` untracked, and explicitly tell the user what to populate and which live checks could not run without keys.
+The deterministic repository index is underway: its language-neutral schema, parser boundary, stable IDs, explicit configuration, and canonical encoders are defined and tested. Next run should choose exactly one remaining unchecked task; Plan 0002's tracked-file discovery and content hashing item is the natural continuation. The full local pytest suite passes. Follow the README credential policy: create `.env.example` only when configuration is needed, keep `.env` untracked, and explicitly tell the user what to populate and which live checks could not run without keys.

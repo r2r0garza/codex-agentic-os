@@ -53,12 +53,13 @@ Implemented foundation:
 - Provider-neutral chat request/response types and an injectable OpenAI-compatible adapter.
 - Native Anthropic Messages API adapter with system-message normalization and prompt caching.
 - Native Google `models.generateContent` adapter with provider-neutral role and generation mapping.
+- Language-neutral repository-index schema, parser interface, stable identifiers, configuration fingerprints, and deterministic JSON/JSONL encoding.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Deterministic repository indexing for files, symbols, imports, and dependency evidence; see `.plan/0002-deterministic-repository-index.md`.
+1. Continue deterministic repository indexing with tracked-file discovery and content hashing; see `.plan/0002-deterministic-repository-index.md`.
 2. Docker and Podman sandbox execution adapters.
 3. Persistent state for agent runs, plans, and decisions.
 
