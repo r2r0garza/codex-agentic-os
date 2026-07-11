@@ -9,6 +9,51 @@ from codex_agentic_os.runtime import RunCoordinator, RunStatus, StepStatus
 from codex_agentic_os.state import StateStore
 
 
+def test_cli_lists_runs_in_identifier_order_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    second = coordinator.create("run-b", objective="Second")
+    first = coordinator.create("run-a", objective="First", agent_id="agent-1")
+    coordinator.transition("run-b", RunStatus.RUNNING)
+
+    main(["run", "list", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [run["run_id"] for run in payload] == ["run-a", "run-b"]
+    assert payload[0] == {
+        "agent_id": "agent-1", "objective": "First", "output": None,
+        "revision": 1, "run_id": "run-a", "status": "queued",
+    }
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-a") == first
+    assert reloaded.get("run-b").revision == second.revision + 1
+
+
+def test_cli_lists_empty_database(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).initialize()
+    main(["run", "list", "--state-db", str(database)])
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_cli_list_rejects_missing_database_without_creating_it(tmp_path, capsys) -> None:
+    database = tmp_path / "missing.sqlite3"
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "list", "--state-db", str(database)])
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not database.exists()
+
+
+def test_cli_list_reports_invalid_run_records(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).put("run", "broken", status="queued", payload={})
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "list", "--state-db", str(database)])
+    assert exit_info.value.code == 2
+    assert "run record has invalid objective: broken" in capsys.readouterr().err
+
+
 def test_cli_inspects_run_and_steps_in_position_order(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

@@ -46,12 +46,21 @@ def _parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser("run", help="inspect and control durable runs")
     run_commands = run.add_subparsers(dest="run_command", required=True)
+    list_runs = run_commands.add_parser("list", help="list durable runs")
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
     cancel = run_commands.add_parser("cancel", help="cancel a run and its active steps")
     recover = run_commands.add_parser(
         "recover", help="fail an interrupted or timed-out running step"
     )
-    for command in (inspect, cancel, recover):
+    for command in (list_runs, inspect, cancel, recover):
+        if command is list_runs:
+            command.add_argument(
+                "--state-db",
+                type=Path,
+                default=Path(".codex-agentic-os/state.sqlite3"),
+                help="path to the runtime state database",
+            )
+            continue
         identifier = "step_id" if command is recover else "run_id"
         command.add_argument(identifier)
         command.add_argument(
@@ -83,6 +92,17 @@ def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
     return {"run": run_data, "steps": steps}
 
 
+def _run_list_payload(coordinator: RunCoordinator) -> list[dict[str, object]]:
+    """Return JSON-compatible run summaries in stable identifier order."""
+
+    summaries = []
+    for run in coordinator.list_runs():
+        summary = asdict(run)
+        summary["status"] = run.status.value
+        summaries.append(summary)
+    return summaries
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Run a CLI command, defaulting to the foundation capability summary."""
 
@@ -97,10 +117,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         if arguments.command == "run":
             if not arguments.state_db.is_file():
                 raise ValueError(f"state database does not exist: {arguments.state_db}")
-            read_only = arguments.run_command == "inspect"
+            read_only = arguments.run_command in {"inspect", "list"}
             coordinator = RunCoordinator(
                 StateStore(arguments.state_db, read_only=read_only)
             )
+            if arguments.run_command == "list":
+                print(json.dumps(_run_list_payload(coordinator), indent=2, sort_keys=True))
+                return
             if arguments.run_command == "cancel":
                 coordinator.cancel(arguments.run_id)
                 run_id = arguments.run_id

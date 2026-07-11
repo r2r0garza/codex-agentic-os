@@ -32,6 +32,14 @@ def test_run_lifecycle_is_durable_and_revisioned(tmp_path) -> None:
     assert succeeded.revision == 3
 
 
+def test_runs_are_listed_in_stable_identifier_order(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    second = coordinator.create("run-b", objective="Second")
+    first = coordinator.create("run-a", objective="First", agent_id="agent-1")
+
+    assert coordinator.list_runs() == (first, second)
+
+
 @pytest.mark.parametrize(
     ("start", "target"),
     [

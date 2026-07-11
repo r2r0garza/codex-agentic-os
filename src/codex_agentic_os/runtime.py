@@ -151,6 +151,11 @@ class RunCoordinator:
         record = self.store.get("run", run_id)
         return None if record is None else self._run(record)
 
+    def list_runs(self) -> tuple[AgentRun, ...]:
+        """Return all durable runs in stable run identifier order."""
+
+        return tuple(self._run(record) for record in self.store.list("run"))
+
     def transition(
         self,
         run_id: str,

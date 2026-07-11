@@ -90,10 +90,11 @@ Implemented foundation:
 - Injected sandbox execution of the next durable command step with persisted results.
 - Explicit durable recovery for interrupted or timed-out running steps.
 - Operator-facing `run recover` CLI support with typed reasons and optional detail.
+- Read-only deterministic listing of durable runs through `run list`.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0012 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0013 is complete.
 
 ## Development
 
@@ -244,6 +245,16 @@ codex-agentic-os run inspect run-002 --state-db /path/to/state.sqlite3
 
 The default database is `.codex-agentic-os/state.sqlite3`. Inspection prints JSON and
 fails without creating a database when the configured path does not exist.
+
+List durable runs in stable run identifier order without loading their steps or
+modifying runtime state:
+
+```bash
+codex-agentic-os run list
+codex-agentic-os run list --state-db /path/to/state.sqlite3
+```
+
+Listing prints JSON summaries and fails without creating a missing database.
 
 Cancel a queued or running run from the CLI. The command preserves completed steps,
 cancels queued or running steps, and prints the resulting durable state as JSON:
