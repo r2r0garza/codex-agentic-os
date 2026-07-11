@@ -74,6 +74,8 @@ class RunStep:
     status: StepStatus
     revision: int
     output: Mapping[str, object] | None = None
+    command: tuple[str, ...] | None = None
+    timeout: float | None = None
 
 
 class ExecutionResult(Protocol):
@@ -196,7 +198,15 @@ class RunCoordinator:
             self.transition(run_id, RunStatus.RUNNING)
         return self.transition_step(next_step.step_id, StepStatus.RUNNING)
 
-    def add_step(self, run_id: str, step_id: str, *, objective: str) -> RunStep:
+    def add_step(
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        objective: str,
+        command: Sequence[str] | None = None,
+        timeout: float | None = None,
+    ) -> RunStep:
         """Append a queued step to a non-terminal run."""
 
         run = self.get(run_id)
@@ -206,19 +216,25 @@ class RunCoordinator:
             raise ValueError(f"cannot add a step to terminal run: {run_id}")
         if not objective.strip():
             raise ValueError("step objective must not be empty")
+        normalized_command = self._validate_command(command, timeout)
         if self.store.get("step", step_id) is not None:
             raise ValueError(f"step already exists: {step_id}")
         position = len(self.list_steps(run_id)) + 1
+        payload: dict[str, object] = {
+            "run_id": run_id,
+            "position": position,
+            "objective": objective,
+        }
+        if normalized_command is not None:
+            payload["command"] = list(normalized_command)
+        if timeout is not None:
+            payload["timeout"] = timeout
         return self._step(
             self.store.put(
                 "step",
                 step_id,
                 status=StepStatus.QUEUED,
-                payload={
-                    "run_id": run_id,
-                    "position": position,
-                    "objective": objective,
-                },
+                payload=payload,
             )
         )
 
@@ -261,6 +277,10 @@ class RunCoordinator:
             "position": current.position,
             "objective": current.objective,
         }
+        if current.command is not None:
+            payload["command"] = list(current.command)
+        if current.timeout is not None:
+            payload["timeout"] = current.timeout
         if output is not None:
             payload["output"] = dict(output)
         return self._step(
@@ -341,6 +361,8 @@ class RunCoordinator:
         position = record.payload.get("position")
         objective = record.payload.get("objective")
         output = record.payload.get("output")
+        command = record.payload.get("command")
+        timeout = record.payload.get("timeout")
         if not isinstance(run_id, str) or not run_id:
             raise ValueError(f"step record has invalid run id: {record.key}")
         if not isinstance(position, int) or isinstance(position, bool) or position < 1:
@@ -349,6 +371,7 @@ class RunCoordinator:
             raise ValueError(f"step record has invalid objective: {record.key}")
         if output is not None and not isinstance(output, dict):
             raise ValueError(f"step record has invalid output: {record.key}")
+        normalized_command = RunCoordinator._validate_command(command, timeout)
         try:
             status = StepStatus(record.status)
         except ValueError as error:
@@ -361,4 +384,29 @@ class RunCoordinator:
             status=status,
             revision=record.revision,
             output=output,
+            command=normalized_command,
+            timeout=timeout,
         )
+
+    @staticmethod
+    def _validate_command(
+        command: Sequence[str] | object | None, timeout: object | None
+    ) -> tuple[str, ...] | None:
+        if command is None:
+            if timeout is not None:
+                raise ValueError("step timeout requires a command")
+            return None
+        if isinstance(command, (str, bytes)) or not isinstance(command, Sequence):
+            raise ValueError("step command must be a sequence of arguments")
+        normalized = tuple(command)
+        if not normalized:
+            raise ValueError("step command must not be empty")
+        if any(not isinstance(argument, str) or not argument for argument in normalized):
+            raise ValueError("step command arguments must be non-empty strings")
+        if timeout is not None and (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or timeout <= 0
+        ):
+            raise ValueError("step timeout must be positive")
+        return normalized

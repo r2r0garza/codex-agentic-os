@@ -85,10 +85,11 @@ Implemented foundation:
 - Coordinated durable run cancellation that cancels active steps while preserving completed step history.
 - Operator-facing `run cancel` CLI support with persisted, position-ordered JSON confirmation.
 - Backend-neutral next-step dispatch in durable position order with single-active-step enforcement.
+- Durable optional command arguments and timeouts on ordered run steps.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: define a new focused plan for the next execution-core capability; Plan 0007 is complete.
+Planned next: execute the next durable command step through an injected sandbox boundary; Plan 0008 is complete.
 
 ## Development
 
@@ -167,7 +168,13 @@ from codex_agentic_os import RunCoordinator, StepStatus, StateStore
 
 runs = RunCoordinator(StateStore(".codex-agentic-os/state.sqlite3"))
 runs.create("run-002", objective="Execute a sandboxed task")
-runs.add_step("run-002", "step-001", objective="Run the command")
+runs.add_step(
+    "run-002",
+    "step-001",
+    objective="Run the command",
+    command=("python", "-c", "print('hello')"),
+    timeout=30,
+)
 step = runs.start_next_step("run-002")
 runs.transition_step("step-001", StepStatus.SUCCEEDED, output={"exit_code": 0})
 ```
@@ -175,6 +182,9 @@ runs.transition_step("step-001", StepStatus.SUCCEEDED, output={"exit_code": 0})
 `start_next_step()` starts the earliest queued step and moves a queued run to running.
 It rejects dispatch when the run already has a running step, preserving sequential
 execution without coupling coordination to a sandbox backend.
+
+Command arguments and timeouts are stored with the step and survive process restarts.
+Steps may omit a command when they represent coordination-only work.
 
 Record a sandbox result through the structural execution-result boundary. A zero exit
 completes the step successfully and succeeds the run when every step is complete; a

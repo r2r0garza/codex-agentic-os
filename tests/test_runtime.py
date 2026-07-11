@@ -91,6 +91,51 @@ def test_ordered_steps_are_durable_and_revisioned(tmp_path) -> None:
     )
 
 
+def test_step_command_and_timeout_are_durable(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute commands")
+
+    created = coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Print a greeting",
+        command=("python", "-c", "print('hello')"),
+        timeout=12.5,
+    )
+    coordinator.start_next_step("run-1")
+
+    assert created.command == ("python", "-c", "print('hello')")
+    assert created.timeout == 12.5
+    reloaded = RunCoordinator(StateStore(database)).get_step("command")
+    assert reloaded is not None
+    assert reloaded.command == created.command
+    assert reloaded.timeout == created.timeout
+
+
+@pytest.mark.parametrize(
+    ("command", "timeout", "message"),
+    [
+        ((), None, "command must not be empty"),
+        (("python", ""), None, "arguments must be non-empty strings"),
+        (("python",), 0, "timeout must be positive"),
+        (None, 1, "timeout requires a command"),
+    ],
+)
+def test_step_command_validation(tmp_path, command, timeout, message) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Execute commands")
+
+    with pytest.raises(ValueError, match=message):
+        coordinator.add_step(
+            "run-1",
+            "command",
+            objective="Invalid command",
+            command=command,
+            timeout=timeout,
+        )
+
+
 def test_step_validation_and_terminal_run_rules(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Build feature")
