@@ -7,7 +7,13 @@ import json
 from pathlib import Path
 from typing import Sequence
 
-from .index import build_clean_index, build_incremental_index, check_index, explain_symbol
+from .index import (
+    build_clean_index,
+    build_incremental_index,
+    check_index,
+    explain_symbol,
+    unstaged_index_paths,
+)
 from .providers import DEFAULT_PROVIDER_SPECS
 from .runtime import RuntimeSpec
 from .sandboxes import default_sandboxes
@@ -32,6 +38,7 @@ def _parser() -> argparse.ArgumentParser:
     build = index_commands.add_parser("build", help="build deterministic index artifacts")
     build.add_argument("--incremental", action="store_true", help="reuse unchanged records")
     index_commands.add_parser("check", help="verify artifacts against a clean rebuild")
+    index_commands.add_parser("pre-commit", help="refresh and verify staged index artifacts")
     explain = index_commands.add_parser("explain", help="describe one indexed symbol")
     explain.add_argument("qualified_name")
     return parser
@@ -62,6 +69,16 @@ def main(argv: Sequence[str] | None = None) -> None:
             if differences:
                 parser.exit(1, f"Index is stale: {', '.join(differences)}\n")
             print("Index is current.")
+        elif arguments.index_command == "pre-commit":
+            build_incremental_index(repository)
+            unstaged = unstaged_index_paths(repository)
+            if unstaged:
+                parser.exit(
+                    1,
+                    "Repository index was refreshed; stage these files and retry: "
+                    f"{', '.join(unstaged)}\n",
+                )
+            print("Repository index is staged and current.")
         else:
             print(json.dumps(explain_symbol(repository, arguments.qualified_name), indent=2, sort_keys=True))
     except ValueError as error:

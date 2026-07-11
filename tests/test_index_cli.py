@@ -4,7 +4,12 @@ import subprocess
 import pytest
 
 from codex_agentic_os.cli import main
-from codex_agentic_os.index import build_clean_index, check_index, explain_symbol
+from codex_agentic_os.index import (
+    build_clean_index,
+    check_index,
+    explain_symbol,
+    unstaged_index_paths,
+)
 
 
 def _git(repository, *arguments: str) -> None:
@@ -68,3 +73,32 @@ def test_cli_check_fails_for_a_missing_index(tmp_path, monkeypatch, capsys) -> N
 
     assert exit_info.value.code == 1
     assert "Index is stale" in capsys.readouterr().err
+
+
+def test_pre_commit_refresh_requires_generated_changes_to_be_staged(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    repository = _repository(tmp_path)
+    build_clean_index(repository)
+    _git(repository, "add", ".code-index")
+    monkeypatch.chdir(repository)
+
+    main(["index", "pre-commit"])
+    assert capsys.readouterr().out == "Repository index is staged and current.\n"
+
+    (repository / "example.py").write_text("def changed() -> None:\n    pass\n")
+    _git(repository, "add", "example.py")
+    with pytest.raises(SystemExit) as exit_info:
+        main(["index", "pre-commit"])
+
+    assert exit_info.value.code == 1
+    assert "stage these files and retry" in capsys.readouterr().err
+    assert unstaged_index_paths(repository) == (
+        ".code-index/dependencies.jsonl",
+        ".code-index/manifest.json",
+        ".code-index/symbols.jsonl",
+    )
+
+    _git(repository, "add", ".code-index")
+    main(["index", "pre-commit"])
+    assert capsys.readouterr().out == "Repository index is staged and current.\n"

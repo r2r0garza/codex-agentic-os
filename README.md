@@ -59,12 +59,13 @@ Implemented foundation:
 - Deterministic clean repository-index builds with versioned manifests, JSONL artifacts, atomic file replacement, and stale-output cleanup.
 - Incremental repository-index builds that reparse only changed tracked files and remain byte-identical to clean builds across additions, edits, renames, and deletions.
 - Repository-index CLI commands for clean or incremental builds, read-only drift checks, and symbol explanations.
+- Optional repository-managed pre-commit refresh that rejects unstaged generated index changes.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Add repository-managed pre-commit integration for deterministic repository indexing; see `.plan/0002-deterministic-repository-index.md`.
+1. Add CI clean-rebuild drift verification for deterministic repository indexing; see `.plan/0002-deterministic-repository-index.md`.
 2. Docker and Podman sandbox execution adapters.
 3. Persistent state for agent runs, plans, and decisions.
 
@@ -104,3 +105,20 @@ codex-agentic-os index explain codex_agentic_os.index.build_clean_index
 ```
 
 `index check` performs a clean rebuild in a temporary directory and returns a nonzero exit status if committed artifacts are missing or stale. `index explain` reads the existing index without changing it.
+
+### Pre-commit index refresh
+
+After installing the development dependencies, contributors may install the repository-managed hook:
+
+```bash
+pre-commit install
+```
+
+On every commit, the hook runs an incremental index build. If regeneration changes `.code-index/`, the commit is stopped so the refreshed artifacts can be reviewed and staged:
+
+```bash
+git add .code-index
+git commit
+```
+
+The hook is optional. `codex-agentic-os index build --incremental` remains the canonical direct command, and `codex-agentic-os index check` provides a read-only clean-build verification.

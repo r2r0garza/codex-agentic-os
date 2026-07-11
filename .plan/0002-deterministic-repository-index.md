@@ -72,7 +72,7 @@ The initial workflow must not depend on provider API keys, network access, or an
 - [x] Implement deterministic manifest, JSONL serialization, atomic writes, and clean rebuilds.
 - [x] Implement incremental rebuilds and prove equivalence with clean rebuild output.
 - [x] Add `index build`, `index check`, and `index explain` CLI commands.
-- [ ] Add repository-managed pre-commit integration and contributor documentation.
+- [x] Add repository-managed pre-commit integration and contributor documentation.
 - [ ] Add CI drift verification using a clean rebuild.
 - [ ] Generate and commit the repository's initial `.code-index/` artifacts.
 - [ ] Evaluate call/reference indexing on real repository patterns and plan a separate extension if static evidence is useful enough.
@@ -99,4 +99,4 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Resume Notes
 
-The repository-index CLI is complete in `src/codex_agentic_os/cli.py`: clean and incremental builds report artifact counts, `index check` compares existing artifacts with a clean temporary rebuild without mutating the repository, and `index explain` prints one exact qualified-name match with its outgoing indexed relationships. Supporting read-only helpers live in `src/codex_agentic_os/index.py`. Next implement only the repository-managed pre-commit integration and contributor documentation task; do not add CI drift verification in the same run. The full local suite passes with 28 tests. No provider credentials or network dependencies are needed.
+The repository-managed `.pre-commit-config.yaml` now runs `index pre-commit`, which performs an incremental refresh and rejects a commit when generated `.code-index/` files remain unstaged. Contributor setup and the canonical direct-command fallback are documented in the README. Next implement only CI drift verification using a clean rebuild; do not generate and commit the initial `.code-index/` artifacts in the same run. No provider credentials or network dependencies are needed.

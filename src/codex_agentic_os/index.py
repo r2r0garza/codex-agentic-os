@@ -359,6 +359,41 @@ def discover_tracked_files(repository: str | Path, config: IndexConfig | None = 
     return tuple(sorted(records))
 
 
+def unstaged_index_paths(repository: str | Path) -> tuple[str, ...]:
+    """Return generated index paths that differ from the Git index.
+
+    Porcelain v1's second status column represents worktree changes. Untracked
+    files are included because a first build must be staged before committing.
+    """
+
+    root = Path(repository).resolve()
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                os.fspath(root),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                ".code-index",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(f"cannot inspect repository index status: {root}") from error
+
+    paths = []
+    for line in result.stdout.splitlines():
+        status = line[:2]
+        if status == "??" or (len(status) == 2 and status[1] != " "):
+            paths.append(line[3:])
+    return tuple(sorted(paths))
+
+
 def deterministic_json(value: object) -> bytes:
     """Encode JSON using the canonical settings required by index artifacts."""
 

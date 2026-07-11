@@ -10,6 +10,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
+  "pre-commit>=3.7",
   "pytest>=8.0",
 ]
 
