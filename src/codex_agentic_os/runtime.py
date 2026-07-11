@@ -177,7 +177,7 @@ class RunCoordinator:
         )
 
     def cancel(self, run_id: str) -> AgentRun:
-        """Cancel a run and each of its queued or running steps."""
+        """Atomically cancel a run and each of its queued or running steps."""
 
         current = self.get(run_id)
         if current is None:
@@ -186,10 +186,36 @@ class RunCoordinator:
             raise ValueError(
                 f"invalid run transition: {current.status} -> {RunStatus.CANCELLED}"
             )
-        for step in self.list_steps(run_id):
-            if step.status in {StepStatus.QUEUED, StepStatus.RUNNING}:
-                self.transition_step(step.step_id, StepStatus.CANCELLED)
-        return self.transition(run_id, RunStatus.CANCELLED)
+        active_steps = tuple(
+            step
+            for step in self.list_steps(run_id)
+            if step.status in {StepStatus.QUEUED, StepStatus.RUNNING}
+        )
+        for step in active_steps:
+            if StepStatus.CANCELLED not in self._STEP_TRANSITIONS[step.status]:
+                raise ValueError(
+                    f"invalid step transition: {step.status} -> {StepStatus.CANCELLED}"
+                )
+
+        records: list[tuple[str, str, str, Mapping[str, object]]] = []
+        for step in active_steps:
+            payload: dict[str, object] = {
+                "run_id": step.run_id,
+                "position": step.position,
+                "objective": step.objective,
+            }
+            if step.command is not None:
+                payload["command"] = list(step.command)
+            if step.timeout is not None:
+                payload["timeout"] = step.timeout
+            records.append(("step", step.step_id, StepStatus.CANCELLED, payload))
+
+        run_payload: dict[str, object] = {"objective": current.objective}
+        if current.agent_id is not None:
+            run_payload["agent_id"] = current.agent_id
+        records.append(("run", run_id, RunStatus.CANCELLED, run_payload))
+        stored = self.store.put_many(records)
+        return self._run(stored[-1])
 
     def start_next_step(self, run_id: str) -> RunStep | None:
         """Start the next queued step, preserving single-step execution order."""

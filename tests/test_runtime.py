@@ -169,11 +169,18 @@ def test_cancelling_run_cancels_active_steps_and_preserves_completed_steps(
     coordinator.add_step("run-1", "completed", objective="Already done")
     coordinator.add_step("run-1", "active", objective="In progress")
     coordinator.add_step("run-1", "queued", objective="Not started")
+    coordinator.add_step("run-1", "failed", objective="Already failed")
+    coordinator.add_step("run-1", "cancelled", objective="Already cancelled")
     coordinator.transition_step("completed", StepStatus.RUNNING)
     completed = coordinator.transition_step(
         "completed", StepStatus.SUCCEEDED, output={"artifact": "result.json"}
     )
     coordinator.transition_step("active", StepStatus.RUNNING)
+    coordinator.transition_step("failed", StepStatus.RUNNING)
+    failed = coordinator.transition_step(
+        "failed", StepStatus.FAILED, output={"error": "known"}
+    )
+    cancelled_step = coordinator.transition_step("cancelled", StepStatus.CANCELLED)
     if run_status is RunStatus.RUNNING:
         coordinator.transition("run-1", RunStatus.RUNNING)
 
@@ -184,6 +191,8 @@ def test_cancelling_run_cancels_active_steps_and_preserves_completed_steps(
         completed,
         RunStep("active", "run-1", 2, "In progress", StepStatus.CANCELLED, 3),
         RunStep("queued", "run-1", 3, "Not started", StepStatus.CANCELLED, 2),
+        failed,
+        cancelled_step,
     )
 
 
@@ -198,6 +207,35 @@ def test_cancel_rejects_missing_and_terminal_runs(tmp_path) -> None:
     coordinator.transition("run-1", RunStatus.SUCCEEDED)
     with pytest.raises(ValueError, match="invalid run transition"):
         coordinator.cancel("run-1")
+
+
+def test_cancel_rolls_back_every_record_when_a_batch_write_fails(
+    tmp_path, monkeypatch
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    original_run = coordinator.create("run-1", objective="Build feature")
+    original_first = coordinator.add_step("run-1", "first", objective="First")
+    original_second = coordinator.add_step("run-1", "second", objective="Second")
+    original_write = store._put_on_connection
+    writes = 0
+
+    def fail_after_first_write(connection, kind, key, status, encoded):
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise RuntimeError("injected persistence failure")
+        return original_write(connection, kind, key, status, encoded)
+
+    monkeypatch.setattr(store, "_put_on_connection", fail_after_first_write)
+
+    with pytest.raises(RuntimeError, match="injected persistence failure"):
+        coordinator.cancel("run-1")
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.list_steps("run-1") == (original_first, original_second)
 
 
 def test_start_next_step_dispatches_in_position_order(tmp_path) -> None:

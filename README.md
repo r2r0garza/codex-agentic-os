@@ -83,6 +83,7 @@ Implemented foundation:
 - Backend-neutral sandbox-result recording that completes durable steps and automatically succeeds or fails their runs.
 - Read-only CLI inspection of durable runs and their position-ordered steps.
 - Coordinated durable run cancellation that cancels active steps while preserving completed step history.
+- Atomic run cancellation that rolls back all run and step updates on persistence failure.
 - Operator-facing `run cancel` CLI support with persisted, position-ordered JSON confirmation.
 - Backend-neutral next-step dispatch in durable position order with single-active-step enforcement.
 - Durable optional command arguments and timeouts on ordered run steps.
@@ -92,7 +93,7 @@ Implemented foundation:
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next focused execution-core capability; Plan 0011 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0012 is complete.
 
 ## Development
 

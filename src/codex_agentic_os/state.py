@@ -7,7 +7,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +107,30 @@ class StateStore:
             connection.commit()
         return StateRecord(kind, key, status, json.loads(encoded), revision)
 
+    def put_many(
+        self,
+        records: Sequence[tuple[str, str, str, Mapping[str, object]]],
+    ) -> tuple[StateRecord, ...]:
+        """Insert or replace several documents in one transaction."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        prepared: list[tuple[str, str, str, str]] = []
+        for kind, key, status, payload in records:
+            self._validate_identity(kind, key, status)
+            prepared.append((kind, key, status, self._encode_payload(payload)))
+
+        self.initialize()
+        stored: list[StateRecord] = []
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for kind, key, status, encoded in prepared:
+                stored.append(
+                    self._put_on_connection(connection, kind, key, status, encoded)
+                )
+            connection.commit()
+        return tuple(stored)
+
     def get(self, kind: str, key: str) -> StateRecord | None:
         """Return a stored document, or ``None`` when it is absent."""
 
@@ -156,6 +180,34 @@ class StateStore:
         connection = sqlite3.connect(target, timeout=30, uri=self.read_only)
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+    def _put_on_connection(
+        self,
+        connection: sqlite3.Connection,
+        kind: str,
+        key: str,
+        status: str,
+        encoded: str,
+    ) -> StateRecord:
+        """Write one prepared record on a caller-owned transaction."""
+
+        current = connection.execute(
+            "SELECT revision FROM state_records WHERE kind = ? AND key = ?",
+            (kind, key),
+        ).fetchone()
+        revision = 1 if current is None else int(current[0]) + 1
+        connection.execute(
+            """
+            INSERT INTO state_records (kind, key, status, payload, revision)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(kind, key) DO UPDATE SET
+                status = excluded.status,
+                payload = excluded.payload,
+                revision = excluded.revision
+            """,
+            (kind, key, status, encoded, revision),
+        )
+        return StateRecord(kind, key, status, json.loads(encoded), revision)
 
     @classmethod
     def _validate_identity(
