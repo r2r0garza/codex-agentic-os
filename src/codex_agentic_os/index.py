@@ -564,3 +564,59 @@ def build_incremental_index(
     symbols.extend(new_symbols)
     dependencies.extend(new_dependencies)
     return _write_index(destination, files, selected, symbols, dependencies)
+
+
+def check_index(
+    repository: str | Path,
+    output: str | Path = ".code-index",
+    config: IndexConfig | None = None,
+    parsers: Sequence[LanguageParser] = (PythonParser(),),
+) -> tuple[str, ...]:
+    """Return artifact names that differ from a clean deterministic rebuild.
+
+    The comparison is read-only: the clean index is built outside the repository
+    and the configured output directory is never modified.
+    """
+
+    root = Path(repository).resolve()
+    committed = Path(output)
+    if not committed.is_absolute():
+        committed = root / committed
+    with tempfile.TemporaryDirectory(prefix="codex-agentic-os-index-check-") as temporary:
+        rebuilt = Path(temporary) / "index"
+        build_clean_index(root, rebuilt, config, parsers)
+        return tuple(
+            name
+            for name in INDEX_ARTIFACTS
+            if not (committed / name).is_file()
+            or (committed / name).read_bytes() != (rebuilt / name).read_bytes()
+        )
+
+
+def explain_symbol(
+    repository: str | Path,
+    qualified_name: str,
+    output: str | Path = ".code-index",
+) -> dict[str, object]:
+    """Load one symbol and its directly indexed relationships without rebuilding."""
+
+    root = Path(repository).resolve()
+    destination = Path(output)
+    if not destination.is_absolute():
+        destination = root / destination
+    try:
+        symbols = _jsonl_dicts((destination / "symbols.jsonl").read_bytes())
+        dependencies = _jsonl_dicts((destination / "dependencies.jsonl").read_bytes())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read index artifacts from: {destination}") from error
+
+    matches = [record for record in symbols if record.get("qualified_name") == qualified_name]
+    if not matches:
+        raise ValueError(f"symbol is not indexed: {qualified_name}")
+    if len(matches) > 1:
+        raise ValueError(f"symbol name is ambiguous across indexed languages: {qualified_name}")
+    symbol = matches[0]
+    relationships = [
+        record for record in dependencies if record.get("source_id") == symbol.get("id")
+    ]
+    return {"symbol": symbol, "relationships": relationships}

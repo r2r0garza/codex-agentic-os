@@ -71,7 +71,7 @@ The initial workflow must not depend on provider API keys, network access, or an
 - [x] Implement Python AST extraction for modules, classes, functions, methods, signatures, imports, and line spans.
 - [x] Implement deterministic manifest, JSONL serialization, atomic writes, and clean rebuilds.
 - [x] Implement incremental rebuilds and prove equivalence with clean rebuild output.
-- [ ] Add `index build`, `index check`, and `index explain` CLI commands.
+- [x] Add `index build`, `index check`, and `index explain` CLI commands.
 - [ ] Add repository-managed pre-commit integration and contributor documentation.
 - [ ] Add CI drift verification using a clean rebuild.
 - [ ] Generate and commit the repository's initial `.code-index/` artifacts.
@@ -99,4 +99,4 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Resume Notes
 
-Clean and incremental deterministic index builds are complete in `src/codex_agentic_os/index.py`. `build_incremental_index` reuses records for content-identical tracked files, parses only additions and content changes, removes records for deleted or renamed-away paths, and safely falls back to a clean build for missing, malformed, or incompatible prior artifacts. Tests prove its output is byte-identical to a clean rebuild across additions, edits, renames, and deletions. Next implement only the `index build`, `index check`, and `index explain` CLI task; do not begin pre-commit integration in the same run. The full local suite passes with 24 tests. No provider credentials or network dependencies are needed.
+The repository-index CLI is complete in `src/codex_agentic_os/cli.py`: clean and incremental builds report artifact counts, `index check` compares existing artifacts with a clean temporary rebuild without mutating the repository, and `index explain` prints one exact qualified-name match with its outgoing indexed relationships. Supporting read-only helpers live in `src/codex_agentic_os/index.py`. Next implement only the repository-managed pre-commit integration and contributor documentation task; do not add CI drift verification in the same run. The full local suite passes with 28 tests. No provider credentials or network dependencies are needed.

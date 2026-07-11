@@ -58,12 +58,13 @@ Implemented foundation:
 - Deterministic Python AST extraction for modules, classes, functions, methods, signatures, imports, and source spans.
 - Deterministic clean repository-index builds with versioned manifests, JSONL artifacts, atomic file replacement, and stale-output cleanup.
 - Incremental repository-index builds that reparse only changed tracked files and remain byte-identical to clean builds across additions, edits, renames, and deletions.
+- Repository-index CLI commands for clean or incremental builds, read-only drift checks, and symbol explanations.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Expose deterministic repository indexing through `index build`, `index check`, and `index explain`; see `.plan/0002-deterministic-repository-index.md`.
+1. Add repository-managed pre-commit integration for deterministic repository indexing; see `.plan/0002-deterministic-repository-index.md`.
 2. Docker and Podman sandbox execution adapters.
 3. Persistent state for agent runs, plans, and decisions.
 
@@ -92,3 +93,14 @@ Inspect declared capabilities:
 ```bash
 codex-agentic-os
 ```
+
+Build and inspect the deterministic repository index from a repository root:
+
+```bash
+codex-agentic-os index build
+codex-agentic-os index build --incremental
+codex-agentic-os index check
+codex-agentic-os index explain codex_agentic_os.index.build_clean_index
+```
+
+`index check` performs a clean rebuild in a temporary directory and returns a nonzero exit status if committed artifacts are missing or stale. `index explain` reads the existing index without changing it.
