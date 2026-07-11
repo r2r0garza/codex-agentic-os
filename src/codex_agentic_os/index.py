@@ -863,4 +863,15 @@ def explain_symbol(
     relationships = [
         record for record in dependencies if record.get("source_id") == symbol.get("id")
     ]
-    return {"symbol": symbol, "relationships": relationships}
+    outgoing_calls = [record for record in relationships if record.get("kind") == "call"]
+    incoming_calls = [
+        record
+        for record in dependencies
+        if record.get("kind") == "call" and record.get("target_id") == symbol.get("id")
+    ]
+    return {
+        "symbol": symbol,
+        "relationships": relationships,
+        "outgoing_calls": outgoing_calls,
+        "incoming_calls": incoming_calls,
+    }

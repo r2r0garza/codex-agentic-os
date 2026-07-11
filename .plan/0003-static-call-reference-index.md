@@ -16,7 +16,7 @@ Index syntactic calls originating inside indexed functions and methods. Resolve 
 - [x] Resolve unique same-module, lexical `self`/`cls`, and repository import-alias targets with explicit evidence labels.
 - [x] Preserve unresolved dynamic call evidence without indexing builtins or third-party receiver methods as repository targets.
 - [x] Prove clean and incremental byte equivalence for call additions, edits, renames, and deletions.
-- [ ] Surface incoming and outgoing call relationships through `index explain` and document the evidence limitations.
+- [x] Surface incoming and outgoing call relationships through `index explain` and document the evidence limitations.
 - [ ] Regenerate committed artifacts and verify CI drift enforcement.
 
 ## Verification
@@ -29,4 +29,4 @@ Index syntactic calls originating inside indexed functions and methods. Resolve 
 
 ## Resume Notes
 
-Clean and incremental builds are now tested for byte equivalence across call-site additions and edits, imported target-module renames, and target deletions. The deletion case also confirms that a call through an import whose repository module disappeared is consistently filtered as explicit non-repository evidence. Next, surface incoming and outgoing calls through `index explain` and document the evidence limitations.
+`index explain` now returns all source-owned `relationships` plus dedicated `outgoing_calls` and `incoming_calls`. Outgoing calls retain unresolved syntactic evidence; incoming calls require a resolved `target_id`, so the command does not reverse unresolved or dynamic calls into guessed callers. README documentation records these limits. Next, regenerate the committed artifacts and verify CI drift enforcement as the final focused Plan 0003 task.

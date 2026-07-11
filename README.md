@@ -68,12 +68,13 @@ Implemented foundation:
 - Added conservative resolution for unique same-module, lexical `self`/`cls`, and explicit repository import-alias calls.
 - Preserved useful unresolved dynamic calls while filtering direct builtins and explicit non-repository import calls.
 - Proved byte-identical clean and incremental index output across call additions, edits, target renames, and deletions.
+- Surfaced conservative incoming and outgoing static calls through `index explain`.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Continue the conservative static call-reference extension in `.plan/0003-static-call-reference-index.md` by surfacing incoming and outgoing calls through `index explain` and documenting evidence limitations.
+1. Complete the conservative static call-reference extension in `.plan/0003-static-call-reference-index.md` by regenerating committed artifacts and verifying CI drift enforcement.
 2. Docker and Podman sandbox execution adapters.
 3. Persistent state for agent runs, plans, and decisions.
 
@@ -136,6 +137,8 @@ codex-agentic-os index explain codex_agentic_os.index.build_clean_index
 ```
 
 `index check` performs a clean rebuild in a temporary directory and returns a nonzero exit status if committed artifacts are missing or stale. `index explain` reads the existing index without changing it.
+
+The `index explain` payload keeps all source-owned entries in `relationships` and also exposes `outgoing_calls` and `incoming_calls`. Outgoing calls include unresolved syntactic candidates; incoming calls include only resolved edges whose `target_id` proves the indexed target. Dynamic dispatch, injected callables, arbitrary receiver methods, builtins, and external APIs are not inferred as incoming repository calls, so impact analysis must still inspect source when evidence is absent or unresolved.
 
 CI runs the full test suite followed by `index check` for pull requests and pushes to `main`. This clean rebuild is the drift gate for committed `.code-index/` artifacts.
 

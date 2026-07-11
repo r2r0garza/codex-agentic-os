@@ -50,8 +50,38 @@ def test_explain_loads_a_symbol_and_its_outgoing_relationships(tmp_path) -> None
 
     assert explanation["symbol"]["kind"] == "module"
     assert [item["target"] for item in explanation["relationships"]] == ["os"]
+    assert explanation["outgoing_calls"] == []
+    assert explanation["incoming_calls"] == []
     with pytest.raises(ValueError, match="not indexed"):
         explain_symbol(repository, "missing")
+
+
+def test_explain_surfaces_resolved_incoming_and_all_outgoing_calls(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    (repository / "example.py").write_text(
+        "def callee():\n"
+        "    return None\n\n"
+        "def caller(injected):\n"
+        "    callee()\n"
+        "    injected()\n"
+    )
+    _git(repository, "add", ".")
+    build_clean_index(repository)
+
+    caller = explain_symbol(repository, "example.caller")
+    callee = explain_symbol(repository, "example.callee")
+
+    assert [(call["target"], call["evidence"]) for call in caller["outgoing_calls"]] == [
+        ("callee", "resolved"),
+        ("injected", "unresolved"),
+    ]
+    assert caller["incoming_calls"] == []
+    assert [(call["target"], call["evidence"]) for call in callee["incoming_calls"]] == [
+        ("callee", "resolved")
+    ]
+    assert callee["outgoing_calls"] == []
 
 
 def test_cli_build_check_and_explain(tmp_path, monkeypatch, capsys) -> None:
@@ -66,6 +96,8 @@ def test_cli_build_check_and_explain(tmp_path, monkeypatch, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["symbol"]["signature"] == "(name: str) -> str"
     assert payload["relationships"] == []
+    assert payload["outgoing_calls"] == []
+    assert payload["incoming_calls"] == []
 
 
 def test_cli_check_fails_for_a_missing_index(tmp_path, monkeypatch, capsys) -> None:
