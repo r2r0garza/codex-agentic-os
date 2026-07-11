@@ -270,6 +270,61 @@ class Service:
     assert all(call.target_id is None for call in calls)
 
 
+def test_clean_build_resolves_only_proven_repository_call_targets(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    package = repository / "src" / "package"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "helpers.py").write_text(
+        "def imported():\n    return True\n\ndef other():\n    return True\n"
+    )
+    (package / "calls.py").write_text(
+        "from .helpers import imported as alias\n"
+        "import package.helpers\n\n"
+        "def local():\n    return True\n\n"
+        "def caller(injected):\n"
+        "    local()\n"
+        "    alias()\n"
+        "    package.helpers.other()\n"
+        "    injected()\n\n"
+        "class Service:\n"
+        "    def run(self):\n        self.finish()\n        self.missing()\n\n"
+        "    def finish(self):\n        return True\n"
+    )
+    _git(repository, "add", ".")
+
+    build_clean_index(repository)
+    symbol_records = [
+        json.loads(line)
+        for line in (repository / ".code-index" / "symbols.jsonl").read_text().splitlines()
+    ]
+    dependency_records = [
+        json.loads(line)
+        for line in (repository / ".code-index" / "dependencies.jsonl").read_text().splitlines()
+    ]
+    symbols = {
+        record["qualified_name"]: record
+        for record in symbol_records
+    }
+    calls = {
+        (record["source_id"], record["target"]): record
+        for record in dependency_records
+        if record["kind"] == "call"
+    }
+    caller_id = symbols["package.calls.caller"]["id"]
+    run_id = symbols["package.calls.Service.run"]["id"]
+
+    assert calls[(caller_id, "local")]["target_id"] == symbols["package.calls.local"]["id"]
+    assert calls[(caller_id, "alias")]["target_id"] == symbols["package.helpers.imported"]["id"]
+    assert calls[(caller_id, "package.helpers.other")]["target_id"] == symbols["package.helpers.other"]["id"]
+    assert calls[(run_id, "self.finish")]["target_id"] == symbols["package.calls.Service.finish"]["id"]
+    assert calls[(caller_id, "injected")]["evidence"] == "unresolved"
+    assert "target_id" not in calls[(caller_id, "injected")]
+    assert calls[(run_id, "self.missing")]["evidence"] == "unresolved"
+
+
 def test_clean_build_writes_deterministic_manifest_and_jsonl(tmp_path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()

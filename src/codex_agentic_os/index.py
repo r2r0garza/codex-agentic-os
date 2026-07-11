@@ -275,11 +275,25 @@ class PythonParser:
         self, path: str, node: ast.Import | ast.ImportFrom, source_id: str
     ) -> list[DependencyRecord]:
         if isinstance(node, ast.Import):
-            targets = [alias.name for alias in node.names]
+            imports = [
+                (
+                    alias.name,
+                    alias.asname or alias.name.split(".", 1)[0],
+                    alias.name if alias.asname else alias.name.split(".", 1)[0],
+                )
+                for alias in node.names
+            ]
         else:
             prefix = "." * node.level + (node.module or "")
             separator = "" if not prefix or prefix.endswith(".") else "."
-            targets = [f"{prefix}{separator}{alias.name}" for alias in node.names]
+            imports = [
+                (
+                    f"{prefix}{separator}{alias.name}",
+                    alias.asname or alias.name,
+                    f"{prefix}{separator}{alias.name}",
+                )
+                for alias in node.names
+            ]
         return [
             DependencyRecord(
                 self.language,
@@ -288,8 +302,14 @@ class PythonParser:
                 target,
                 Evidence.DECLARED,
                 self._span(path, node),
+                extensions={
+                    "python": {
+                        "bound_name": bound_name,
+                        "resolved_base": resolved_base,
+                    }
+                },
             )
-            for target in targets
+            for target, bound_name, resolved_base in imports
         ]
 
     def _calls(
@@ -549,6 +569,102 @@ def _encode_jsonl_dicts(records: Sequence[Mapping[str, object]]) -> bytes:
     return b"".join(deterministic_json(record) for record in sorted(records, key=deterministic_json))
 
 
+def _resolve_python_calls(
+    symbols: Sequence[Mapping[str, object]],
+    dependencies: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Resolve only call targets proven by repository declarations and import syntax."""
+
+    symbol_by_id = {str(record["id"]): record for record in symbols}
+    symbols_by_name: dict[str, list[Mapping[str, object]]] = {}
+    modules_by_path: dict[str, str] = {}
+    for record in symbols:
+        symbols_by_name.setdefault(str(record["qualified_name"]), []).append(record)
+        if record["kind"] == SymbolKind.MODULE.value:
+            modules_by_path[str(record["span"]["path"])] = str(record["qualified_name"])
+
+    imports_by_path: dict[str, list[Mapping[str, object]]] = {}
+    for record in dependencies:
+        if record["language"] == "python" and record["kind"] == DependencyKind.IMPORT.value:
+            imports_by_path.setdefault(str(record["span"]["path"]), []).append(record)
+
+    def unique(name: str) -> Mapping[str, object] | None:
+        matches = symbols_by_name.get(name, ())
+        return matches[0] if len(matches) == 1 else None
+
+    def absolute_import(current_module: str, target: str) -> str:
+        level = len(target) - len(target.lstrip("."))
+        if not level:
+            return target
+        package = current_module.rsplit(".", 1)[0] if "." in current_module else ""
+        parts = package.split(".") if package else []
+        base = parts[: max(0, len(parts) - level + 1)]
+        remainder = target[level:]
+        return ".".join([*base, remainder] if remainder else base)
+
+    resolved: list[dict[str, object]] = []
+    for original in dependencies:
+        record = dict(original)
+        if record["language"] != "python" or record["kind"] != DependencyKind.CALL.value:
+            resolved.append(record)
+            continue
+        source = symbol_by_id.get(str(record["source_id"]))
+        path = str(record["span"]["path"])
+        module = modules_by_path.get(path)
+        target = str(record["target"])
+        match: Mapping[str, object] | None = None
+        if source is not None and module is not None:
+            if "." not in target:
+                candidate = unique(f"{module}.{target}")
+                if candidate is not None and candidate["kind"] in {
+                    SymbolKind.CLASS.value,
+                    SymbolKind.FUNCTION.value,
+                }:
+                    match = candidate
+            elif target.startswith(("self.", "cls.")) and target.count(".") == 1:
+                source_name = str(source["qualified_name"])
+                relative = source_name[len(module) + 1 :].split(".")
+                if len(relative) >= 2:
+                    candidate = unique(f"{module}.{relative[0]}.{target.split('.')[1]}")
+                    if candidate is not None and candidate["kind"] == SymbolKind.METHOD.value:
+                        match = candidate
+
+            if match is None:
+                for imported in imports_by_path.get(path, ()):
+                    extensions = imported.get("extensions", {})
+                    python_details = extensions.get("python", {}) if isinstance(extensions, dict) else {}
+                    bound = python_details.get("bound_name") if isinstance(python_details, dict) else None
+                    resolved_base = (
+                        python_details.get("resolved_base")
+                        if isinstance(python_details, dict)
+                        else None
+                    )
+                    if not isinstance(bound, str) or not (
+                        target == bound or target.startswith(f"{bound}.")
+                    ):
+                        continue
+                    import_source = str(imported["source_id"])
+                    source_module_id = stable_id("python", SymbolKind.MODULE.value, module)
+                    if import_source not in {str(record["source_id"]), source_module_id}:
+                        continue
+                    if not isinstance(resolved_base, str):
+                        continue
+                    imported_target = absolute_import(module, resolved_base)
+                    suffix = target[len(bound) :]
+                    candidate = unique(f"{imported_target}{suffix}")
+                    if candidate is not None:
+                        match = candidate
+                        break
+        if match is not None:
+            record["evidence"] = Evidence.RESOLVED.value
+            record["target_id"] = match["id"]
+        else:
+            record["evidence"] = Evidence.UNRESOLVED.value
+            record.pop("target_id", None)
+        resolved.append(record)
+    return resolved
+
+
 def _write_index(
     destination: Path,
     files: Sequence[TrackedFile],
@@ -556,6 +672,7 @@ def _write_index(
     symbols: Sequence[Mapping[str, object]],
     dependencies: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
+    dependencies = _resolve_python_calls(symbols, dependencies)
     manifest: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "generator_version": GENERATOR_VERSION,
