@@ -88,10 +88,11 @@ Implemented foundation:
 - Durable optional command arguments and timeouts on ordered run steps.
 - Injected sandbox execution of the next durable command step with persisted results.
 - Explicit durable recovery for interrupted or timed-out running steps.
+- Operator-facing `run recover` CLI support with typed reasons and optional detail.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next focused execution-core capability; Plan 0010 is complete.
+Planned next: choose the next focused execution-core capability; Plan 0011 is complete.
 
 ## Development
 
@@ -209,6 +210,18 @@ step, run = runs.recover_running_step(
 
 Recovery fails both the step and run with durable reason metadata. It does not retry the
 command because its prior side effects may be unknown.
+
+Recover an uncertain running command from the CLI and print the resulting run with its
+ordered steps. Reasons are `interrupted` or `timed_out`; operator detail is optional:
+
+```bash
+codex-agentic-os run recover step-001 timed_out
+codex-agentic-os run recover step-001 interrupted \
+  --detail "worker exited before recording a sandbox result"
+```
+
+Recovery requires an existing database and a running step. It never retries the
+command.
 
 Command arguments and timeouts are stored with the step and survive process restarts.
 Steps may omit a command when they represent coordination-only work.

@@ -16,7 +16,7 @@ from .index import (
     unstaged_index_paths,
 )
 from .providers import DEFAULT_PROVIDER_SPECS
-from .runtime import RunCoordinator, RuntimeSpec
+from .runtime import RunCoordinator, RuntimeSpec, StepRecoveryReason
 from .sandboxes import default_sandboxes
 from .state import StateStore
 
@@ -48,14 +48,22 @@ def _parser() -> argparse.ArgumentParser:
     run_commands = run.add_subparsers(dest="run_command", required=True)
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
     cancel = run_commands.add_parser("cancel", help="cancel a run and its active steps")
-    for command in (inspect, cancel):
-        command.add_argument("run_id")
+    recover = run_commands.add_parser(
+        "recover", help="fail an interrupted or timed-out running step"
+    )
+    for command in (inspect, cancel, recover):
+        identifier = "step_id" if command is recover else "run_id"
+        command.add_argument(identifier)
         command.add_argument(
             "--state-db",
             type=Path,
             default=Path(".codex-agentic-os/state.sqlite3"),
             help="path to the runtime state database",
         )
+    recover.add_argument(
+        "reason", choices=[reason.value for reason in StepRecoveryReason]
+    )
+    recover.add_argument("--detail", help="operator context for the recovery")
     return parser
 
 
@@ -95,7 +103,20 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
             if arguments.run_command == "cancel":
                 coordinator.cancel(arguments.run_id)
-            print(json.dumps(_run_payload(coordinator, arguments.run_id), indent=2, sort_keys=True))
+                run_id = arguments.run_id
+            elif arguments.run_command == "recover":
+                step = coordinator.get_step(arguments.step_id)
+                if step is None:
+                    raise ValueError(f"step does not exist: {arguments.step_id}")
+                coordinator.recover_running_step(
+                    arguments.step_id,
+                    StepRecoveryReason(arguments.reason),
+                    detail=arguments.detail,
+                )
+                run_id = step.run_id
+            else:
+                run_id = arguments.run_id
+            print(json.dumps(_run_payload(coordinator, run_id), indent=2, sort_keys=True))
         elif arguments.index_command == "build":
             builder = build_incremental_index if arguments.incremental else build_clean_index
             manifest = builder(repository)

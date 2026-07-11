@@ -105,3 +105,95 @@ def test_cli_cancel_rejects_terminal_run(tmp_path, capsys) -> None:
     assert exit_info.value.code == 2
     assert "invalid run transition" in capsys.readouterr().err
     assert RunCoordinator(StateStore(database)).get("run-1").status is RunStatus.SUCCEEDED
+
+
+@pytest.mark.parametrize("reason", ["interrupted", "timed_out"])
+def test_cli_recovers_running_step(tmp_path, capsys, reason) -> None:
+    database = tmp_path / f"{reason}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+    coordinator.add_step(
+        "run-1", "command", objective="Wait", command=("sleep", "10")
+    )
+    coordinator.start_next_step("run-1")
+
+    main(
+        [
+            "run",
+            "recover",
+            "command",
+            reason,
+            "--detail",
+            "worker exited before recording a result",
+            "--state-db",
+            str(database),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["status"] == "failed"
+    assert payload["run"]["output"] == {
+        "failed_step_id": "command",
+        "recovery_reason": reason,
+    }
+    assert payload["steps"][0]["status"] == "failed"
+    assert payload["steps"][0]["output"] == {
+        "recovery_detail": "worker exited before recording a result",
+        "recovery_reason": reason,
+    }
+
+
+def test_cli_recovery_rejections_do_not_mutate_state(tmp_path, capsys) -> None:
+    missing_database = tmp_path / "missing.sqlite3"
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run",
+                "recover",
+                "command",
+                "interrupted",
+                "--state-db",
+                str(missing_database),
+            ]
+        )
+    assert exit_info.value.code == 2
+    assert not missing_database.exists()
+    capsys.readouterr()
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    queued_run = coordinator.create("run-1", objective="Execute durable work")
+    queued_step = coordinator.add_step(
+        "run-1", "command", objective="Wait", command=("sleep", "10")
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run",
+                "recover",
+                "missing",
+                "interrupted",
+                "--state-db",
+                str(database),
+            ]
+        )
+    assert exit_info.value.code == 2
+    assert "step does not exist" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run",
+                "recover",
+                "command",
+                "timed_out",
+                "--state-db",
+                str(database),
+            ]
+        )
+    assert exit_info.value.code == 2
+    assert "run must be running" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == queued_run
+    assert reloaded.get_step("command") == queued_step
