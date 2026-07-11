@@ -208,12 +208,15 @@ def _helper(*items: int, flag: bool = False) -> None:
     }
     assert by_name["package.module.Public.build.normalize"].kind is SymbolKind.FUNCTION
     assert by_name["package.module._helper"].visibility == "private"
-    assert sorted((dependency.target, dependency.evidence) for dependency in result.dependencies) == [
+    imports = [
+        dependency for dependency in result.dependencies if dependency.kind is DependencyKind.IMPORT
+    ]
+    assert sorted((dependency.target, dependency.evidence) for dependency in imports) == [
         (".helpers.tool", Evidence.DECLARED),
         ("json", Evidence.DECLARED),
         ("os", Evidence.DECLARED),
     ]
-    assert next(dependency for dependency in result.dependencies if dependency.target == "json").source_id == (
+    assert next(dependency for dependency in imports if dependency.target == "json").source_id == (
         by_name["package.module.Public.build"].id
     )
 
@@ -229,6 +232,42 @@ def test_python_parser_handles_packages_empty_files_and_parse_errors() -> None:
     assert result.symbols[0].span == SourceSpan("src/package/__init__.py", 1, 1)
     with pytest.raises(ValueError, match="cannot parse Python source"):
         parser.parse("broken.py", b"def nope(:\n")
+
+
+def test_python_parser_extracts_call_candidates_with_enclosing_symbols() -> None:
+    source = b'''\
+def outer(factory):
+    first = factory()
+    items = [transform(item) for item in first]
+    def nested():
+        return helper(first)
+    return nested()
+
+class Service:
+    async def run(self):
+        return await self.fetch(
+            build_request()
+        )
+'''
+    result = PythonParser().parse("src/package/calls.py", source)
+    symbols = {symbol.qualified_name: symbol for symbol in result.symbols}
+    calls = [dependency for dependency in result.dependencies if dependency.kind is DependencyKind.CALL]
+
+    assert [
+        (call.source_id, call.target, call.evidence, call.span)
+        for call in calls
+    ] == sorted(
+        [
+            (symbols["package.calls.outer"].id, "factory", Evidence.UNRESOLVED, SourceSpan("src/package/calls.py", 2, 2)),
+            (symbols["package.calls.outer"].id, "transform", Evidence.UNRESOLVED, SourceSpan("src/package/calls.py", 3, 3)),
+            (symbols["package.calls.outer"].id, "nested", Evidence.UNRESOLVED, SourceSpan("src/package/calls.py", 6, 6)),
+            (symbols["package.calls.outer.nested"].id, "helper", Evidence.UNRESOLVED, SourceSpan("src/package/calls.py", 5, 5)),
+            (symbols["package.calls.Service.run"].id, "self.fetch", Evidence.UNRESOLVED, SourceSpan("src/package/calls.py", 10, 12)),
+            (symbols["package.calls.Service.run"].id, "build_request", Evidence.UNRESOLVED, SourceSpan("src/package/calls.py", 11, 11)),
+        ],
+        key=lambda item: deterministic_json(DependencyRecord("python", DependencyKind.CALL, item[0], item[1], item[2], item[3]).to_dict()),
+    )
+    assert all(call.target_id is None for call in calls)
 
 
 def test_clean_build_writes_deterministic_manifest_and_jsonl(tmp_path) -> None:

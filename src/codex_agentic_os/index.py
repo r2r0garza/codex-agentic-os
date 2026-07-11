@@ -154,7 +154,7 @@ class LanguageParser(Protocol):
 
 
 class PythonParser:
-    """Extract normalized symbols and declared imports from Python source."""
+    """Extract normalized symbols, imports, and call candidates from Python source."""
 
     language = "python"
     api_version = PARSER_API_VERSION
@@ -204,6 +204,8 @@ class PythonParser:
                         extensions={"python": self._extensions(node)},
                     )
                     symbols.append(record)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        dependencies.extend(self._calls(path, node.body, record.id))
                     visit_body(node.body, record, isinstance(node, ast.ClassDef))
                 else:
                     for child_body in self._statement_bodies(node):
@@ -288,6 +290,41 @@ class PythonParser:
                 self._span(path, node),
             )
             for target in targets
+        ]
+
+    def _calls(
+        self, path: str, body: list[ast.stmt], source_id: str
+    ) -> list[DependencyRecord]:
+        class CallVisitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.calls: list[ast.Call] = []
+
+            def visit_Call(self, node: ast.Call) -> None:
+                self.calls.append(node)
+                self.generic_visit(node)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                return
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                return
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                return
+
+        visitor = CallVisitor()
+        for statement in body:
+            visitor.visit(statement)
+        return [
+            DependencyRecord(
+                self.language,
+                DependencyKind.CALL,
+                source_id,
+                ast.unparse(call.func),
+                Evidence.UNRESOLVED,
+                self._span(path, call),
+            )
+            for call in visitor.calls
         ]
 
 

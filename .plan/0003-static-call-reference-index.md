@@ -12,7 +12,7 @@ Index syntactic calls originating inside indexed functions and methods. Resolve 
 ## Tasks
 
 - [x] Define the versioned call relationship contract, stable source identity, and schema/parser compatibility bumps.
-- [ ] Extract deterministic call candidates with enclosing-symbol context from Python ASTs.
+- [x] Extract deterministic call candidates with enclosing-symbol context from Python ASTs.
 - [ ] Resolve unique same-module, lexical `self`/`cls`, and repository import-alias targets with explicit evidence labels.
 - [ ] Preserve unresolved dynamic call evidence without indexing builtins or third-party receiver methods as repository targets.
 - [ ] Prove clean and incremental byte equivalence for call additions, edits, renames, and deletions.
@@ -29,4 +29,4 @@ Index syntactic calls originating inside indexed functions and methods. Resolve 
 
 ## Resume Notes
 
-The versioned contract now defines `call` dependencies, identifies `source_id` as the stable ID of the lexically enclosing symbol, and separates normalized syntactic `target` text from the optional stable `target_id` used only by resolved calls. Schema, parser API, and generator compatibility are at 1.1.0. Next, extract deterministic call candidates with enclosing-symbol context; do not resolve them in the same task.
+The Python parser now emits deterministic unresolved `call` candidates for calls inside indexed function and method bodies. Each candidate uses its lexically enclosing indexed symbol as `source_id`, normalized `ast.unparse` callee text as `target`, and the full call expression span; nested definitions own their calls independently. Resolution and filtering are intentionally unchanged. Next, resolve only unique same-module, lexical `self`/`cls`, and repository import-alias targets with explicit evidence labels.
