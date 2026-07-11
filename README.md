@@ -69,14 +69,14 @@ Implemented foundation:
 - Preserved useful unresolved dynamic calls while filtering direct builtins and explicit non-repository import calls.
 - Proved byte-identical clean and incremental index output across call additions, edits, target renames, and deletions.
 - Surfaced conservative incoming and outgoing static calls through `index explain`.
+- Regenerated and committed the call-aware repository index, with CI clean-rebuild drift enforcement verified.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Complete the conservative static call-reference extension in `.plan/0003-static-call-reference-index.md` by regenerating committed artifacts and verifying CI drift enforcement.
-2. Docker and Podman sandbox execution adapters.
-3. Persistent state for agent runs, plans, and decisions.
+1. Docker and Podman sandbox execution adapters.
+2. Persistent state for agent runs, plans, and decisions.
 
 ## Development
 

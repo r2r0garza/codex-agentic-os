@@ -1,7 +1,7 @@
 # Plan 0003: Conservative Static Call Reference Index
 
 ## Status
-Active
+Complete
 
 ## Goal
 Extend the deterministic repository index with useful Python call relationships while preserving explicit evidence boundaries for dynamic behavior.
@@ -17,7 +17,7 @@ Index syntactic calls originating inside indexed functions and methods. Resolve 
 - [x] Preserve unresolved dynamic call evidence without indexing builtins or third-party receiver methods as repository targets.
 - [x] Prove clean and incremental byte equivalence for call additions, edits, renames, and deletions.
 - [x] Surface incoming and outgoing call relationships through `index explain` and document the evidence limitations.
-- [ ] Regenerate committed artifacts and verify CI drift enforcement.
+- [x] Regenerate committed artifacts and verify CI drift enforcement.
 
 ## Verification
 
@@ -29,4 +29,4 @@ Index syntactic calls originating inside indexed functions and methods. Resolve 
 
 ## Resume Notes
 
-`index explain` now returns all source-owned `relationships` plus dedicated `outgoing_calls` and `incoming_calls`. Outgoing calls retain unresolved syntactic evidence; incoming calls require a resolved `target_id`, so the command does not reverse unresolved or dynamic calls into guessed callers. README documentation records these limits. Next, regenerate the committed artifacts and verify CI drift enforcement as the final focused Plan 0003 task.
+The conservative static call-reference extension is complete. The committed `.code-index/` artifacts now contain 147 symbols and 613 relationships, `index check` accepts the regenerated output, and the full 36-test suite covers the CI drift gate, including stale or missing artifacts. Resume from Plan 0001 with sandbox command execution for Docker and Podman as the next unchecked task; keep that implementation focused and preserve the provider-neutral boundaries.
