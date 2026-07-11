@@ -44,16 +44,18 @@ def _parser() -> argparse.ArgumentParser:
     explain = index_commands.add_parser("explain", help="describe one indexed symbol")
     explain.add_argument("qualified_name")
 
-    run = commands.add_parser("run", help="inspect durable runs")
+    run = commands.add_parser("run", help="inspect and control durable runs")
     run_commands = run.add_subparsers(dest="run_command", required=True)
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
-    inspect.add_argument("run_id")
-    inspect.add_argument(
-        "--state-db",
-        type=Path,
-        default=Path(".codex-agentic-os/state.sqlite3"),
-        help="path to the runtime state database",
-    )
+    cancel = run_commands.add_parser("cancel", help="cancel a run and its active steps")
+    for command in (inspect, cancel):
+        command.add_argument("run_id")
+        command.add_argument(
+            "--state-db",
+            type=Path,
+            default=Path(".codex-agentic-os/state.sqlite3"),
+            help="path to the runtime state database",
+        )
     return parser
 
 
@@ -85,7 +87,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     repository = Path.cwd()
     try:
         if arguments.command == "run":
-            coordinator = RunCoordinator(StateStore(arguments.state_db, read_only=True))
+            if not arguments.state_db.is_file():
+                raise ValueError(f"state database does not exist: {arguments.state_db}")
+            read_only = arguments.run_command == "inspect"
+            coordinator = RunCoordinator(
+                StateStore(arguments.state_db, read_only=read_only)
+            )
+            if arguments.run_command == "cancel":
+                coordinator.cancel(arguments.run_id)
             print(json.dumps(_run_payload(coordinator, arguments.run_id), indent=2, sort_keys=True))
         elif arguments.index_command == "build":
             builder = build_incremental_index if arguments.incremental else build_clean_index

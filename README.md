@@ -83,10 +83,11 @@ Implemented foundation:
 - Backend-neutral sandbox-result recording that completes durable steps and automatically succeeds or fails their runs.
 - Read-only CLI inspection of durable runs and their position-ordered steps.
 - Coordinated durable run cancellation that cancels active steps while preserving completed step history.
+- Operator-facing `run cancel` CLI support with persisted, position-ordered JSON confirmation.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: define a new focused plan for the next execution-core capability; Plan 0005 is complete.
+Planned next: define a new focused plan for the next execution-core capability; Plan 0006 is complete.
 
 ## Development
 
@@ -187,6 +188,17 @@ codex-agentic-os run inspect run-002 --state-db /path/to/state.sqlite3
 
 The default database is `.codex-agentic-os/state.sqlite3`. Inspection prints JSON and
 fails without creating a database when the configured path does not exist.
+
+Cancel a queued or running run from the CLI. The command preserves completed steps,
+cancels queued or running steps, and prints the resulting durable state as JSON:
+
+```bash
+codex-agentic-os run cancel run-002
+codex-agentic-os run cancel run-002 --state-db /path/to/state.sqlite3
+```
+
+Cancellation requires an existing database and rejects terminal runs without changing
+their state.
 
 Inspect declared capabilities:
 

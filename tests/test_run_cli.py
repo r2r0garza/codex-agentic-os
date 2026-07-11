@@ -54,3 +54,54 @@ def test_cli_reports_a_missing_run(tmp_path, capsys) -> None:
 
     assert exit_info.value.code == 2
     assert "run does not exist: missing" in capsys.readouterr().err
+
+
+def test_cli_cancels_run_and_active_steps(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Cancel durable work")
+    coordinator.add_step("run-1", "completed", objective="Already complete")
+    coordinator.add_step("run-1", "active", objective="Still running")
+    coordinator.transition_step("completed", StepStatus.RUNNING)
+    coordinator.transition_step(
+        "completed", StepStatus.SUCCEEDED, output={"artifact": "result.json"}
+    )
+    coordinator.transition_step("active", StepStatus.RUNNING)
+    coordinator.transition("run-1", RunStatus.RUNNING)
+
+    main(["run", "cancel", "run-1", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["status"] == "cancelled"
+    assert [step["status"] for step in payload["steps"]] == [
+        "succeeded",
+        "cancelled",
+    ]
+    assert payload["steps"][0]["output"] == {"artifact": "result.json"}
+    assert RunCoordinator(StateStore(database)).get("run-1").status is RunStatus.CANCELLED
+
+
+def test_cli_cancel_rejects_missing_database_without_creating_it(tmp_path, capsys) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "cancel", "run-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not database.exists()
+
+
+def test_cli_cancel_rejects_terminal_run(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Finished work")
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    coordinator.transition("run-1", RunStatus.SUCCEEDED)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "cancel", "run-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "invalid run transition" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1").status is RunStatus.SUCCEEDED
