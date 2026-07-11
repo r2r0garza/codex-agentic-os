@@ -16,4 +16,4 @@ Create the first durable shape of codex-agentic-os: a provider-neutral agentic O
 - [ ] Add persistence for plans, decisions, runs, and agent state.
 
 ## Resume Notes
-Native Anthropic Messages API support is complete, including system-message normalization, prompt caching, authentication headers, and injected-transport tests. Next run should choose one unchecked task above, preferably the native Google adapter. The full local pytest suite passes.
+Native Anthropic Messages API support is complete, including system-message normalization, prompt caching, authentication headers, and injected-transport tests. Next run should choose one unchecked task above, preferably the native Google adapter. The full local pytest suite passes. Follow the README credential policy: create `.env.example` only when configuration is needed, keep `.env` untracked, and explicitly tell the user what to populate and which live checks could not run without keys.
