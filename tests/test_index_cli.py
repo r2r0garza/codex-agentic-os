@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +11,9 @@ from codex_agentic_os.index import (
     explain_symbol,
     unstaged_index_paths,
 )
+
+
+REPOSITORY_ROOT = Path(__file__).parents[1]
 
 
 def _git(repository, *arguments: str) -> None:
@@ -73,6 +77,16 @@ def test_cli_check_fails_for_a_missing_index(tmp_path, monkeypatch, capsys) -> N
 
     assert exit_info.value.code == 1
     assert "Index is stale" in capsys.readouterr().err
+
+
+def test_ci_runs_clean_index_drift_check() -> None:
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+    assert "pull_request:" in workflow
+    assert "push:" in workflow
+    assert "run: pytest" in workflow
+    assert "run: codex-agentic-os index check" in workflow
+    assert workflow.index("run: pytest") < workflow.index("run: codex-agentic-os index check")
 
 
 def test_pre_commit_refresh_requires_generated_changes_to_be_staged(

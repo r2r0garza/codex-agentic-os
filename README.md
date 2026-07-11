@@ -60,12 +60,13 @@ Implemented foundation:
 - Incremental repository-index builds that reparse only changed tracked files and remain byte-identical to clean builds across additions, edits, renames, and deletions.
 - Repository-index CLI commands for clean or incremental builds, read-only drift checks, and symbol explanations.
 - Optional repository-managed pre-commit refresh that rejects unstaged generated index changes.
+- Pull request and `main` branch CI that runs tests and rejects repository-index drift using a clean rebuild.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Add CI clean-rebuild drift verification for deterministic repository indexing; see `.plan/0002-deterministic-repository-index.md`.
+1. Generate and commit the initial deterministic `.code-index/` artifacts; see `.plan/0002-deterministic-repository-index.md`.
 2. Docker and Podman sandbox execution adapters.
 3. Persistent state for agent runs, plans, and decisions.
 
@@ -105,6 +106,8 @@ codex-agentic-os index explain codex_agentic_os.index.build_clean_index
 ```
 
 `index check` performs a clean rebuild in a temporary directory and returns a nonzero exit status if committed artifacts are missing or stale. `index explain` reads the existing index without changing it.
+
+CI runs the full test suite followed by `index check` for pull requests and pushes to `main`. This clean rebuild is the drift gate for committed `.code-index/` artifacts.
 
 ### Pre-commit index refresh
 

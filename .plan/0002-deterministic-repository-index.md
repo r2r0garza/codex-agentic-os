@@ -73,7 +73,7 @@ The initial workflow must not depend on provider API keys, network access, or an
 - [x] Implement incremental rebuilds and prove equivalence with clean rebuild output.
 - [x] Add `index build`, `index check`, and `index explain` CLI commands.
 - [x] Add repository-managed pre-commit integration and contributor documentation.
-- [ ] Add CI drift verification using a clean rebuild.
+- [x] Add CI drift verification using a clean rebuild.
 - [ ] Generate and commit the repository's initial `.code-index/` artifacts.
 - [ ] Evaluate call/reference indexing on real repository patterns and plan a separate extension if static evidence is useful enough.
 
@@ -99,4 +99,4 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Resume Notes
 
-The repository-managed `.pre-commit-config.yaml` now runs `index pre-commit`, which performs an incremental refresh and rejects a commit when generated `.code-index/` files remain unstaged. Contributor setup and the canonical direct-command fallback are documented in the README. Next implement only CI drift verification using a clean rebuild; do not generate and commit the initial `.code-index/` artifacts in the same run. No provider credentials or network dependencies are needed.
+The CI workflow now runs the test suite and then `codex-agentic-os index check` on pushes to `main` and pull requests, with a regression test protecting that clean-rebuild drift gate. The gate will intentionally report the missing index until the next task generates and commits the repository's initial `.code-index/` artifacts. Next implement only that artifact-generation task; do not begin call/reference evaluation in the same run. No provider credentials are needed.
