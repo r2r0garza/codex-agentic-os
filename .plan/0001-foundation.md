@@ -12,6 +12,7 @@ Create the first durable shape of codex-agentic-os: a provider-neutral agentic O
 - [x] Implement a provider-neutral chat contract and OpenAI-compatible completion adapter.
 - [x] Implement a native Anthropic chat adapter.
 - [ ] Implement a native Google chat adapter.
+- [ ] Begin the deterministic repository index described in Plan 0002 while the repository is still small.
 - [ ] Implement sandbox command execution for Docker and Podman.
 - [ ] Add persistence for plans, decisions, runs, and agent state.
 

@@ -58,8 +58,9 @@ Verification note: the full local pytest suite passes.
 Planned next:
 
 1. Native Google chat adapter.
-2. Docker and Podman sandbox execution adapters.
-3. Persistent state for agent runs, plans, and decisions.
+2. Deterministic repository indexing for files, symbols, imports, and dependency evidence; see `.plan/0002-deterministic-repository-index.md`.
+3. Docker and Podman sandbox execution adapters.
+4. Persistent state for agent runs, plans, and decisions.
 
 ## Development
 
