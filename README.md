@@ -57,12 +57,13 @@ Implemented foundation:
 - Git-backed tracked-file discovery with explicit include/exclude rules, size limits, repository-relative paths, and deterministic SHA-256 worktree hashes.
 - Deterministic Python AST extraction for modules, classes, functions, methods, signatures, imports, and source spans.
 - Deterministic clean repository-index builds with versioned manifests, JSONL artifacts, atomic file replacement, and stale-output cleanup.
+- Incremental repository-index builds that reparse only changed tracked files and remain byte-identical to clean builds across additions, edits, renames, and deletions.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Continue deterministic repository indexing with incremental rebuilds equivalent to clean output; see `.plan/0002-deterministic-repository-index.md`.
+1. Expose deterministic repository indexing through `index build`, `index check`, and `index explain`; see `.plan/0002-deterministic-repository-index.md`.
 2. Docker and Podman sandbox execution adapters.
 3. Persistent state for agent runs, plans, and decisions.
 

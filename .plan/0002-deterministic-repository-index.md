@@ -70,7 +70,7 @@ The initial workflow must not depend on provider API keys, network access, or an
 - [x] Implement tracked-file discovery and content hashing with explicit exclusions and repository-relative paths.
 - [x] Implement Python AST extraction for modules, classes, functions, methods, signatures, imports, and line spans.
 - [x] Implement deterministic manifest, JSONL serialization, atomic writes, and clean rebuilds.
-- [ ] Implement incremental rebuilds and prove equivalence with clean rebuild output.
+- [x] Implement incremental rebuilds and prove equivalence with clean rebuild output.
 - [ ] Add `index build`, `index check`, and `index explain` CLI commands.
 - [ ] Add repository-managed pre-commit integration and contributor documentation.
 - [ ] Add CI drift verification using a clean rebuild.
@@ -99,4 +99,4 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Resume Notes
 
-Clean deterministic index builds are complete in `src/codex_agentic_os/index.py`. `build_clean_index` discovers the tracked worktree, invokes version-compatible parsers, emits the four planned artifacts, records separate schema/generator/parser versions plus configuration and content fingerprints, atomically replaces files, and removes stale output. Repeated clean builds are byte-identical in tests. Next implement only incremental rebuilds and prove byte equivalence with clean output across changed and deleted inputs; do not begin CLI commands in the same run. The full local suite passes with 22 tests. No provider credentials or network dependencies are needed.
+Clean and incremental deterministic index builds are complete in `src/codex_agentic_os/index.py`. `build_incremental_index` reuses records for content-identical tracked files, parses only additions and content changes, removes records for deleted or renamed-away paths, and safely falls back to a clean build for missing, malformed, or incompatible prior artifacts. Tests prove its output is byte-identical to a clean rebuild across additions, edits, renames, and deletions. Next implement only the `index build`, `index check`, and `index explain` CLI task; do not begin pre-commit integration in the same run. The full local suite passes with 24 tests. No provider credentials or network dependencies are needed.

@@ -11,6 +11,7 @@ from codex_agentic_os.index import (
     SymbolKind,
     SymbolRecord,
     build_clean_index,
+    build_incremental_index,
     discover_tracked_files,
     deterministic_json,
     deterministic_jsonl,
@@ -230,3 +231,69 @@ def test_clean_build_removes_stale_output_and_rejects_parser_version_mismatch(tm
 
     with pytest.raises(ValueError, match="parser API version mismatch"):
         build_clean_index(repository, parsers=(OldParser(),))
+
+
+def test_incremental_build_parses_only_changes_and_matches_clean_output(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    (repository / "keep.py").write_text("def keep():\n    return 1\n")
+    (repository / "edit.py").write_text("def before():\n    return 1\n")
+    (repository / "delete.py").write_text("DELETED = True\n")
+    (repository / "rename.py").write_text("def renamed():\n    return True\n")
+    _git(repository, "add", ".")
+    build_clean_index(repository)
+
+    (repository / "edit.py").write_text("def after():\n    return 2\n")
+    (repository / "add.py").write_text("import os\n")
+    (repository / "delete.py").unlink()
+    (repository / "rename.py").rename(repository / "moved.py")
+    _git(repository, "add", "--all")
+
+    class RecordingParser(PythonParser):
+        def __init__(self) -> None:
+            self.paths: list[str] = []
+
+        def parse(self, path: str, source: bytes):
+            self.paths.append(path)
+            return super().parse(path, source)
+
+    parser = RecordingParser()
+    incremental_manifest = build_incremental_index(repository, parsers=(parser,))
+    incremental = {
+        path.name: path.read_bytes() for path in (repository / ".code-index").iterdir()
+    }
+    clean_manifest = build_clean_index(repository)
+    clean = {path.name: path.read_bytes() for path in (repository / ".code-index").iterdir()}
+
+    assert parser.paths == ["add.py", "edit.py", "moved.py"]
+    assert incremental_manifest == clean_manifest
+    assert incremental == clean
+    symbols = [json.loads(line) for line in incremental["symbols.jsonl"].splitlines()]
+    assert {record["qualified_name"] for record in symbols} == {
+        "add",
+        "edit",
+        "edit.after",
+        "keep",
+        "keep.keep",
+        "moved",
+        "moved.renamed",
+    }
+
+
+def test_incremental_build_falls_back_when_prior_index_is_incompatible(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    (repository / "example.py").write_text("VALUE = 1\n")
+    _git(repository, "add", ".")
+    build_clean_index(repository)
+    manifest_path = repository / ".code-index" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = "0.0.0"
+    manifest_path.write_bytes(deterministic_json(manifest))
+
+    incremental = build_incremental_index(repository)
+    clean = build_clean_index(repository)
+
+    assert incremental == clean

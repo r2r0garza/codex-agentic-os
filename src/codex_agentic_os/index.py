@@ -413,6 +413,77 @@ def _atomic_write(path: Path, content: bytes) -> None:
         raise
 
 
+def _validate_parsers(parsers: Sequence[LanguageParser]) -> None:
+    for parser in parsers:
+        if parser.api_version != PARSER_API_VERSION:
+            raise ValueError(
+                f"parser API version mismatch for {parser.language}: {parser.api_version}"
+            )
+
+
+def _parse_files(
+    root: Path,
+    files: Sequence[TrackedFile],
+    parsers: Sequence[LanguageParser],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    symbols: list[dict[str, object]] = []
+    dependencies: list[dict[str, object]] = []
+    for tracked in files:
+        source = _worktree_bytes(root.joinpath(*PurePosixPath(tracked.path).parts))
+        if hashlib.sha256(source).hexdigest() != tracked.sha256:
+            raise ValueError(f"tracked file changed during index build: {tracked.path}")
+        for parser in parsers:
+            if parser.supports(tracked.path):
+                result = parser.parse(tracked.path, source)
+                symbols.extend(record.to_dict() for record in result.symbols)
+                dependencies.extend(record.to_dict() for record in result.dependencies)
+                break
+    return symbols, dependencies
+
+
+def _jsonl_dicts(content: bytes) -> list[dict[str, object]]:
+    return [json.loads(line) for line in content.splitlines()]
+
+
+def _encode_jsonl_dicts(records: Sequence[Mapping[str, object]]) -> bytes:
+    return b"".join(deterministic_json(record) for record in sorted(records, key=deterministic_json))
+
+
+def _write_index(
+    destination: Path,
+    files: Sequence[TrackedFile],
+    config: IndexConfig,
+    symbols: Sequence[Mapping[str, object]],
+    dependencies: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    manifest: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
+        "generator_version": GENERATOR_VERSION,
+        "parser_api_version": PARSER_API_VERSION,
+        "configuration_fingerprint": config.fingerprint,
+        "aggregate_content_hash": _aggregate_content_hash(files),
+        "tracked_files": [asdict(record) for record in files],
+        "artifact_counts": {
+            "tracked_files": len(files),
+            "symbols": len(symbols),
+            "dependencies": len(dependencies),
+        },
+    }
+    artifacts = {
+        "schema.json": deterministic_json(schema_document()),
+        "manifest.json": deterministic_json(manifest),
+        "symbols.jsonl": _encode_jsonl_dicts(symbols),
+        "dependencies.jsonl": _encode_jsonl_dicts(dependencies),
+    }
+    destination.mkdir(parents=True, exist_ok=True)
+    for child in destination.iterdir():
+        if child.name not in INDEX_ARTIFACTS:
+            shutil.rmtree(child) if child.is_dir() else child.unlink()
+    for name in INDEX_ARTIFACTS:
+        _atomic_write(destination / name, artifacts[name])
+    return manifest
+
+
 def build_clean_index(
     repository: str | Path,
     output: str | Path = ".code-index",
@@ -431,49 +502,65 @@ def build_clean_index(
         destination = root / destination
     selected = config or IndexConfig()
     files = discover_tracked_files(root, selected)
-    symbols: list[SymbolRecord] = []
-    dependencies: list[DependencyRecord] = []
+    _validate_parsers(parsers)
+    symbols, dependencies = _parse_files(root, files, parsers)
+    return _write_index(destination, files, selected, symbols, dependencies)
 
-    for parser in parsers:
-        if parser.api_version != PARSER_API_VERSION:
-            raise ValueError(
-                f"parser API version mismatch for {parser.language}: {parser.api_version}"
-            )
-    for tracked in files:
-        source = _worktree_bytes(root.joinpath(*PurePosixPath(tracked.path).parts))
-        if hashlib.sha256(source).hexdigest() != tracked.sha256:
-            raise ValueError(f"tracked file changed during index build: {tracked.path}")
-        for parser in parsers:
-            if parser.supports(tracked.path):
-                result = parser.parse(tracked.path, source)
-                symbols.extend(result.symbols)
-                dependencies.extend(result.dependencies)
-                break
 
-    manifest: dict[str, object] = {
-        "schema_version": SCHEMA_VERSION,
-        "generator_version": GENERATOR_VERSION,
-        "parser_api_version": PARSER_API_VERSION,
-        "configuration_fingerprint": selected.fingerprint,
-        "aggregate_content_hash": _aggregate_content_hash(files),
-        "tracked_files": [asdict(record) for record in files],
-        "artifact_counts": {
-            "tracked_files": len(files),
-            "symbols": len(symbols),
-            "dependencies": len(dependencies),
-        },
-    }
-    artifacts = {
-        "schema.json": deterministic_json(schema_document()),
-        "manifest.json": deterministic_json(manifest),
-        "symbols.jsonl": deterministic_jsonl(symbols),
-        "dependencies.jsonl": deterministic_jsonl(dependencies),
-    }
+def build_incremental_index(
+    repository: str | Path,
+    output: str | Path = ".code-index",
+    config: IndexConfig | None = None,
+    parsers: Sequence[LanguageParser] = (PythonParser(),),
+) -> dict[str, object]:
+    """Update an index by parsing only changed files.
 
-    destination.mkdir(parents=True, exist_ok=True)
-    for child in destination.iterdir():
-        if child.name not in INDEX_ARTIFACTS:
-            shutil.rmtree(child) if child.is_dir() else child.unlink()
-    for name in INDEX_ARTIFACTS:
-        _atomic_write(destination / name, artifacts[name])
-    return manifest
+    A missing or incompatible prior index safely falls back to a clean build.
+    Records for removed files are discarded, while records for content-identical
+    files are reused. The resulting artifacts are byte-identical to a clean build.
+    """
+
+    root = Path(repository).resolve()
+    destination = Path(output)
+    if not destination.is_absolute():
+        destination = root / destination
+    selected = config or IndexConfig()
+    _validate_parsers(parsers)
+    files = discover_tracked_files(root, selected)
+
+    try:
+        manifest = json.loads((destination / "manifest.json").read_bytes())
+        if any(not (destination / name).is_file() for name in INDEX_ARTIFACTS):
+            raise ValueError("incomplete prior index")
+        compatibility = (
+            manifest.get("schema_version") == SCHEMA_VERSION
+            and manifest.get("generator_version") == GENERATOR_VERSION
+            and manifest.get("parser_api_version") == PARSER_API_VERSION
+            and manifest.get("configuration_fingerprint") == selected.fingerprint
+        )
+        if not compatibility:
+            raise ValueError("incompatible prior index")
+        previous_hashes = {
+            record["path"]: record["sha256"] for record in manifest["tracked_files"]
+        }
+        unchanged = {
+            record.path for record in files if previous_hashes.get(record.path) == record.sha256
+        }
+        symbols = [
+            record
+            for record in _jsonl_dicts((destination / "symbols.jsonl").read_bytes())
+            if record["span"]["path"] in unchanged
+        ]
+        dependencies = [
+            record
+            for record in _jsonl_dicts((destination / "dependencies.jsonl").read_bytes())
+            if record["span"]["path"] in unchanged
+        ]
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return build_clean_index(root, destination, selected, parsers)
+
+    changed = [record for record in files if record.path not in unchanged]
+    new_symbols, new_dependencies = _parse_files(root, changed, parsers)
+    symbols.extend(new_symbols)
+    dependencies.extend(new_dependencies)
+    return _write_index(destination, files, selected, symbols, dependencies)
