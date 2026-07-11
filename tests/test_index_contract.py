@@ -325,6 +325,41 @@ def test_clean_build_resolves_only_proven_repository_call_targets(tmp_path) -> N
     assert calls[(run_id, "self.missing")]["evidence"] == "unresolved"
 
 
+def test_clean_build_filters_builtins_and_explicit_external_import_calls(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    package = repository / "src" / "package"
+    package.mkdir(parents=True)
+    (package / "helpers.py").write_text("")
+    (package / "calls.py").write_text(
+        "import json\n"
+        "from requests import get as external_get\n\n"
+        "from .helpers import missing as repo_missing\n\n"
+        "def caller(injected, client, values):\n"
+        "    len(values)\n"
+        "    json.dumps(values)\n"
+        "    external_get('https://example.invalid')\n"
+        "    repo_missing()\n"
+        "    injected()\n"
+        "    client.send(values)\n"
+    )
+    _git(repository, "add", ".")
+
+    build_clean_index(repository)
+    dependencies = [
+        json.loads(line)
+        for line in (repository / ".code-index" / "dependencies.jsonl").read_text().splitlines()
+    ]
+    calls = [record for record in dependencies if record["kind"] == "call"]
+
+    assert {(record["target"], record["evidence"]) for record in calls} == {
+        ("client.send", "unresolved"),
+        ("injected", "unresolved"),
+        ("repo_missing", "unresolved"),
+    }
+
+
 def test_clean_build_writes_deterministic_manifest_and_jsonl(tmp_path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -343,7 +378,7 @@ def test_clean_build_writes_deterministic_manifest_and_jsonl(tmp_path) -> None:
     assert first_manifest == second_manifest
     assert set(first) == {"schema.json", "manifest.json", "symbols.jsonl", "dependencies.jsonl"}
     manifest = json.loads(first["manifest.json"])
-    assert manifest["generator_version"] == "1.1.0"
+    assert manifest["generator_version"] == "1.1.1"
     assert manifest["artifact_counts"] == {"tracked_files": 2, "symbols": 2, "dependencies": 1}
     assert [record["path"] for record in manifest["tracked_files"]] == [
         "pyproject.toml",

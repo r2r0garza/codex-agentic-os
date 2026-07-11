@@ -66,12 +66,13 @@ Implemented foundation:
 - Versioned the static call-relationship contract with stable enclosing-symbol source IDs and explicit resolved/unresolved target identity rules.
 - Added deterministic Python call-candidate extraction with lexically enclosing function and method identities.
 - Added conservative resolution for unique same-module, lexical `self`/`cls`, and explicit repository import-alias calls.
+- Preserved useful unresolved dynamic calls while filtering direct builtins and explicit non-repository import calls.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Continue the conservative static call-reference extension in `.plan/0003-static-call-reference-index.md` by filtering unresolved dynamic evidence without treating builtins or third-party receiver methods as repository targets.
+1. Continue the conservative static call-reference extension in `.plan/0003-static-call-reference-index.md` by proving clean and incremental byte equivalence for call changes.
 2. Docker and Podman sandbox execution adapters.
 3. Persistent state for agent runs, plans, and decisions.
 

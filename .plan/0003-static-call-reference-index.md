@@ -14,7 +14,7 @@ Index syntactic calls originating inside indexed functions and methods. Resolve 
 - [x] Define the versioned call relationship contract, stable source identity, and schema/parser compatibility bumps.
 - [x] Extract deterministic call candidates with enclosing-symbol context from Python ASTs.
 - [x] Resolve unique same-module, lexical `self`/`cls`, and repository import-alias targets with explicit evidence labels.
-- [ ] Preserve unresolved dynamic call evidence without indexing builtins or third-party receiver methods as repository targets.
+- [x] Preserve unresolved dynamic call evidence without indexing builtins or third-party receiver methods as repository targets.
 - [ ] Prove clean and incremental byte equivalence for call additions, edits, renames, and deletions.
 - [ ] Surface incoming and outgoing call relationships through `index explain` and document the evidence limitations.
 - [ ] Regenerate committed artifacts and verify CI drift enforcement.
@@ -29,4 +29,4 @@ Index syntactic calls originating inside indexed functions and methods. Resolve 
 
 ## Resume Notes
 
-The completed-index build now resolves call candidates only when a unique indexed target proves a same-module function/class call, a lexical `self`/`cls` method call, or an explicit repository import-alias call. Import records retain deterministic Python binding metadata so module-level and function-local aliases are scoped correctly; unresolved candidates remain unchanged. Next, preserve useful unresolved dynamic call evidence while excluding builtins and third-party receiver methods as repository targets.
+Unresolved call evidence now retains injected callables and unknown runtime receivers while excluding direct Python builtins and calls through explicit imports that do not map to indexed repository symbols. Resolved repository calls remain limited to the accepted evidence boundary. Next, prove clean and incremental byte equivalence for call additions, edits, renames, and deletions.

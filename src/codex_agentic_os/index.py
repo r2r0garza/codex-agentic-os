@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import hashlib
 import json
 import os
@@ -17,8 +18,9 @@ from typing import Mapping, Protocol, Sequence
 
 SCHEMA_VERSION = "1.1.0"
 PARSER_API_VERSION = "1.1.0"
-GENERATOR_VERSION = "1.1.0"
+GENERATOR_VERSION = "1.1.1"
 INDEX_ARTIFACTS = ("schema.json", "manifest.json", "symbols.jsonl", "dependencies.jsonl")
+PYTHON_BUILTIN_CALLS = frozenset(dir(builtins))
 
 
 class SymbolKind(StrEnum):
@@ -345,6 +347,7 @@ class PythonParser:
                 self._span(path, call),
             )
             for call in visitor.calls
+            if not (isinstance(call.func, ast.Name) and call.func.id in PYTHON_BUILTIN_CALLS)
         ]
 
 
@@ -576,12 +579,15 @@ def _resolve_python_calls(
     """Resolve only call targets proven by repository declarations and import syntax."""
 
     symbol_by_id = {str(record["id"]): record for record in symbols}
+    repository_modules: set[str] = set()
     symbols_by_name: dict[str, list[Mapping[str, object]]] = {}
     modules_by_path: dict[str, str] = {}
     for record in symbols:
         symbols_by_name.setdefault(str(record["qualified_name"]), []).append(record)
         if record["kind"] == SymbolKind.MODULE.value:
-            modules_by_path[str(record["span"]["path"])] = str(record["qualified_name"])
+            module_name = str(record["qualified_name"])
+            modules_by_path[str(record["span"]["path"])] = module_name
+            repository_modules.add(module_name)
 
     imports_by_path: dict[str, list[Mapping[str, object]]] = {}
     for record in dependencies:
@@ -602,6 +608,22 @@ def _resolve_python_calls(
         remainder = target[level:]
         return ".".join([*base, remainder] if remainder else base)
 
+    def matching_import(
+        path: str, source_id: str, module: str, target: str
+    ) -> Mapping[str, object] | None:
+        source_module_id = stable_id("python", SymbolKind.MODULE.value, module)
+        for imported in imports_by_path.get(path, ()):
+            extensions = imported.get("extensions", {})
+            python_details = extensions.get("python", {}) if isinstance(extensions, dict) else {}
+            bound = python_details.get("bound_name") if isinstance(python_details, dict) else None
+            if not isinstance(bound, str) or not (
+                target == bound or target.startswith(f"{bound}.")
+            ):
+                continue
+            if str(imported["source_id"]) in {source_id, source_module_id}:
+                return imported
+        return None
+
     resolved: list[dict[str, object]] = []
     for original in dependencies:
         record = dict(original)
@@ -613,6 +635,7 @@ def _resolve_python_calls(
         module = modules_by_path.get(path)
         target = str(record["target"])
         match: Mapping[str, object] | None = None
+        imported: Mapping[str, object] | None = None
         if source is not None and module is not None:
             if "." not in target:
                 candidate = unique(f"{module}.{target}")
@@ -630,35 +653,39 @@ def _resolve_python_calls(
                         match = candidate
 
             if match is None:
-                for imported in imports_by_path.get(path, ()):
+                imported = matching_import(path, str(record["source_id"]), module, target)
+                if imported is not None:
                     extensions = imported.get("extensions", {})
                     python_details = extensions.get("python", {}) if isinstance(extensions, dict) else {}
                     bound = python_details.get("bound_name") if isinstance(python_details, dict) else None
-                    resolved_base = (
-                        python_details.get("resolved_base")
-                        if isinstance(python_details, dict)
-                        else None
-                    )
-                    if not isinstance(bound, str) or not (
-                        target == bound or target.startswith(f"{bound}.")
-                    ):
-                        continue
-                    import_source = str(imported["source_id"])
-                    source_module_id = stable_id("python", SymbolKind.MODULE.value, module)
-                    if import_source not in {str(record["source_id"]), source_module_id}:
-                        continue
+                    resolved_base = python_details.get("resolved_base") if isinstance(python_details, dict) else None
                     if not isinstance(resolved_base, str):
-                        continue
+                        resolved_base = ""
                     imported_target = absolute_import(module, resolved_base)
-                    suffix = target[len(bound) :]
+                    suffix = target[len(bound) :] if isinstance(bound, str) else ""
                     candidate = unique(f"{imported_target}{suffix}")
                     if candidate is not None:
                         match = candidate
-                        break
         if match is not None:
             record["evidence"] = Evidence.RESOLVED.value
             record["target_id"] = match["id"]
+        elif imported is None:
+            record["evidence"] = Evidence.UNRESOLVED.value
+            record.pop("target_id", None)
         else:
+            extensions = imported.get("extensions", {})
+            python_details = extensions.get("python", {}) if isinstance(extensions, dict) else {}
+            resolved_base = python_details.get("resolved_base") if isinstance(python_details, dict) else None
+            imported_base = absolute_import(module or "", resolved_base) if isinstance(resolved_base, str) else ""
+            if not any(
+                imported_base == candidate
+                or imported_base.startswith(f"{candidate}.")
+                or candidate.startswith(f"{imported_base}.")
+                for candidate in repository_modules
+            ):
+                # Calls bound to explicit non-repository imports are not useful
+                # repository call evidence.
+                continue
             record["evidence"] = Evidence.UNRESOLVED.value
             record.pop("target_id", None)
         resolved.append(record)
