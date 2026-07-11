@@ -51,6 +51,13 @@ class StepStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class StepRecoveryReason(StrEnum):
+    """Explicit reasons for failing a running step with an uncertain result."""
+
+    INTERRUPTED = "interrupted"
+    TIMED_OUT = "timed_out"
+
+
 @dataclass(frozen=True, slots=True)
 class AgentRun:
     """Typed view of a durable run record."""
@@ -365,6 +372,41 @@ class RunCoordinator:
                 RunStatus.SUCCEEDED,
                 output={"completed_steps": len(self.list_steps(run.run_id))},
             )
+        return step, run
+
+    def recover_running_step(
+        self,
+        step_id: str,
+        reason: StepRecoveryReason,
+        *,
+        detail: str | None = None,
+    ) -> tuple[RunStep, AgentRun]:
+        """Fail a running step whose execution ended without a durable result."""
+
+        current = self.get_step(step_id)
+        if current is None:
+            raise KeyError(f"step does not exist: {step_id}")
+        run = self.get(current.run_id)
+        if run is None:  # Defensive: durable step records must reference an existing run.
+            raise KeyError(f"run does not exist: {current.run_id}")
+        if run.status is not RunStatus.RUNNING:
+            raise ValueError(f"run must be running to recover a step: {run.run_id}")
+        if current.status is not StepStatus.RUNNING:
+            raise ValueError(f"step must be running to recover it: {step_id}")
+        if not isinstance(reason, StepRecoveryReason):
+            raise ValueError("recovery reason must be a StepRecoveryReason")
+        if detail is not None and not detail.strip():
+            raise ValueError("recovery detail must not be empty")
+
+        output: dict[str, object] = {"recovery_reason": reason.value}
+        if detail is not None:
+            output["recovery_detail"] = detail
+        step = self.transition_step(step_id, StepStatus.FAILED, output=output)
+        run = self.transition(
+            run.run_id,
+            RunStatus.FAILED,
+            output={"failed_step_id": step_id, "recovery_reason": reason.value},
+        )
         return step, run
 
     @staticmethod

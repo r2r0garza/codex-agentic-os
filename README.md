@@ -87,10 +87,11 @@ Implemented foundation:
 - Backend-neutral next-step dispatch in durable position order with single-active-step enforcement.
 - Durable optional command arguments and timeouts on ordered run steps.
 - Injected sandbox execution of the next durable command step with persisted results.
+- Explicit durable recovery for interrupted or timed-out running steps.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: explicitly recover interrupted or timed-out running steps; Plan 0009 is complete.
+Planned next: choose the next focused execution-core capability; Plan 0010 is complete.
 
 ## Development
 
@@ -194,7 +195,20 @@ step, run = runs.execute_next_step("run-002", sandbox)
 The stored command and timeout are passed to the executor, and its result completes the
 step and updates the run. Coordination-only steps are rejected before mutation. If the
 executor raises before returning a result, the run and step remain running for explicit
-recovery.
+recovery. Reconcile that uncertain execution explicitly without retrying it:
+
+```python
+from codex_agentic_os import StepRecoveryReason
+
+step, run = runs.recover_running_step(
+    "step-001",
+    StepRecoveryReason.TIMED_OUT,
+    detail="worker exited before recording a sandbox result",
+)
+```
+
+Recovery fails both the step and run with durable reason metadata. It does not retry the
+command because its prior side effects may be unknown.
 
 Command arguments and timeouts are stored with the step and survive process restarts.
 Steps may omit a command when they represent coordination-only work.

@@ -11,6 +11,7 @@ from .runtime import (
     RunStatus,
     RunStep,
     SandboxExecutor,
+    StepRecoveryReason,
     StepStatus,
 )
 
@@ -26,6 +27,7 @@ __all__ = [
     "RunStatus",
     "RunStep",
     "SandboxExecutor",
+    "StepRecoveryReason",
     "StepStatus",
     "ContainerSandbox",
     "SandboxKind",

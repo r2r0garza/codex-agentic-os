@@ -7,6 +7,7 @@ from codex_agentic_os.runtime import (
     RunCoordinator,
     RunStatus,
     RunStep,
+    StepRecoveryReason,
     StepStatus,
 )
 from codex_agentic_os.state import StateStore
@@ -377,6 +378,62 @@ def test_execute_next_step_leaves_running_state_when_executor_raises(tmp_path) -
 
     with pytest.raises(TimeoutError, match="sandbox timed out"):
         coordinator.execute_next_step("run-1", Executor())
+
+    assert coordinator.get("run-1").status is RunStatus.RUNNING
+    assert coordinator.get_step("command").status is StepStatus.RUNNING
+
+
+@pytest.mark.parametrize(
+    "reason", [StepRecoveryReason.INTERRUPTED, StepRecoveryReason.TIMED_OUT]
+)
+def test_recover_running_step_fails_step_and_run_durably(tmp_path, reason) -> None:
+    database = tmp_path / f"{reason}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute command")
+    coordinator.add_step(
+        "run-1", "command", objective="Wait", command=("sleep", "10"), timeout=1
+    )
+    coordinator.start_next_step("run-1")
+
+    step, run = coordinator.recover_running_step(
+        "command", reason, detail="worker process exited before recording a result"
+    )
+
+    assert step.status is StepStatus.FAILED
+    assert step.output == {
+        "recovery_reason": reason.value,
+        "recovery_detail": "worker process exited before recording a result",
+    }
+    assert run.status is RunStatus.FAILED
+    assert run.output == {
+        "failed_step_id": "command",
+        "recovery_reason": reason.value,
+    }
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get_step("command") == step
+    assert reloaded.get("run-1") == run
+
+
+def test_recover_running_step_validates_state_and_reason_before_mutation(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+
+    with pytest.raises(KeyError, match="step does not exist"):
+        coordinator.recover_running_step("missing", StepRecoveryReason.INTERRUPTED)
+
+    coordinator.create("run-1", objective="Execute command")
+    coordinator.add_step(
+        "run-1", "command", objective="Wait", command=("sleep", "10")
+    )
+    with pytest.raises(ValueError, match="run must be running"):
+        coordinator.recover_running_step("command", StepRecoveryReason.INTERRUPTED)
+
+    coordinator.start_next_step("run-1")
+    with pytest.raises(ValueError, match="StepRecoveryReason"):
+        coordinator.recover_running_step("command", "interrupted")
+    with pytest.raises(ValueError, match="detail must not be empty"):
+        coordinator.recover_running_step(
+            "command", StepRecoveryReason.INTERRUPTED, detail=" "
+        )
 
     assert coordinator.get("run-1").status is RunStatus.RUNNING
     assert coordinator.get_step("command").status is StepStatus.RUNNING
