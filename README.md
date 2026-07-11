@@ -81,10 +81,11 @@ Implemented foundation:
 - Typed durable run coordination with validated queued, running, terminal, and cancellation transitions.
 - Durable position-ordered run steps with validated lifecycle transitions, revision tracking, and terminal output.
 - Backend-neutral sandbox-result recording that completes durable steps and automatically succeeds or fails their runs.
+- Read-only CLI inspection of durable runs and their position-ordered steps.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: expose read-only run and ordered-step inspection through the CLI, as scoped by Plan 0004.
+Planned next: define a new focused plan for the next execution-core capability; Plan 0004 is complete.
 
 ## Development
 
@@ -168,6 +169,16 @@ nonzero exit fails both the step and run:
 ```python
 step, run = runs.complete_step_from_result("step-001", result)
 ```
+
+Inspect a durable run and its ordered steps without modifying runtime state:
+
+```bash
+codex-agentic-os run inspect run-002
+codex-agentic-os run inspect run-002 --state-db /path/to/state.sqlite3
+```
+
+The default database is `.codex-agentic-os/state.sqlite3`. Inspection prints JSON and
+fails without creating a database when the configured path does not exist.
 
 Inspect declared capabilities:
 

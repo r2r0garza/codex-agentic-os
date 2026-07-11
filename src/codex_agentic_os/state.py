@@ -38,11 +38,23 @@ class StateStore:
         )
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, read_only: bool = False) -> None:
         self.path = Path(path)
+        self.read_only = read_only
 
     def initialize(self) -> None:
         """Create the database and schema if they do not exist."""
+
+        if self.read_only:
+            if not self.path.is_file():
+                raise ValueError(f"state database does not exist: {self.path}")
+            with closing(self._connect()) as connection:
+                table = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'state_records'"
+                ).fetchone()
+            if table is None or "'step'" not in str(table[0]):
+                raise ValueError(f"state database has an incompatible schema: {self.path}")
+            return
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection:
@@ -69,6 +81,8 @@ class StateStore:
     ) -> StateRecord:
         """Insert or replace a document and increment its revision."""
 
+        if self.read_only:
+            raise ValueError("state store is read-only")
         self._validate_identity(kind, key, status)
         encoded = self._encode_payload(payload)
         self.initialize()
@@ -126,6 +140,8 @@ class StateStore:
     def delete(self, kind: str, key: str) -> bool:
         """Delete a document and report whether it existed."""
 
+        if self.read_only:
+            raise ValueError("state store is read-only")
         self._validate_identity(kind, key)
         self.initialize()
         with closing(self._connect()) as connection:
@@ -136,7 +152,8 @@ class StateStore:
             return cursor.rowcount == 1
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30)
+        target = f"file:{self.path}?mode=ro" if self.read_only else self.path
+        connection = sqlite3.connect(target, timeout=30, uri=self.read_only)
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 

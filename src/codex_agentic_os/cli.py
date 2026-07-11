@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Sequence
 
@@ -15,8 +16,9 @@ from .index import (
     unstaged_index_paths,
 )
 from .providers import DEFAULT_PROVIDER_SPECS
-from .runtime import RuntimeSpec
+from .runtime import RunCoordinator, RuntimeSpec
 from .sandboxes import default_sandboxes
+from .state import StateStore
 
 
 def _foundation_payload() -> dict[str, object]:
@@ -41,7 +43,34 @@ def _parser() -> argparse.ArgumentParser:
     index_commands.add_parser("pre-commit", help="refresh and verify staged index artifacts")
     explain = index_commands.add_parser("explain", help="describe one indexed symbol")
     explain.add_argument("qualified_name")
+
+    run = commands.add_parser("run", help="inspect durable runs")
+    run_commands = run.add_subparsers(dest="run_command", required=True)
+    inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
+    inspect.add_argument("run_id")
+    inspect.add_argument(
+        "--state-db",
+        type=Path,
+        default=Path(".codex-agentic-os/state.sqlite3"),
+        help="path to the runtime state database",
+    )
     return parser
+
+
+def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
+    """Return a JSON-compatible, ordered view of one durable run."""
+
+    run = coordinator.get(run_id)
+    if run is None:
+        raise ValueError(f"run does not exist: {run_id}")
+    run_data = asdict(run)
+    run_data["status"] = run.status.value
+    steps = []
+    for step in coordinator.list_steps(run_id):
+        step_data = asdict(step)
+        step_data["status"] = step.status.value
+        steps.append(step_data)
+    return {"run": run_data, "steps": steps}
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -55,7 +84,10 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     repository = Path.cwd()
     try:
-        if arguments.index_command == "build":
+        if arguments.command == "run":
+            coordinator = RunCoordinator(StateStore(arguments.state_db, read_only=True))
+            print(json.dumps(_run_payload(coordinator, arguments.run_id), indent=2, sort_keys=True))
+        elif arguments.index_command == "build":
             builder = build_incremental_index if arguments.incremental else build_clean_index
             manifest = builder(repository)
             counts = manifest["artifact_counts"]
