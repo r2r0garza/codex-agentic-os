@@ -146,6 +146,70 @@ class AnthropicAdapter:
         return ChatResponse(content=content, model=raw.get("model"), raw=raw)
 
 
+class GoogleAdapter:
+    """Adapter for Google's native ``models.generateContent`` API."""
+
+    def __init__(self, spec: ProviderSpec, *, transport: Transport = _urlopen_transport) -> None:
+        self.spec = spec
+        self._transport = transport
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        if not request.messages:
+            raise ValueError("chat requests require at least one message")
+
+        system_messages = [message.content for message in request.messages if message.role == "system"]
+        messages = [message for message in request.messages if message.role != "system"]
+        if not messages:
+            raise ValueError("Google chat requests require at least one user or assistant message")
+        if any(message.role not in {"user", "assistant"} for message in messages):
+            raise ValueError("Google chat messages must use system, user, or assistant roles")
+
+        payload: dict[str, object] = {
+            "contents": [
+                {
+                    "role": "model" if message.role == "assistant" else "user",
+                    "parts": [{"text": message.content}],
+                }
+                for message in messages
+            ]
+        }
+        if system_messages:
+            payload["systemInstruction"] = {
+                "parts": [{"text": "\n\n".join(system_messages)}]
+            }
+        generation_config: dict[str, object] = {}
+        if request.temperature is not None:
+            generation_config["temperature"] = request.temperature
+        if request.max_tokens is not None:
+            generation_config["maxOutputTokens"] = request.max_tokens
+        if generation_config:
+            payload["generationConfig"] = generation_config
+
+        base_url = (self.spec.base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        model = self.spec.model.removeprefix("models/")
+        headers = {"Content-Type": "application/json"}
+        if self.spec.api_key_env:
+            api_key = os.getenv(self.spec.api_key_env)
+            if api_key:
+                headers["x-goog-api-key"] = api_key
+
+        raw = json.loads(
+            self._transport(
+                f"{base_url}/models/{model}:generateContent",
+                headers,
+                json.dumps(payload).encode(),
+            )
+        )
+        try:
+            parts = raw["candidates"][0]["content"]["parts"]
+            content = "".join(part["text"] for part in parts if "text" in part)
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("provider returned an unexpected chat response") from exc
+        if not content:
+            raise RuntimeError("provider returned no text chat content")
+        return ChatResponse(content=content, model=raw.get("modelVersion"), raw=raw)
+
+
 def adapter_for(spec: ProviderSpec, *, transport: Transport = _urlopen_transport) -> ChatAdapter:
     """Build the supported adapter for a provider specification."""
 
@@ -160,4 +224,6 @@ def adapter_for(spec: ProviderSpec, *, transport: Transport = _urlopen_transport
         return OpenAICompatibleAdapter(spec, transport=transport)
     if spec.kind is ProviderKind.ANTHROPIC:
         return AnthropicAdapter(spec, transport=transport)
+    if spec.kind is ProviderKind.GOOGLE:
+        return GoogleAdapter(spec, transport=transport)
     raise NotImplementedError(f"no chat adapter implemented for {spec.kind.value}")

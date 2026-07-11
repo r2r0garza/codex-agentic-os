@@ -52,15 +52,15 @@ Implemented foundation:
 - Hourly GitHub Actions heartbeat.
 - Provider-neutral chat request/response types and an injectable OpenAI-compatible adapter.
 - Native Anthropic Messages API adapter with system-message normalization and prompt caching.
+- Native Google `models.generateContent` adapter with provider-neutral role and generation mapping.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Native Google chat adapter.
-2. Deterministic repository indexing for files, symbols, imports, and dependency evidence; see `.plan/0002-deterministic-repository-index.md`.
-3. Docker and Podman sandbox execution adapters.
-4. Persistent state for agent runs, plans, and decisions.
+1. Deterministic repository indexing for files, symbols, imports, and dependency evidence; see `.plan/0002-deterministic-repository-index.md`.
+2. Docker and Podman sandbox execution adapters.
+3. Persistent state for agent runs, plans, and decisions.
 
 ## Development
 
