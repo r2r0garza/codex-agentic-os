@@ -15,9 +15,9 @@ from pathlib import Path, PurePosixPath
 from typing import Mapping, Protocol, Sequence
 
 
-SCHEMA_VERSION = "1.0.0"
-PARSER_API_VERSION = "1.0.0"
-GENERATOR_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
+PARSER_API_VERSION = "1.1.0"
+GENERATOR_VERSION = "1.1.0"
 INDEX_ARTIFACTS = ("schema.json", "manifest.json", "symbols.jsonl", "dependencies.jsonl")
 
 
@@ -37,6 +37,13 @@ class Evidence(StrEnum):
     RESOLVED = "resolved"
     INFERRED = "inferred"
     UNRESOLVED = "unresolved"
+
+
+class DependencyKind(StrEnum):
+    """Normalized relationship kinds shared by all language parsers."""
+
+    IMPORT = "import"
+    CALL = "call"
 
 
 def stable_id(language: str, kind: str, qualified_name: str) -> str:
@@ -103,11 +110,25 @@ class DependencyRecord:
     target: str
     evidence: Evidence
     span: SourceSpan
+    target_id: str | None = None
     extensions: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.kind != DependencyKind.CALL:
+            if self.target_id is not None:
+                raise ValueError("target_id is reserved for call relationships")
+            return
+        if self.evidence not in (Evidence.RESOLVED, Evidence.UNRESOLVED):
+            raise ValueError("call relationships require resolved or unresolved evidence")
+        if (self.evidence is Evidence.RESOLVED) != (self.target_id is not None):
+            raise ValueError("resolved calls require target_id; unresolved calls must omit it")
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
         data["evidence"] = self.evidence.value
+        data["kind"] = self.kind.value if isinstance(self.kind, DependencyKind) else self.kind
+        if self.target_id is None:
+            del data["target_id"]
         return data
 
 
@@ -260,7 +281,7 @@ class PythonParser:
         return [
             DependencyRecord(
                 self.language,
-                "import",
+                DependencyKind.IMPORT,
                 source_id,
                 target,
                 Evidence.DECLARED,
@@ -417,9 +438,16 @@ def schema_document() -> dict[str, object]:
         "schema_version": SCHEMA_VERSION,
         "parser_api_version": PARSER_API_VERSION,
         "record_types": ["dependency", "symbol"],
+        "dependency_kinds": [kind.value for kind in DependencyKind],
         "symbol_kinds": [kind.value for kind in SymbolKind],
         "evidence": [value.value for value in Evidence],
         "stable_id": "sha256(JSON([language,kind,qualified_name]))",
+        "dependency_source_identity": "source_id is the stable ID of the lexically enclosing indexed symbol",
+        "call_target_contract": {
+            "target": "normalized syntactic callee text",
+            "resolved": "evidence=resolved and target_id is the stable ID of one indexed symbol",
+            "unresolved": "evidence=unresolved and target_id is omitted",
+        },
         "path_format": "repository-relative-posix",
         "line_format": "one-based-inclusive",
         "serialization": "UTF-8 JSON; sorted keys; compact separators; LF newline",

@@ -4,6 +4,8 @@ import subprocess
 import pytest
 
 from codex_agentic_os.index import (
+    DependencyKind,
+    DependencyRecord,
     Evidence,
     IndexConfig,
     PythonParser,
@@ -22,13 +24,60 @@ from codex_agentic_os.index import (
 
 def test_schema_document_is_a_stable_golden_contract() -> None:
     assert deterministic_json(schema_document()) == (
-        b'{"evidence":["declared","resolved","inferred","unresolved"],'
-        b'"line_format":"one-based-inclusive","parser_api_version":"1.0.0",'
+        b'{"call_target_contract":{"resolved":"evidence=resolved and target_id is the stable ID of one indexed symbol",'
+        b'"target":"normalized syntactic callee text","unresolved":"evidence=unresolved and target_id is omitted"},'
+        b'"dependency_kinds":["import","call"],'
+        b'"dependency_source_identity":"source_id is the stable ID of the lexically enclosing indexed symbol",'
+        b'"evidence":["declared","resolved","inferred","unresolved"],'
+        b'"line_format":"one-based-inclusive","parser_api_version":"1.1.0",'
         b'"path_format":"repository-relative-posix","record_types":["dependency","symbol"],'
-        b'"schema_version":"1.0.0","serialization":"UTF-8 JSON; sorted keys; compact separators; LF newline",'
+        b'"schema_version":"1.1.0","serialization":"UTF-8 JSON; sorted keys; compact separators; LF newline",'
         b'"stable_id":"sha256(JSON([language,kind,qualified_name]))",'
         b'"symbol_kinds":["module","class","function","method"]}\n'
     )
+
+
+def test_call_relationship_contract_requires_stable_resolved_target_identity() -> None:
+    source_id = stable_id("python", "function", "pkg.caller")
+    target_id = stable_id("python", "function", "pkg.callee")
+    resolved = DependencyRecord(
+        "python",
+        DependencyKind.CALL,
+        source_id,
+        "callee",
+        Evidence.RESOLVED,
+        SourceSpan("pkg.py", 3, 3),
+        target_id=target_id,
+    )
+    unresolved = DependencyRecord(
+        "python",
+        DependencyKind.CALL,
+        source_id,
+        "receiver.method",
+        Evidence.UNRESOLVED,
+        SourceSpan("pkg.py", 4, 4),
+    )
+
+    assert resolved.to_dict()["target_id"] == target_id
+    assert "target_id" not in unresolved.to_dict()
+    with pytest.raises(ValueError, match="resolved calls require target_id"):
+        DependencyRecord(
+            "python",
+            DependencyKind.CALL,
+            source_id,
+            "callee",
+            Evidence.RESOLVED,
+            SourceSpan("pkg.py", 3, 3),
+        )
+    with pytest.raises(ValueError, match="resolved or unresolved"):
+        DependencyRecord(
+            "python",
+            DependencyKind.CALL,
+            source_id,
+            "callee",
+            Evidence.INFERRED,
+            SourceSpan("pkg.py", 3, 3),
+        )
 
 
 def test_stable_ids_include_language_and_kind_and_are_reproducible() -> None:
@@ -200,7 +249,7 @@ def test_clean_build_writes_deterministic_manifest_and_jsonl(tmp_path) -> None:
     assert first_manifest == second_manifest
     assert set(first) == {"schema.json", "manifest.json", "symbols.jsonl", "dependencies.jsonl"}
     manifest = json.loads(first["manifest.json"])
-    assert manifest["generator_version"] == "1.0.0"
+    assert manifest["generator_version"] == "1.1.0"
     assert manifest["artifact_counts"] == {"tracked_files": 2, "symbols": 2, "dependencies": 1}
     assert [record["path"] for record in manifest["tracked_files"]] == [
         "pyproject.toml",
