@@ -13,8 +13,8 @@ Create the first durable shape of codex-agentic-os: a provider-neutral agentic O
 - [x] Implement a native Anthropic chat adapter.
 - [x] Implement a native Google chat adapter.
 - [x] Begin the deterministic repository index described in Plan 0002 while the repository is still small.
-- [ ] Implement sandbox command execution for Docker and Podman.
+- [x] Implement sandbox command execution for Docker and Podman.
 - [ ] Add persistence for plans, decisions, runs, and agent state.
 
 ## Resume Notes
-The deterministic repository index now has its language-neutral contract, Git-backed tracked-file discovery and hashing, Python AST extraction, byte-equivalent clean and incremental artifact builds, CLI commands, optional repository-managed pre-commit refresh, CI clean-rebuild drift verification, and committed initial artifacts. Continue with the active Plan 0002 rather than choosing a Foundation task: evaluate call/reference indexing as the next single focused task without implementing the extension in the same run. Follow the README credential policy when later work first needs environment configuration.
+Docker and Podman now share a `ContainerSandbox` execution adapter that builds shell-free engine arguments, applies network isolation, read-only root filesystems, CPU and memory limits by default, captures output and exit status, supports timeouts, and reports missing engines clearly. Offline tests cover both backends and configuration overrides. Resume with the remaining Foundation task: add persistence for plans, decisions, runs, and agent state. Follow the README credential policy when later work first needs environment configuration.

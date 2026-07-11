@@ -47,7 +47,7 @@ Implemented foundation:
 
 - Python package metadata and CLI entrypoint.
 - Provider family declarations and tests.
-- Docker/Podman sandbox declarations and tests.
+- Docker/Podman sandbox declarations plus shell-free command execution with isolated defaults and captured results.
 - Plan and decision records.
 - Hourly GitHub Actions heartbeat.
 - Provider-neutral chat request/response types and an injectable OpenAI-compatible adapter.
@@ -75,8 +75,7 @@ Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Docker and Podman sandbox execution adapters.
-2. Persistent state for agent runs, plans, and decisions.
+1. Persistent state for agent runs, plans, and decisions.
 
 ## Development
 
@@ -126,6 +125,17 @@ Inspect declared capabilities:
 ```bash
 codex-agentic-os
 ```
+
+Execute a command through either supported container engine from Python:
+
+```python
+from codex_agentic_os import ContainerSandbox, SandboxKind, SandboxSpec
+
+sandbox = ContainerSandbox(SandboxSpec(kind=SandboxKind.DOCKER))
+result = sandbox.execute(("python", "-c", "print('hello')"), timeout=30)
+```
+
+The default container run disables networking, uses a read-only root filesystem, limits CPU and memory, removes the container after execution, and captures stdout, stderr, and the exit code. Override those settings explicitly on `SandboxSpec` when a task requires different capabilities. Docker or Podman must be installed for live execution; unit tests use an injected process runner and do not require either engine.
 
 Build and inspect the deterministic repository index from a repository root:
 
