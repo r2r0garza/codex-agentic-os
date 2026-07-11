@@ -459,6 +459,61 @@ def test_incremental_build_parses_only_changes_and_matches_clean_output(tmp_path
     }
 
 
+def test_call_changes_keep_incremental_and_clean_builds_byte_identical(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    target = repository / "target.py"
+    caller = repository / "caller.py"
+    target.write_text("def alpha():\n    return 1\n\ndef beta():\n    return 2\n")
+    caller.write_text("from target import alpha\n\ndef run():\n    return alpha()\n")
+    _git(repository, "add", ".")
+    build_clean_index(repository)
+
+    def assert_equivalent() -> list[dict[str, object]]:
+        incremental_manifest = build_incremental_index(repository)
+        incremental = {
+            path.name: path.read_bytes() for path in (repository / ".code-index").iterdir()
+        }
+        clean_manifest = build_clean_index(repository, ".clean-index")
+        clean = {
+            path.name: path.read_bytes() for path in (repository / ".clean-index").iterdir()
+        }
+        assert incremental_manifest == clean_manifest
+        assert incremental == clean
+        return [
+            json.loads(line)
+            for line in incremental["dependencies.jsonl"].splitlines()
+            if json.loads(line)["kind"] == "call"
+        ]
+
+    # Add a call site while retaining the original resolved edge.
+    caller.write_text(
+        "from target import alpha, beta\n\ndef run():\n    alpha()\n    return beta()\n"
+    )
+    _git(repository, "add", "caller.py")
+    assert {record["target"] for record in assert_equivalent()} == {"alpha", "beta"}
+
+    # Edit a call target without changing the declarations it resolves against.
+    caller.write_text("from target import beta\n\ndef run():\n    return beta()\n")
+    _git(repository, "add", "caller.py")
+    assert [record["target"] for record in assert_equivalent()] == ["beta"]
+
+    # Rename the target module and update the import-backed call edge.
+    moved = repository / "moved.py"
+    target.rename(moved)
+    caller.write_text("from moved import beta\n\ndef run():\n    return beta()\n")
+    _git(repository, "add", "--all")
+    renamed_calls = assert_equivalent()
+    assert renamed_calls[0]["target_id"] == stable_id("python", "function", "moved.beta")
+
+    # Delete the target; the now-explicit non-repository import call is filtered.
+    moved.unlink()
+    _git(repository, "add", "--all")
+    deleted_calls = assert_equivalent()
+    assert deleted_calls == []
+
+
 def test_incremental_build_falls_back_when_prior_index_is_incompatible(tmp_path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()

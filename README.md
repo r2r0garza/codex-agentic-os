@@ -67,12 +67,13 @@ Implemented foundation:
 - Added deterministic Python call-candidate extraction with lexically enclosing function and method identities.
 - Added conservative resolution for unique same-module, lexical `self`/`cls`, and explicit repository import-alias calls.
 - Preserved useful unresolved dynamic calls while filtering direct builtins and explicit non-repository import calls.
+- Proved byte-identical clean and incremental index output across call additions, edits, target renames, and deletions.
 
 Verification note: the full local pytest suite passes.
 
 Planned next:
 
-1. Continue the conservative static call-reference extension in `.plan/0003-static-call-reference-index.md` by proving clean and incremental byte equivalence for call changes.
+1. Continue the conservative static call-reference extension in `.plan/0003-static-call-reference-index.md` by surfacing incoming and outgoing calls through `index explain` and documenting evidence limitations.
 2. Docker and Podman sandbox execution adapters.
 3. Persistent state for agent runs, plans, and decisions.
 
