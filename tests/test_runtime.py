@@ -1,6 +1,12 @@
 import pytest
 
-from codex_agentic_os.runtime import AgentRun, RunCoordinator, RunStatus
+from codex_agentic_os.runtime import (
+    AgentRun,
+    RunCoordinator,
+    RunStatus,
+    RunStep,
+    StepStatus,
+)
 from codex_agentic_os.state import StateStore
 
 
@@ -59,3 +65,47 @@ def test_run_creation_and_transition_validation(tmp_path) -> None:
         coordinator.transition("missing", RunStatus.RUNNING)
     with pytest.raises(ValueError, match="output is only valid"):
         coordinator.transition("run-1", RunStatus.RUNNING, output={"early": True})
+
+
+def test_ordered_steps_are_durable_and_revisioned(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Build feature")
+
+    first = coordinator.add_step("run-1", "test", objective="Write tests")
+    second = coordinator.add_step("run-1", "code", objective="Implement feature")
+    coordinator.transition_step("test", StepStatus.RUNNING)
+    completed = coordinator.transition_step(
+        "test", StepStatus.SUCCEEDED, output={"tests": 3}
+    )
+
+    assert first == RunStep("test", "run-1", 1, "Write tests", StepStatus.QUEUED, 1)
+    assert second.position == 2
+    assert completed.revision == 3
+    assert completed.output == {"tests": 3}
+    assert RunCoordinator(StateStore(database)).list_steps("run-1") == (
+        completed,
+        second,
+    )
+
+
+def test_step_validation_and_terminal_run_rules(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+
+    with pytest.raises(ValueError, match="step objective"):
+        coordinator.add_step("run-1", "step-1", objective=" ")
+    with pytest.raises(KeyError, match="run does not exist"):
+        coordinator.add_step("missing", "step-1", objective="Work")
+
+    coordinator.add_step("run-1", "step-1", objective="Work")
+    with pytest.raises(ValueError, match="step already exists"):
+        coordinator.add_step("run-1", "step-1", objective="Duplicate")
+    with pytest.raises(ValueError, match="invalid step transition"):
+        coordinator.transition_step("step-1", StepStatus.SUCCEEDED)
+    with pytest.raises(ValueError, match="output is only valid"):
+        coordinator.transition_step("step-1", StepStatus.RUNNING, output={"early": True})
+
+    coordinator.transition("run-1", RunStatus.CANCELLED)
+    with pytest.raises(ValueError, match="terminal run"):
+        coordinator.add_step("run-1", "step-2", objective="Too late")

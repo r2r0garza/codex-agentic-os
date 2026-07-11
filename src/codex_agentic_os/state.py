@@ -24,7 +24,19 @@ class StateRecord:
 class StateStore:
     """Persist runtime state in a repository-local SQLite database."""
 
-    KINDS = frozenset({"plan", "decision", "run", "agent"})
+    KINDS = frozenset({"plan", "decision", "run", "step", "agent"})
+    _CREATE_TABLE = """
+        CREATE TABLE {clause} state_records (
+            kind TEXT NOT NULL,
+            key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            PRIMARY KEY (kind, key),
+            CHECK (kind IN ('plan', 'decision', 'run', 'step', 'agent')),
+            CHECK (revision > 0)
+        )
+    """
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -34,20 +46,17 @@ class StateStore:
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS state_records (
-                    kind TEXT NOT NULL,
-                    key TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    revision INTEGER NOT NULL,
-                    PRIMARY KEY (kind, key),
-                    CHECK (kind IN ('plan', 'decision', 'run', 'agent')),
-                    CHECK (revision > 0)
+            connection.execute(self._CREATE_TABLE.format(clause="IF NOT EXISTS"))
+            schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'state_records'"
+            ).fetchone()[0]
+            if "'step'" not in schema:
+                connection.execute("ALTER TABLE state_records RENAME TO state_records_old")
+                connection.execute(self._CREATE_TABLE.format(clause=""))
+                connection.execute(
+                    "INSERT INTO state_records SELECT * FROM state_records_old"
                 )
-                """
-            )
+                connection.execute("DROP TABLE state_records_old")
             connection.commit()
 
     def put(

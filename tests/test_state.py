@@ -5,7 +5,7 @@ import pytest
 from codex_agentic_os.state import StateRecord, StateStore
 
 
-@pytest.mark.parametrize("kind", ["plan", "decision", "run", "agent"])
+@pytest.mark.parametrize("kind", ["plan", "decision", "run", "step", "agent"])
 def test_state_kinds_persist_across_store_instances(tmp_path, kind: str) -> None:
     database = tmp_path / "state.sqlite3"
     stored = StateStore(database).put(
@@ -73,3 +73,25 @@ def test_schema_rejects_unknown_kinds_outside_the_api(tmp_path) -> None:
             "INSERT INTO state_records VALUES (?, ?, ?, ?, ?)",
             ("unknown", "key", "active", "{}", 1),
         )
+
+
+def test_existing_database_schema_is_upgraded_for_steps(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TABLE state_records (
+                kind TEXT NOT NULL, key TEXT NOT NULL, status TEXT NOT NULL,
+                payload TEXT NOT NULL, revision INTEGER NOT NULL,
+                PRIMARY KEY (kind, key),
+                CHECK (kind IN ('plan', 'decision', 'run', 'agent')),
+                CHECK (revision > 0))"""
+        )
+        connection.execute(
+            "INSERT INTO state_records VALUES ('run', 'run-1', 'queued', '{}', 1)"
+        )
+
+    store = StateStore(database)
+    store.put("step", "step-1", status="queued", payload={})
+
+    assert store.get("run", "run-1") is not None
+    assert store.get("step", "step-1") is not None

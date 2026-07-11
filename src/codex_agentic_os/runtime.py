@@ -41,6 +41,16 @@ class RunStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class StepStatus(StrEnum):
+    """Portable lifecycle states for one ordered run step."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 @dataclass(frozen=True, slots=True)
 class AgentRun:
     """Typed view of a durable run record."""
@@ -50,6 +60,19 @@ class AgentRun:
     status: RunStatus
     revision: int
     agent_id: str | None = None
+    output: Mapping[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RunStep:
+    """Typed view of a durable, ordered unit of work within a run."""
+
+    step_id: str
+    run_id: str
+    position: int
+    objective: str
+    status: StepStatus
+    revision: int
     output: Mapping[str, object] | None = None
 
 
@@ -64,6 +87,15 @@ class RunCoordinator:
         RunStatus.SUCCEEDED: frozenset(),
         RunStatus.FAILED: frozenset(),
         RunStatus.CANCELLED: frozenset(),
+    }
+    _STEP_TRANSITIONS = {
+        StepStatus.QUEUED: frozenset({StepStatus.RUNNING, StepStatus.CANCELLED}),
+        StepStatus.RUNNING: frozenset(
+            {StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.CANCELLED}
+        ),
+        StepStatus.SUCCEEDED: frozenset(),
+        StepStatus.FAILED: frozenset(),
+        StepStatus.CANCELLED: frozenset(),
     }
 
     def __init__(self, store: StateStore) -> None:
@@ -118,6 +150,77 @@ class RunCoordinator:
             self.store.put("run", run_id, status=status, payload=payload)
         )
 
+    def add_step(self, run_id: str, step_id: str, *, objective: str) -> RunStep:
+        """Append a queued step to a non-terminal run."""
+
+        run = self.get(run_id)
+        if run is None:
+            raise KeyError(f"run does not exist: {run_id}")
+        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            raise ValueError(f"cannot add a step to terminal run: {run_id}")
+        if not objective.strip():
+            raise ValueError("step objective must not be empty")
+        if self.store.get("step", step_id) is not None:
+            raise ValueError(f"step already exists: {step_id}")
+        position = len(self.list_steps(run_id)) + 1
+        return self._step(
+            self.store.put(
+                "step",
+                step_id,
+                status=StepStatus.QUEUED,
+                payload={
+                    "run_id": run_id,
+                    "position": position,
+                    "objective": objective,
+                },
+            )
+        )
+
+    def get_step(self, step_id: str) -> RunStep | None:
+        """Return a step when it exists."""
+
+        record = self.store.get("step", step_id)
+        return None if record is None else self._step(record)
+
+    def list_steps(self, run_id: str) -> tuple[RunStep, ...]:
+        """Return a run's steps in durable position order."""
+
+        if self.get(run_id) is None:
+            raise KeyError(f"run does not exist: {run_id}")
+        steps = (
+            self._step(record)
+            for record in self.store.list("step")
+            if record.payload.get("run_id") == run_id
+        )
+        return tuple(sorted(steps, key=lambda step: (step.position, step.step_id)))
+
+    def transition_step(
+        self,
+        step_id: str,
+        status: StepStatus,
+        *,
+        output: Mapping[str, object] | None = None,
+    ) -> RunStep:
+        """Advance a step through an allowed lifecycle edge."""
+
+        current = self.get_step(step_id)
+        if current is None:
+            raise KeyError(f"step does not exist: {step_id}")
+        if status not in self._STEP_TRANSITIONS[current.status]:
+            raise ValueError(f"invalid step transition: {current.status} -> {status}")
+        if output is not None and status not in {StepStatus.SUCCEEDED, StepStatus.FAILED}:
+            raise ValueError("step output is only valid for succeeded or failed steps")
+        payload: dict[str, object] = {
+            "run_id": current.run_id,
+            "position": current.position,
+            "objective": current.objective,
+        }
+        if output is not None:
+            payload["output"] = dict(output)
+        return self._step(
+            self.store.put("step", step_id, status=status, payload=payload)
+        )
+
     @staticmethod
     def _run(record: StateRecord) -> AgentRun:
         objective = record.payload.get("objective")
@@ -139,5 +242,33 @@ class RunCoordinator:
             status=status,
             revision=record.revision,
             agent_id=agent_id,
+            output=output,
+        )
+
+    @staticmethod
+    def _step(record: StateRecord) -> RunStep:
+        run_id = record.payload.get("run_id")
+        position = record.payload.get("position")
+        objective = record.payload.get("objective")
+        output = record.payload.get("output")
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError(f"step record has invalid run id: {record.key}")
+        if not isinstance(position, int) or isinstance(position, bool) or position < 1:
+            raise ValueError(f"step record has invalid position: {record.key}")
+        if not isinstance(objective, str):
+            raise ValueError(f"step record has invalid objective: {record.key}")
+        if output is not None and not isinstance(output, dict):
+            raise ValueError(f"step record has invalid output: {record.key}")
+        try:
+            status = StepStatus(record.status)
+        except ValueError as error:
+            raise ValueError(f"step record has invalid status: {record.key}") from error
+        return RunStep(
+            step_id=record.key,
+            run_id=run_id,
+            position=position,
+            objective=objective,
+            status=status,
+            revision=record.revision,
             output=output,
         )

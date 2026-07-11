@@ -79,10 +79,11 @@ Implemented foundation:
 - Regenerated and committed the call-aware repository index, with CI clean-rebuild drift enforcement verified.
 - Durable SQLite persistence for plans, decisions, runs, and agent state, including revision tracking and deterministic reads.
 - Typed durable run coordination with validated queued, running, terminal, and cancellation transitions.
+- Durable position-ordered run steps with validated lifecycle transitions, revision tracking, and terminal output.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: add ordered durable step records within a run, as scoped by Plan 0004.
+Planned next: connect sandbox execution results to run and step completion without coupling the runtime lifecycle to Docker or Podman, as scoped by Plan 0004.
 
 ## Development
 
@@ -145,6 +146,18 @@ runs = RunCoordinator(StateStore(".codex-agentic-os/state.sqlite3"))
 runs.create("run-001", objective="Build the repository index")
 runs.transition("run-001", RunStatus.RUNNING)
 runs.transition("run-001", RunStatus.SUCCEEDED, output={"artifacts": 4})
+```
+
+Append and coordinate ordered durable steps independently of an execution backend:
+
+```python
+from codex_agentic_os import RunCoordinator, StepStatus, StateStore
+
+runs = RunCoordinator(StateStore(".codex-agentic-os/state.sqlite3"))
+runs.create("run-002", objective="Execute a sandboxed task")
+runs.add_step("run-002", "step-001", objective="Run the command")
+runs.transition_step("step-001", StepStatus.RUNNING)
+runs.transition_step("step-001", StepStatus.SUCCEEDED, output={"exit_code": 0})
 ```
 
 Inspect declared capabilities:
