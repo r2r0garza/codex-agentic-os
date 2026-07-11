@@ -69,7 +69,7 @@ The initial workflow must not depend on provider API keys, network access, or an
 - [x] Define and test a language-neutral versioned index schema, parser interface, stable identifiers, configuration, and determinism rules.
 - [x] Implement tracked-file discovery and content hashing with explicit exclusions and repository-relative paths.
 - [x] Implement Python AST extraction for modules, classes, functions, methods, signatures, imports, and line spans.
-- [ ] Implement deterministic manifest, JSONL serialization, atomic writes, and clean rebuilds.
+- [x] Implement deterministic manifest, JSONL serialization, atomic writes, and clean rebuilds.
 - [ ] Implement incremental rebuilds and prove equivalence with clean rebuild output.
 - [ ] Add `index build`, `index check`, and `index explain` CLI commands.
 - [ ] Add repository-managed pre-commit integration and contributor documentation.
@@ -99,4 +99,4 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Resume Notes
 
-Python AST extraction is complete in `src/codex_agentic_os/index.py`. `PythonParser` emits normalized modules, classes, functions, methods, signatures, visibility, decorators, async/class details, scoped declared-import dependencies, and inclusive source spans. It handles package modules, nested definitions, relative imports, empty files, and clear failures for malformed or non-UTF-8 source. Next implement only deterministic manifest/JSONL serialization, atomic writes, and clean rebuilds; do not begin incremental rebuilds or CLI commands in the same run. The full local suite passes with 20 tests. No provider credentials or network dependencies are needed.
+Clean deterministic index builds are complete in `src/codex_agentic_os/index.py`. `build_clean_index` discovers the tracked worktree, invokes version-compatible parsers, emits the four planned artifacts, records separate schema/generator/parser versions plus configuration and content fingerprints, atomically replaces files, and removes stale output. Repeated clean builds are byte-identical in tests. Next implement only incremental rebuilds and prove byte equivalence with clean output across changed and deleted inputs; do not begin CLI commands in the same run. The full local suite passes with 22 tests. No provider credentials or network dependencies are needed.

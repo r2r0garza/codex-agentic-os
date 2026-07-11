@@ -6,7 +6,9 @@ import ast
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -15,6 +17,8 @@ from typing import Mapping, Protocol, Sequence
 
 SCHEMA_VERSION = "1.0.0"
 PARSER_API_VERSION = "1.0.0"
+GENERATOR_VERSION = "1.0.0"
+INDEX_ARTIFACTS = ("schema.json", "manifest.json", "symbols.jsonl", "dependencies.jsonl")
 
 
 class SymbolKind(StrEnum):
@@ -385,3 +389,91 @@ def schema_document() -> dict[str, object]:
         "line_format": "one-based-inclusive",
         "serialization": "UTF-8 JSON; sorted keys; compact separators; LF newline",
     }
+
+
+def _aggregate_content_hash(files: Sequence[TrackedFile]) -> str:
+    """Hash the ordered tracked-file identities without depending on host paths."""
+
+    return hashlib.sha256(deterministic_json([asdict(record) for record in files])).hexdigest()
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    """Replace one artifact atomically after fully writing it beside its target."""
+
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def build_clean_index(
+    repository: str | Path,
+    output: str | Path = ".code-index",
+    config: IndexConfig | None = None,
+    parsers: Sequence[LanguageParser] = (PythonParser(),),
+) -> dict[str, object]:
+    """Build a complete deterministic index from the tracked worktree.
+
+    Each generated file is atomically replaced. Files left by an older build are
+    removed so the output directory represents only the current artifact set.
+    """
+
+    root = Path(repository).resolve()
+    destination = Path(output)
+    if not destination.is_absolute():
+        destination = root / destination
+    selected = config or IndexConfig()
+    files = discover_tracked_files(root, selected)
+    symbols: list[SymbolRecord] = []
+    dependencies: list[DependencyRecord] = []
+
+    for parser in parsers:
+        if parser.api_version != PARSER_API_VERSION:
+            raise ValueError(
+                f"parser API version mismatch for {parser.language}: {parser.api_version}"
+            )
+    for tracked in files:
+        source = _worktree_bytes(root.joinpath(*PurePosixPath(tracked.path).parts))
+        if hashlib.sha256(source).hexdigest() != tracked.sha256:
+            raise ValueError(f"tracked file changed during index build: {tracked.path}")
+        for parser in parsers:
+            if parser.supports(tracked.path):
+                result = parser.parse(tracked.path, source)
+                symbols.extend(result.symbols)
+                dependencies.extend(result.dependencies)
+                break
+
+    manifest: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
+        "generator_version": GENERATOR_VERSION,
+        "parser_api_version": PARSER_API_VERSION,
+        "configuration_fingerprint": selected.fingerprint,
+        "aggregate_content_hash": _aggregate_content_hash(files),
+        "tracked_files": [asdict(record) for record in files],
+        "artifact_counts": {
+            "tracked_files": len(files),
+            "symbols": len(symbols),
+            "dependencies": len(dependencies),
+        },
+    }
+    artifacts = {
+        "schema.json": deterministic_json(schema_document()),
+        "manifest.json": deterministic_json(manifest),
+        "symbols.jsonl": deterministic_jsonl(symbols),
+        "dependencies.jsonl": deterministic_jsonl(dependencies),
+    }
+
+    destination.mkdir(parents=True, exist_ok=True)
+    for child in destination.iterdir():
+        if child.name not in INDEX_ARTIFACTS:
+            shutil.rmtree(child) if child.is_dir() else child.unlink()
+    for name in INDEX_ARTIFACTS:
+        _atomic_write(destination / name, artifacts[name])
+    return manifest

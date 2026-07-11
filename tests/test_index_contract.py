@@ -10,6 +10,7 @@ from codex_agentic_os.index import (
     SourceSpan,
     SymbolKind,
     SymbolRecord,
+    build_clean_index,
     discover_tracked_files,
     deterministic_json,
     deterministic_jsonl,
@@ -178,3 +179,54 @@ def test_python_parser_handles_packages_empty_files_and_parse_errors() -> None:
     assert result.symbols[0].span == SourceSpan("src/package/__init__.py", 1, 1)
     with pytest.raises(ValueError, match="cannot parse Python source"):
         parser.parse("broken.py", b"def nope(:\n")
+
+
+def test_clean_build_writes_deterministic_manifest_and_jsonl(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    (repository / "src").mkdir()
+    (repository / "src/example.py").write_text("import os\n\ndef hello(name: str) -> str:\n    return name\n")
+    (repository / "pyproject.toml").write_text("[project]\nname='fixture'\n")
+    _git(repository, "add", ".")
+
+    first_manifest = build_clean_index(repository)
+    first = {path.name: path.read_bytes() for path in (repository / ".code-index").iterdir()}
+    second_manifest = build_clean_index(repository)
+    second = {path.name: path.read_bytes() for path in (repository / ".code-index").iterdir()}
+
+    assert first == second
+    assert first_manifest == second_manifest
+    assert set(first) == {"schema.json", "manifest.json", "symbols.jsonl", "dependencies.jsonl"}
+    manifest = json.loads(first["manifest.json"])
+    assert manifest["generator_version"] == "1.0.0"
+    assert manifest["artifact_counts"] == {"tracked_files": 2, "symbols": 2, "dependencies": 1}
+    assert [record["path"] for record in manifest["tracked_files"]] == [
+        "pyproject.toml",
+        "src/example.py",
+    ]
+    assert [json.loads(line)["qualified_name"] for line in first["symbols.jsonl"].splitlines()] == [
+        "example.hello",
+        "example",
+    ]
+
+
+def test_clean_build_removes_stale_output_and_rejects_parser_version_mismatch(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    (repository / "example.py").write_text("VALUE = 1\n")
+    _git(repository, "add", ".")
+    output = repository / ".code-index"
+    output.mkdir()
+    (output / "stale.json").write_text("stale")
+
+    build_clean_index(repository)
+
+    assert not (output / "stale.json").exists()
+
+    class OldParser(PythonParser):
+        api_version = "0.9.0"
+
+    with pytest.raises(ValueError, match="parser API version mismatch"):
+        build_clean_index(repository, parsers=(OldParser(),))
