@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Mapping, Protocol, Sequence
 
 
@@ -147,6 +149,71 @@ class IndexConfig:
     @property
     def fingerprint(self) -> str:
         return hashlib.sha256(deterministic_json(asdict(self))).hexdigest()
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class TrackedFile:
+    """Content identity for one indexable, Git-tracked repository file."""
+
+    path: str
+    size: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        _validate_path(self.path)
+        if self.size < 0:
+            raise ValueError("tracked file size cannot be negative")
+        if len(self.sha256) != 64 or any(character not in "0123456789abcdef" for character in self.sha256):
+            raise ValueError("tracked file sha256 must be a lowercase hexadecimal digest")
+
+
+def _matches(path: str, patterns: Sequence[str]) -> bool:
+    candidate = PurePosixPath(path)
+    return any(candidate.match(pattern) for pattern in patterns)
+
+
+def _worktree_bytes(path: Path) -> bytes:
+    """Read a tracked entry without following a symlink outside the repository."""
+
+    if path.is_symlink():
+        return os.fsencode(os.readlink(path))
+    if not path.is_file():
+        raise ValueError(f"tracked path is not a regular file: {path}")
+    return path.read_bytes()
+
+
+def discover_tracked_files(repository: str | Path, config: IndexConfig | None = None) -> tuple[TrackedFile, ...]:
+    """Discover and hash indexable tracked files from the current worktree.
+
+    Git is the authority for membership. Include patterns select candidates,
+    exclusions take precedence, and oversized files are omitted explicitly.
+    """
+
+    root = Path(repository).resolve()
+    selected = config or IndexConfig()
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.fspath(root), "ls-files", "--cached", "-z"],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(f"cannot list tracked files in repository: {root}") from error
+
+    records: list[TrackedFile] = []
+    for raw_path in result.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        path = raw_path.decode("utf-8")
+        _validate_path(path)
+        if not _matches(path, selected.include) or _matches(path, selected.exclude):
+            continue
+        content = _worktree_bytes(root.joinpath(*PurePosixPath(path).parts))
+        if len(content) > selected.max_file_bytes:
+            continue
+        records.append(TrackedFile(path, len(content), hashlib.sha256(content).hexdigest()))
+
+    return tuple(sorted(records))
 
 
 def deterministic_json(value: object) -> bytes:
