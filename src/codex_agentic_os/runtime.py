@@ -87,6 +87,14 @@ class ExecutionResult(Protocol):
     stderr: str
 
 
+class SandboxExecutor(Protocol):
+    """Injected boundary for executing one durable command."""
+
+    def execute(
+        self, argv: Sequence[str], *, timeout: float | None = None
+    ) -> ExecutionResult: ...
+
+
 class RunCoordinator:
     """Create runs and enforce their provider-neutral lifecycle transitions."""
 
@@ -197,6 +205,34 @@ class RunCoordinator:
         if run.status is RunStatus.QUEUED:
             self.transition(run_id, RunStatus.RUNNING)
         return self.transition_step(next_step.step_id, StepStatus.RUNNING)
+
+    def execute_next_step(
+        self, run_id: str, executor: SandboxExecutor
+    ) -> tuple[RunStep, AgentRun] | None:
+        """Execute and complete the next queued command through an injected sandbox."""
+
+        run = self.get(run_id)
+        if run is None:
+            raise KeyError(f"run does not exist: {run_id}")
+        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            raise ValueError(f"cannot execute a step for terminal run: {run_id}")
+
+        steps = self.list_steps(run_id)
+        if any(step.status is StepStatus.RUNNING for step in steps):
+            raise ValueError(f"run already has a running step: {run_id}")
+        next_step = next(
+            (step for step in steps if step.status is StepStatus.QUEUED), None
+        )
+        if next_step is None:
+            return None
+        if next_step.command is None:
+            raise ValueError(f"next step does not have a command: {next_step.step_id}")
+
+        running_step = self.start_next_step(run_id)
+        if running_step is None:  # Defensive: next_step proved queued above.
+            return None
+        result = executor.execute(running_step.command, timeout=running_step.timeout)
+        return self.complete_step_from_result(running_step.step_id, result)
 
     def add_step(
         self,

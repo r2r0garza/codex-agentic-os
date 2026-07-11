@@ -10,6 +10,7 @@ from .runtime import (
     RunCoordinator,
     RunStatus,
     RunStep,
+    SandboxExecutor,
     StepStatus,
 )
 
@@ -24,6 +25,7 @@ __all__ = [
     "RunCoordinator",
     "RunStatus",
     "RunStep",
+    "SandboxExecutor",
     "StepStatus",
     "ContainerSandbox",
     "SandboxKind",

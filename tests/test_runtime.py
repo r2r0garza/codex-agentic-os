@@ -304,3 +304,79 @@ def test_execution_result_requires_running_run_and_step(tmp_path) -> None:
     coordinator.transition("run-1", RunStatus.RUNNING)
     with pytest.raises(ValueError, match="step must be running"):
         coordinator.complete_step_from_result("command", result)
+
+
+def test_execute_next_step_uses_injected_sandbox_and_completes_run(tmp_path) -> None:
+    calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            calls.append((tuple(argv), timeout))
+            return SandboxResult(("docker", "run", *argv), 0, "hello\n", "")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Execute command")
+    coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Print greeting",
+        command=("python", "-c", "print('hello')"),
+        timeout=7.5,
+    )
+
+    result = coordinator.execute_next_step("run-1", Executor())
+
+    assert result is not None
+    step, run = result
+    assert calls == [(('python', '-c', "print('hello')"), 7.5)]
+    assert step.status is StepStatus.SUCCEEDED
+    assert step.output["stdout"] == "hello\n"
+    assert run.status is RunStatus.SUCCEEDED
+
+
+def test_execute_next_step_records_nonzero_result(tmp_path) -> None:
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(("podman", "run", *argv), 9, "", "bad\n")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Execute command")
+    coordinator.add_step(
+        "run-1", "command", objective="Fail", command=("false",)
+    )
+
+    step, run = coordinator.execute_next_step("run-1", Executor())
+
+    assert step.status is StepStatus.FAILED
+    assert run.status is RunStatus.FAILED
+    assert run.output == {"failed_step_id": "command", "exit_code": 9}
+
+
+def test_execute_next_step_rejects_non_command_without_mutation(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    queued = coordinator.create("run-1", objective="Coordinate work")
+    step = coordinator.add_step("run-1", "manual", objective="Review output")
+
+    with pytest.raises(ValueError, match="does not have a command"):
+        coordinator.execute_next_step("run-1", object())
+
+    assert coordinator.get("run-1") == queued
+    assert coordinator.get_step("manual") == step
+
+
+def test_execute_next_step_leaves_running_state_when_executor_raises(tmp_path) -> None:
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            raise TimeoutError("sandbox timed out")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Execute command")
+    coordinator.add_step(
+        "run-1", "command", objective="Wait", command=("sleep", "10"), timeout=1
+    )
+
+    with pytest.raises(TimeoutError, match="sandbox timed out"):
+        coordinator.execute_next_step("run-1", Executor())
+
+    assert coordinator.get("run-1").status is RunStatus.RUNNING
+    assert coordinator.get_step("command").status is StepStatus.RUNNING

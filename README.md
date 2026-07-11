@@ -86,10 +86,11 @@ Implemented foundation:
 - Operator-facing `run cancel` CLI support with persisted, position-ordered JSON confirmation.
 - Backend-neutral next-step dispatch in durable position order with single-active-step enforcement.
 - Durable optional command arguments and timeouts on ordered run steps.
+- Injected sandbox execution of the next durable command step with persisted results.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: execute the next durable command step through an injected sandbox boundary; Plan 0008 is complete.
+Planned next: explicitly recover interrupted or timed-out running steps; Plan 0009 is complete.
 
 ## Development
 
@@ -182,6 +183,18 @@ runs.transition_step("step-001", StepStatus.SUCCEEDED, output={"exit_code": 0})
 `start_next_step()` starts the earliest queued step and moves a queued run to running.
 It rejects dispatch when the run already has a running step, preserving sequential
 execution without coupling coordination to a sandbox backend.
+
+Execute the earliest queued command step through any injected executor that implements
+the sandbox execution boundary:
+
+```python
+step, run = runs.execute_next_step("run-002", sandbox)
+```
+
+The stored command and timeout are passed to the executor, and its result completes the
+step and updates the run. Coordination-only steps are rejected before mutation. If the
+executor raises before returning a result, the run and step remain running for explicit
+recovery.
 
 Command arguments and timeouts are stored with the step and survive process restarts.
 Steps may omit a command when they represent coordination-only work.
