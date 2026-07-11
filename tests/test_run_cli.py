@@ -9,6 +9,61 @@ from codex_agentic_os.runtime import RunCoordinator, RunStatus, StepStatus
 from codex_agentic_os.state import StateStore
 
 
+@pytest.mark.parametrize("agent_id", [None, "agent-1"])
+def test_cli_creates_queued_run_and_matches_inspection(
+    tmp_path, capsys, agent_id
+) -> None:
+    database = tmp_path / "nested" / "state.sqlite3"
+    arguments = [
+        "run", "create", "run-1", "--objective", "Build durable work",
+        "--state-db", str(database),
+    ]
+    if agent_id is not None:
+        arguments.extend(["--agent-id", agent_id])
+
+    main(arguments)
+
+    created = json.loads(capsys.readouterr().out)
+    assert created == {
+        "run": {
+            "agent_id": agent_id,
+            "objective": "Build durable work",
+            "output": None,
+            "revision": 1,
+            "run_id": "run-1",
+            "status": "queued",
+        },
+        "steps": [],
+    }
+    assert database.is_file()
+
+    main(["run", "inspect", "run-1", "--state-db", str(database)])
+    assert json.loads(capsys.readouterr().out) == created
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["--objective", "Replacement"], "run already exists: run-1"),
+        (["--objective", " "], "run objective must not be empty"),
+        (["--objective", "Replacement", "--agent-id", " "], "agent id must not be empty"),
+    ],
+)
+def test_cli_create_rejects_duplicate_and_empty_values_without_mutation(
+    tmp_path, capsys, arguments, message
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="Original", agent_id="agent-1")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "create", "run-1", *arguments, "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
 def test_cli_lists_runs_in_identifier_order_without_mutation(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

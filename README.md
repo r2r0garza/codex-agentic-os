@@ -91,10 +91,11 @@ Implemented foundation:
 - Explicit durable recovery for interrupted or timed-out running steps.
 - Operator-facing `run recover` CLI support with typed reasons and optional detail.
 - Read-only deterministic listing of durable runs through `run list`.
+- Operator-facing queued run creation through `run create`.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0013 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0014 is complete.
 
 ## Development
 
@@ -146,6 +147,15 @@ from codex_agentic_os import StateStore
 
 store = StateStore(".codex-agentic-os/state.sqlite3")
 store.put("run", "run-001", status="running", payload={"plan": "plan-001"})
+```
+
+Create a queued durable run from the CLI. The state database is created when needed,
+and the resulting run is printed with an empty ordered step list:
+
+```bash
+codex-agentic-os run create run-001 --objective "Build the repository index"
+codex-agentic-os run create run-002 --objective "Execute durable work" \
+  --agent-id agent-1 --state-db /path/to/state.sqlite3
 ```
 
 Coordinate a validated durable run lifecycle:

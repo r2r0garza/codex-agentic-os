@@ -46,14 +46,18 @@ def _parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser("run", help="inspect and control durable runs")
     run_commands = run.add_subparsers(dest="run_command", required=True)
+    create = run_commands.add_parser("create", help="create a queued durable run")
     list_runs = run_commands.add_parser("list", help="list durable runs")
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
     cancel = run_commands.add_parser("cancel", help="cancel a run and its active steps")
     recover = run_commands.add_parser(
         "recover", help="fail an interrupted or timed-out running step"
     )
-    for command in (list_runs, inspect, cancel, recover):
-        if command is list_runs:
+    create.add_argument("run_id")
+    create.add_argument("--objective", required=True, help="objective for the queued run")
+    create.add_argument("--agent-id", help="optional agent assigned to the run")
+    for command in (create, list_runs, inspect, cancel, recover):
+        if command in (create, list_runs):
             command.add_argument(
                 "--state-db",
                 type=Path,
@@ -115,13 +119,20 @@ def main(argv: Sequence[str] | None = None) -> None:
     repository = Path.cwd()
     try:
         if arguments.command == "run":
-            if not arguments.state_db.is_file():
+            if arguments.run_command != "create" and not arguments.state_db.is_file():
                 raise ValueError(f"state database does not exist: {arguments.state_db}")
             read_only = arguments.run_command in {"inspect", "list"}
             coordinator = RunCoordinator(
                 StateStore(arguments.state_db, read_only=read_only)
             )
-            if arguments.run_command == "list":
+            if arguments.run_command == "create":
+                coordinator.create(
+                    arguments.run_id,
+                    objective=arguments.objective,
+                    agent_id=arguments.agent_id,
+                )
+                run_id = arguments.run_id
+            elif arguments.run_command == "list":
                 print(json.dumps(_run_list_payload(coordinator), indent=2, sort_keys=True))
                 return
             if arguments.run_command == "cancel":
