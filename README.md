@@ -79,6 +79,29 @@ Planned next:
 
 ## Development
 
+### Frontend stack and scaffolding
+
+When frontend work begins, use Next.js, React, and shadcn/ui components. Create the frontend as a named child directory from the directory that should contain it. For example, run the scaffold from the repository root when the frontend folder should live beside `src/`:
+
+```bash
+pnpm dlx shadcn@latest init --preset b0 --template next --name [folder-name] -y
+```
+
+The scaffold contains its own `.gitignore` and initialized `.git/` directory. Before continuing:
+
+1. Merge the scaffold's ignore rules into the repository-root `.gitignore`.
+2. Delete only the scaffold's nested `.git/` directory so the frontend remains part of this repository rather than becoming a nested repository.
+3. Change into the generated frontend directory.
+
+Install the complete shadcn component set from inside the generated frontend directory:
+
+```bash
+pnpm dlx shadcn@latest add accordion alert alert-dialog aspect-ratio attachment avatar badge breadcrumb bubble button button-group calendar card carousel chart checkbox collapsible combobox command context-menu table dialog drawer dropdown-menu empty field hover-card input input-group input-otp item kbd label marker menubar message message-scroller native-select navigation-menu pagination popover progress radio-group resizable scroll-area select separator sheet sidebar skeleton slider sonner spinner switch tabs textarea toggle toggle-group tooltip
+pnpm add @tanstack/react-table
+```
+
+Use the installed `Popover` and `Calendar` components together for date pickers. Use Sonner for toast notifications.
+
 ### Provider credentials
 
 Provider integrations must remain independently usable: a missing API key for one provider must not block development or tests for other providers. Prefer injected transports and offline tests; require live credentials only for explicit integration or end-to-end verification.
