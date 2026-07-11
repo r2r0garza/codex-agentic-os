@@ -8,7 +8,7 @@ Give agents and maintainers a reproducible structural map of the repository befo
 
 ## Initial Scope
 
-The first implementation targets Python and repository metadata already used by codex-agentic-os. It will inventory tracked files and extract Python modules, classes, functions, methods, signatures, imports, and source locations. Cross-language parsing, semantic embeddings, runtime call tracing, and AI-authored summaries are explicitly deferred.
+The first parser targets Python and repository metadata already used by codex-agentic-os. It will inventory tracked files and extract Python modules, classes, functions, methods, signatures, imports, and source locations. The schema, stable identifiers, serialization, and index orchestration must be language-neutral from the start so future frontend languages can be added without replacing existing artifacts. Additional language parsers, semantic embeddings, runtime call tracing, and AI-authored summaries are explicitly deferred.
 
 ## Determinism Contract
 
@@ -17,6 +17,8 @@ The first implementation targets Python and repository metadata already used by 
 - Generated artifacts contain no wall-clock timestamps, host paths, random identifiers, environment-specific values, or secrets.
 - The source tree is authoritative. The complete index can always be deleted and rebuilt.
 - Relationships are labeled by evidence: `declared`, `resolved`, `inferred`, or `unresolved`. The index must not present dynamic Python behavior as certain.
+- Every language-specific parser emits the same normalized record types through a versioned parser interface; language-only details live in optional namespaced fields.
+- Stable identifiers include the language and symbol kind, avoiding assumptions that Python module or qualified-name rules apply to other ecosystems.
 - Schema and generator versions are recorded separately from source content hashes so compatibility and drift are explicit.
 
 ## Proposed Artifacts
@@ -31,8 +33,8 @@ The first implementation targets Python and repository metadata already used by 
 
 - `schema.json`: versioned field definitions and allowed relationship confidence values.
 - `manifest.json`: index version, configuration fingerprint, tracked-file hashes, aggregate content hash, and artifact counts.
-- `symbols.jsonl`: one stable record per module, class, function, or method, including qualified name, signature, visibility, path, and line span.
-- `dependencies.jsonl`: imports and statically resolvable symbol relationships with evidence labels.
+- `symbols.jsonl`: one stable record per language-defined symbol, including language, normalized symbol kind, qualified name, signature, visibility, path, and line span.
+- `dependencies.jsonl`: imports and other statically resolvable relationships with language, relationship kind, and evidence labels.
 
 Generated artifacts will be committed so a new session can inspect the repository map immediately. Large-file thresholds and exclusions will be explicit configuration rather than implicit behavior.
 
@@ -64,7 +66,7 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Tasks
 
-- [ ] Define and test the versioned index schema, stable identifiers, configuration, and determinism rules.
+- [ ] Define and test a language-neutral versioned index schema, parser interface, stable identifiers, configuration, and determinism rules.
 - [ ] Implement tracked-file discovery and content hashing with explicit exclusions and repository-relative paths.
 - [ ] Implement Python AST extraction for modules, classes, functions, methods, signatures, imports, and line spans.
 - [ ] Implement deterministic manifest, JSONL serialization, atomic writes, and clean rebuilds.
@@ -88,7 +90,7 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Deferred Work
 
-- Cross-language parser plugins and language-server integration.
+- Additional parser plugins for frontend and systems languages, plus optional language-server integration.
 - Runtime traces for dynamic calls, reflection, and dependency injection.
 - Semantic embeddings or model-generated summaries.
 - Test coverage mapping beyond explicit imports and naming conventions.
@@ -97,4 +99,4 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Resume Notes
 
-Begin with the schema and determinism task, not parsing breadth. Keep the first change small: specify records and golden fixtures before implementing repository discovery. Do not add provider credentials or network dependencies. When this plan becomes active, update the README status and preserve the credential policy already documented there.
+Begin with the language-neutral schema, parser interface, and determinism task, not parsing breadth. Python is the first parser, not a constraint on the core record model. Keep the first change small: specify records and golden fixtures before implementing repository discovery. Do not add provider credentials or network dependencies. When this plan becomes active, update the README status and preserve the credential policy already documented there.
