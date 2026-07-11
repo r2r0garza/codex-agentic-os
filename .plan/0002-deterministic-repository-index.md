@@ -74,7 +74,7 @@ The initial workflow must not depend on provider API keys, network access, or an
 - [x] Add `index build`, `index check`, and `index explain` CLI commands.
 - [x] Add repository-managed pre-commit integration and contributor documentation.
 - [x] Add CI drift verification using a clean rebuild.
-- [ ] Generate and commit the repository's initial `.code-index/` artifacts.
+- [x] Generate and commit the repository's initial `.code-index/` artifacts.
 - [ ] Evaluate call/reference indexing on real repository patterns and plan a separate extension if static evidence is useful enough.
 
 ## Verification
@@ -99,4 +99,4 @@ The initial workflow must not depend on provider API keys, network access, or an
 
 ## Resume Notes
 
-The CI workflow now runs the test suite and then `codex-agentic-os index check` on pushes to `main` and pull requests, with a regression test protecting that clean-rebuild drift gate. The gate will intentionally report the missing index until the next task generates and commits the repository's initial `.code-index/` artifacts. Next implement only that artifact-generation task; do not begin call/reference evaluation in the same run. No provider credentials are needed.
+The repository now commits its initial deterministic `.code-index/` artifacts, so a fresh checkout has an immediately usable structural map and the CI clean-rebuild drift gate can pass. The next focused task is to evaluate call/reference indexing against real repository patterns and decide whether the static evidence warrants a separately planned extension; do not implement that extension during the evaluation. No provider credentials are needed.
