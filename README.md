@@ -78,10 +78,11 @@ Implemented foundation:
 - Surfaced conservative incoming and outgoing static calls through `index explain`.
 - Regenerated and committed the call-aware repository index, with CI clean-rebuild drift enforcement verified.
 - Durable SQLite persistence for plans, decisions, runs, and agent state, including revision tracking and deterministic reads.
+- Typed durable run coordination with validated queued, running, terminal, and cancellation transitions.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: define the next focused runtime milestone.
+Planned next: add ordered durable step records within a run, as scoped by Plan 0004.
 
 ## Development
 
@@ -133,6 +134,17 @@ from codex_agentic_os import StateStore
 
 store = StateStore(".codex-agentic-os/state.sqlite3")
 store.put("run", "run-001", status="running", payload={"plan": "plan-001"})
+```
+
+Coordinate a validated durable run lifecycle:
+
+```python
+from codex_agentic_os import RunCoordinator, RunStatus, StateStore
+
+runs = RunCoordinator(StateStore(".codex-agentic-os/state.sqlite3"))
+runs.create("run-001", objective="Build the repository index")
+runs.transition("run-001", RunStatus.RUNNING)
+runs.transition("run-001", RunStatus.SUCCEEDED, output={"artifacts": 4})
 ```
 
 Inspect declared capabilities:

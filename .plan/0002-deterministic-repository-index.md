@@ -1,7 +1,7 @@
 # Plan 0002: Deterministic Repository Index
 
 ## Status
-Active
+Complete
 
 ## Goal
 Give agents and maintainers a reproducible structural map of the repository before the codebase becomes difficult to navigate. The index must be derived entirely from tracked source, safe to rebuild, useful without model calls, and precise about relationships that static analysis cannot prove.
