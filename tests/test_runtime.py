@@ -1,5 +1,7 @@
 import pytest
 
+from codex_agentic_os.sandboxes import SandboxResult
+
 from codex_agentic_os.runtime import (
     AgentRun,
     RunCoordinator,
@@ -109,3 +111,70 @@ def test_step_validation_and_terminal_run_rules(tmp_path) -> None:
     coordinator.transition("run-1", RunStatus.CANCELLED)
     with pytest.raises(ValueError, match="terminal run"):
         coordinator.add_step("run-1", "step-2", objective="Too late")
+
+
+def test_sandbox_results_complete_steps_and_run_without_backend_coupling(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    coordinator.add_step("run-1", "first", objective="First command")
+    coordinator.add_step("run-1", "second", objective="Second command")
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    coordinator.transition_step("first", StepStatus.RUNNING)
+
+    first, running = coordinator.complete_step_from_result(
+        "first", SandboxResult(("docker", "run", "true"), 0, "ok\n", "")
+    )
+
+    assert first.status is StepStatus.SUCCEEDED
+    assert first.output == {
+        "command": ["docker", "run", "true"],
+        "exit_code": 0,
+        "stdout": "ok\n",
+        "stderr": "",
+    }
+    assert running.status is RunStatus.RUNNING
+
+    coordinator.transition_step("second", StepStatus.RUNNING)
+    second, succeeded = coordinator.complete_step_from_result(
+        "second", SandboxResult(("podman", "run", "true"), 0, "", "")
+    )
+
+    assert second.status is StepStatus.SUCCEEDED
+    assert succeeded.status is RunStatus.SUCCEEDED
+    assert succeeded.output == {"completed_steps": 2}
+
+
+def test_failed_sandbox_result_fails_step_and_run(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    coordinator.add_step("run-1", "command", objective="Run command")
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    coordinator.transition_step("command", StepStatus.RUNNING)
+
+    step, run = coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "false"), 17, "", "failed\n")
+    )
+
+    assert step.status is StepStatus.FAILED
+    assert step.output == {
+        "command": ["docker", "run", "false"],
+        "exit_code": 17,
+        "stdout": "",
+        "stderr": "failed\n",
+    }
+    assert run.status is RunStatus.FAILED
+    assert run.output == {"failed_step_id": "command", "exit_code": 17}
+
+
+def test_execution_result_requires_running_run_and_step(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    coordinator.add_step("run-1", "command", objective="Run command")
+    result = SandboxResult(("docker", "run", "true"), 0, "", "")
+
+    with pytest.raises(ValueError, match="run must be running"):
+        coordinator.complete_step_from_result("command", result)
+
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    with pytest.raises(ValueError, match="step must be running"):
+        coordinator.complete_step_from_result("command", result)

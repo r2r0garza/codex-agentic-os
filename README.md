@@ -80,10 +80,11 @@ Implemented foundation:
 - Durable SQLite persistence for plans, decisions, runs, and agent state, including revision tracking and deterministic reads.
 - Typed durable run coordination with validated queued, running, terminal, and cancellation transitions.
 - Durable position-ordered run steps with validated lifecycle transitions, revision tracking, and terminal output.
+- Backend-neutral sandbox-result recording that completes durable steps and automatically succeeds or fails their runs.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: connect sandbox execution results to run and step completion without coupling the runtime lifecycle to Docker or Podman, as scoped by Plan 0004.
+Planned next: expose read-only run and ordered-step inspection through the CLI, as scoped by Plan 0004.
 
 ## Development
 
@@ -158,6 +159,14 @@ runs.create("run-002", objective="Execute a sandboxed task")
 runs.add_step("run-002", "step-001", objective="Run the command")
 runs.transition_step("step-001", StepStatus.RUNNING)
 runs.transition_step("step-001", StepStatus.SUCCEEDED, output={"exit_code": 0})
+```
+
+Record a sandbox result through the structural execution-result boundary. A zero exit
+completes the step successfully and succeeds the run when every step is complete; a
+nonzero exit fails both the step and run:
+
+```python
+step, run = runs.complete_step_from_result("step-001", result)
 ```
 
 Inspect declared capabilities:

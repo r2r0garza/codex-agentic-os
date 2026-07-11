@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from enum import StrEnum
-from typing import Mapping
+from typing import Mapping, Protocol, Sequence
 
 from .state import StateRecord, StateStore
 
@@ -74,6 +74,15 @@ class RunStep:
     status: StepStatus
     revision: int
     output: Mapping[str, object] | None = None
+
+
+class ExecutionResult(Protocol):
+    """Backend-neutral command result accepted by run coordination."""
+
+    command: Sequence[str]
+    returncode: int
+    stdout: str
+    stderr: str
 
 
 class RunCoordinator:
@@ -220,6 +229,50 @@ class RunCoordinator:
         return self._step(
             self.store.put("step", step_id, status=status, payload=payload)
         )
+
+    def complete_step_from_result(
+        self, step_id: str, result: ExecutionResult
+    ) -> tuple[RunStep, AgentRun]:
+        """Persist a command result and complete its step and, when final, its run."""
+
+        current = self.get_step(step_id)
+        if current is None:
+            raise KeyError(f"step does not exist: {step_id}")
+        run = self.get(current.run_id)
+        if run is None:  # Defensive: durable step records must reference an existing run.
+            raise KeyError(f"run does not exist: {current.run_id}")
+        if run.status is not RunStatus.RUNNING:
+            raise ValueError(f"run must be running to complete a step: {run.run_id}")
+        if current.status is not StepStatus.RUNNING:
+            raise ValueError(f"step must be running to record a result: {step_id}")
+
+        output: dict[str, object] = {
+            "command": list(result.command),
+            "exit_code": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+        step_status = (
+            StepStatus.SUCCEEDED if result.returncode == 0 else StepStatus.FAILED
+        )
+        step = self.transition_step(step_id, step_status, output=output)
+
+        if step_status is StepStatus.FAILED:
+            run = self.transition(
+                run.run_id,
+                RunStatus.FAILED,
+                output={"failed_step_id": step_id, "exit_code": result.returncode},
+            )
+        elif all(
+            candidate.status is StepStatus.SUCCEEDED
+            for candidate in self.list_steps(run.run_id)
+        ):
+            run = self.transition(
+                run.run_id,
+                RunStatus.SUCCEEDED,
+                output={"completed_steps": len(self.list_steps(run.run_id))},
+            )
+        return step, run
 
     @staticmethod
     def _run(record: StateRecord) -> AgentRun:
