@@ -29,6 +29,15 @@ Provider integrations must remain independently usable: a missing API key for on
 
 When a task first requires environment-based configuration, add or update a committed `.env.example` containing placeholder values and ensure `.env` is ignored by Git. Do not commit secrets. The session performing that work must tell the user to copy `.env.example` to `.env`, identify which variables are required or optional, and clearly report any verification skipped because a key is unavailable.
 
+List the default provider specs (kind, model, base URL, credential variable name, and
+declared capabilities) without inspecting Python source. Credential output is limited
+to environment-variable names; secret values are never read or printed, and the
+command performs no network or state-database access:
+
+```bash
+codex-agentic-os provider list
+```
+
 Send a single message through a configured provider adapter from the CLI. Omitted
 `--model`/`--base-url`/`--api-key-env` fall back to the matching `DEFAULT_PROVIDER_SPECS`
 entry for `--provider`, following the same endpoint/credential policy as the library

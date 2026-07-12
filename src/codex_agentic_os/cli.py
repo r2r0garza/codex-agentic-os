@@ -219,6 +219,10 @@ def _parser() -> argparse.ArgumentParser:
             help="path to the runtime state database",
         )
 
+    provider = commands.add_parser("provider", help="inspect configured model providers")
+    provider_commands = provider.add_subparsers(dest="provider_command", required=True)
+    provider_commands.add_parser("list", help="list default provider specs")
+
     chat = commands.add_parser("chat", help="send ad hoc requests through provider adapters")
     chat_commands = chat.add_subparsers(dest="chat_command", required=True)
     chat_send = chat_commands.add_parser(
@@ -541,6 +545,14 @@ def main(argv: Sequence[str] | None = None) -> None:
                         sort_keys=True,
                     )
                 )
+        elif arguments.command == "provider":
+            print(
+                json.dumps(
+                    [spec.to_dict() for spec in DEFAULT_PROVIDER_SPECS],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
         elif arguments.command == "chat":
             if not arguments.message.strip():
                 raise ValueError("chat message must not be empty")
