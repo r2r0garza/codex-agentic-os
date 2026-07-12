@@ -1,5 +1,27 @@
 # Automation Memory
 
+- Run: 2026-07-12T08:32:29Z — implementation run.
+- Selected issue: #32, OpenRouter default API endpoint.
+- Completed: added canonical `OPENROUTER_DEFAULT_BASE_URL`, reused it in the
+  default provider registry and compatible-adapter fallback, preserved explicit
+  overrides and optional credentials, added Plan 0041, updated Decision 0004,
+  and refreshed the index. Pre-existing README.md and untracked DEVELOPMENT.md
+  changes were preserved and excluded from the commit.
+- Implementation commit: `67d895d73d209112b64e0ff98ff551ea0cd68ff0`;
+  pushed to `origin/main`; issue #32 closed.
+- Verification: `pytest -q tests/test_chat.py tests/test_foundation.py` (22
+  passed); `pytest -q` (236 passed); incremental index build (17 files, 374
+  symbols, 2084 relationships); `index check` current; `git diff --check` clean.
+- Blocked review: no open issues labeled `blocked`.
+- Resulting queue: 2 unblocked `agent-ready` issues — #25 and #26 (both
+  priority:3; #25 older). Recommended next run: backlog replenishment because
+  the queue is at the ≤2 threshold; analyze current state and create/prioritize
+  focused issues without implementing one.
+- Final target state: `main`, pushed to `origin/main`; worktree retains unrelated
+  user changes (`README.md` modified, `DEVELOPMENT.md` untracked).
+
+---
+
 - Run: 2026-07-12T08:05:15Z — implementation run.
 - Selected issue: #31, coordination-only step creation CLI.
 - Completed: made `run add-step`'s trailing command positional optional
