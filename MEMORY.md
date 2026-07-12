@@ -1,5 +1,25 @@
 # Automation Memory
 
+- Run: 2026-07-12T09:31:59Z — implementation run.
+- Selected issue: #33, invalid Anthropic top-level `cache_control` payload.
+- Completed: removed the unsupported field from `AnthropicAdapter.complete()`,
+  updated the exact-payload regression test with an explicit absence assertion,
+  added Plan 0042, and refreshed the deterministic repository index. Public
+  behavior beyond removal of the invalid field is unchanged.
+- Implementation commit: `3ba4d68886e8d0934067aec1814db23403edb024`;
+  pushed to `origin/main`; issue #33 closed with verification results.
+- Verification: `pytest -q tests/test_chat.py` (19 passed); `pytest -q` (236
+  passed); incremental index build (17 files, 374 symbols, 2084 relationships);
+  `index check` current; `git diff --check` clean.
+- Blocked review: no open issues labeled `blocked`.
+- Resulting queue: 6 unblocked `agent-ready` issues — #37 (priority:1), #34 and
+  #36 (priority:2), #25, #26, and #35 (priority:3). Recommended next: #37, the
+  only remaining priority:1 issue.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree
+  clean after the durable MEMORY.md commit.
+
+---
+
 - Run: 2026-07-12T09:05:00Z — backlog-replenishment run.
 - Trigger: only 2 unblocked `agent-ready` issues remained (#25, #26), at the
   ≤2 threshold; per protocol, analyzed repo state and created issues without
