@@ -1,5 +1,27 @@
 # Automation Memory
 
+- Run: 2026-07-12T13:34:58Z — implementation run.
+- Selected issue: #26, operator step transition CLI.
+- Completed: added `run transition-step STEP_ID STATUS [--output JSON]`, delegating
+  lifecycle/output validation and atomic persistence to
+  `RunCoordinator.transition_step()`. The command prints the standard step payload,
+  never executes command-bearing records, and rejects malformed/non-object JSON before
+  mutation. Added Plan 0048, DEVELOPMENT.md examples, focused coordination-only and
+  command-bearing coverage, family-preservation/rejection tests, and refreshed the
+  committed index.
+- Implementation commit: `c3c7147`; pushed to `origin/main`; issue #26 auto-closed by
+  the commit's `Closes #26`; verification comment posted separately.
+- Verification: `pytest -q tests/test_run_cli.py` (120 passed); `pytest -q` (297
+  passed); incremental index build (19 files, 436 symbols, 2415 relationships);
+  `codex-agentic-os index check` current; `git diff --check` clean.
+- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
+- Resulting queue: 3 unblocked `agent-ready` issues — #35, #40, and #41 (all
+  priority:3). Recommended next: #35, the oldest priority:3 issue.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
+  before this durable MEMORY.md update.
+
+---
+
 - Run: 2026-07-12T13:35:50Z — implementation run.
 - Selected issue: #39, chat CLI command wiring `chat.py` provider adapters.
 - Completed: added `codex-agentic-os chat send --provider KIND [--model]
@@ -106,31 +128,3 @@
   current oldest implementation candidate is #26.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree
   clean before this durable MEMORY.md update.
-
----
-
-- Run: 2026-07-12T11:38:00Z — implementation run.
-- Selected issue: #36, durable agent registry (register/list) CLI.
-- Completed: added `Agent`/`AgentRegistry` to `runtime.py` (`register`/`list_agents`)
-  over the already-declared `"agent"` `StateStore` kind, wired
-  `codex-agentic-os agent register AGENT_ID [--label TEXT]` and
-  `codex-agentic-os agent list` following the existing `run` subcommand
-  conventions (`--state-db`, JSON output), exported `Agent`/`AgentRegistry` from
-  the package `__init__`, added Plan 0045, a DEVELOPMENT.md example, and
-  refreshed the index. `run claim`/`add-step --agent-id` remain unchecked
-  identifiers, per issue scope (no heartbeat/liveness or agent-reference
-  validation added).
-- Implementation commit: `d661244`; pushed to `origin/main`; issue #36
-  auto-closed by the commit's `Closes #36`; verification comment posted
-  separately.
-- Verification: `pytest -q tests/test_runtime.py tests/test_agent_cli.py
-  tests/test_run_cli.py` (179 passed); `pytest -q` (265 passed); incremental
-  index build (18 files, 403 symbols, 2220 relationships); `index check`
-  current; `git diff --check` clean.
-- Blocked review: no open issues labeled `blocked`.
-- Resulting queue: 3 unblocked `agent-ready` issues — #25, #26, #35 (all
-  priority:3). Below the 5-10 target band; recommend backlog replenishment
-  next run to add priority:1/2 work before implementing further priority:3
-  issues.
-- Final target state: `main`, pushed to `origin/main`; worktree clean after
-  the durable MEMORY.md commit.
