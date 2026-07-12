@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  issues: read
 
 jobs:
   heartbeat:
@@ -14,14 +15,14 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-      - name: Show next plan task
+      - name: Show agent-ready issue queue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          for plan in sorted(Path('.plan').glob('*.md')):
-              for line in plan.read_text().splitlines():
-                  if line.startswith('- [ ]'):
-                      print(f"Next task from {plan}: {line[6:]}")
-                      raise SystemExit(0)
-          print('No open plan tasks found.')
-          PY
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --label agent-ready --json number,title,labels \
+            --jq '[.[] | select(([.labels[].name] | index("blocked")) | not)]
+              | if length == 0 then
+                  "No unblocked agent-ready issues found."
+                else
+                  (["\(length) unblocked agent-ready issue(s):"] + [.[] | "  #\(.number) \(.title)"]) | join("\n")
+                end'

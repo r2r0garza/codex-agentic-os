@@ -48,7 +48,7 @@ Sandbox declarations live in `src/codex_agentic_os/sandboxes.py`. Execution adap
 
 - `.plan/` stores active and historical implementation plans.
 - `.decisions/` stores architectural decision records explaining why choices were made.
-- `.github/workflows/hourly-agentic-os.yml` defines an hourly heartbeat workflow that identifies the next unchecked plan task.
+- `.github/workflows/hourly-agentic-os.yml` defines an hourly heartbeat workflow that reports the live `agent-ready` GitHub issue queue.
 
 ## Project status
 
