@@ -109,10 +109,11 @@ Implemented foundation:
 - Operator-facing worker CLI that atomically claims the next eligible queued run without a known identifier.
 - Operator-facing queued-step cancellation that preserves its parent run, siblings, and durable positions.
 - Atomic release of an exact queued run claim without overwriting newer ownership or lifecycle state.
+- Operator-facing `run prune` CLI support with machine-readable removed-run and step-count confirmation.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0033 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0034 is complete.
 
 ## Development
 
@@ -334,6 +335,19 @@ codex-agentic-os run cancel run-002 --state-db /path/to/state.sqlite3
 
 Cancellation requires an existing database and rejects terminal runs without changing
 their state.
+
+Permanently remove a terminal run and all of its durable step history. The command
+prints the removed run identifier and the number of removed steps; it never mutates
+queued or running runs:
+
+```bash
+codex-agentic-os run prune run-002
+codex-agentic-os run prune run-002 --state-db /path/to/state.sqlite3
+```
+
+Pruning requires an existing database, a run that exists, and a succeeded, failed, or
+cancelled run status. There is no bulk cleanup, retention policy, or confirmation
+prompt.
 
 Inspect declared capabilities:
 

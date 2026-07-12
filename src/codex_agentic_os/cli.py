@@ -61,6 +61,9 @@ def _parser() -> argparse.ArgumentParser:
     cancel_step = run_commands.add_parser(
         "cancel-step", help="cancel one queued durable step"
     )
+    prune = run_commands.add_parser(
+        "prune", help="permanently remove one terminal run and its steps"
+    )
     execute_next = run_commands.add_parser(
         "execute-next", help="execute the next queued command step in a container"
     )
@@ -97,7 +100,15 @@ def _parser() -> argparse.ArgumentParser:
             default=Path(".codex-agentic-os/state.sqlite3"),
             help="path to the runtime state database",
         )
-    for command in (inspect, inspect_step, cancel, cancel_step, execute_next, recover):
+    for command in (
+        inspect,
+        inspect_step,
+        cancel,
+        cancel_step,
+        prune,
+        execute_next,
+        recover,
+    ):
         identifier = "step_id" if command in (inspect_step, cancel_step, recover) else "run_id"
         command.add_argument(identifier)
         command.add_argument(
@@ -236,6 +247,23 @@ def main(argv: Sequence[str] | None = None) -> None:
                 if step is None:
                     raise ValueError(f"step does not exist: {arguments.step_id}")
                 print(json.dumps(_step_payload(step), indent=2, sort_keys=True))
+                return
+            elif arguments.run_command == "prune":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                pruned_run, pruned_steps = coordinator.prune(arguments.run_id)
+                print(
+                    json.dumps(
+                        {
+                            "pruned": {
+                                "run_id": pruned_run.run_id,
+                                "step_count": len(pruned_steps),
+                            }
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
                 return
             if arguments.run_command == "cancel":
                 coordinator.cancel(arguments.run_id)

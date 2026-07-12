@@ -915,3 +915,85 @@ def test_cli_execute_next_failure_preserves_recoverable_state(
     else:
         assert reloaded.get("run-1").status is RunStatus.RUNNING
         assert reloaded.get_step("step-1").status is StepStatus.RUNNING
+
+
+@pytest.mark.parametrize(
+    ("status", "step_count"),
+    [
+        (RunStatus.SUCCEEDED, 0),
+        (RunStatus.SUCCEEDED, 2),
+        (RunStatus.FAILED, 1),
+        (RunStatus.CANCELLED, 1),
+    ],
+)
+def test_cli_prunes_one_terminal_run_and_reports_step_count(
+    tmp_path, capsys, status, step_count
+) -> None:
+    database = tmp_path / f"{status.value}-{step_count}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Finished work")
+    for index in range(step_count):
+        coordinator.add_step("run-1", f"step-{index}", objective="Work")
+    coordinator.create("keep", objective="Unrelated work")
+    kept_step = coordinator.add_step("keep", "kept", objective="Keep")
+    if status is RunStatus.CANCELLED:
+        coordinator.cancel("run-1")
+    else:
+        coordinator.transition("run-1", RunStatus.RUNNING)
+        coordinator.transition("run-1", status)
+
+    main(["run", "prune", "run-1", "--state-db", str(database)])
+
+    assert json.loads(capsys.readouterr().out) == {
+        "pruned": {"run_id": "run-1", "step_count": step_count}
+    }
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") is None
+    for index in range(step_count):
+        assert reloaded.get_step(f"step-{index}") is None
+    assert reloaded.get("keep") is not None
+    assert reloaded.get_step("kept") == kept_step
+
+
+def test_cli_prune_rejects_missing_database_without_creating_it(tmp_path, capsys) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "prune", "run-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not database.exists()
+
+
+def test_cli_prune_rejects_missing_run_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    kept = coordinator.create("keep", objective="Unrelated work")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "prune", "missing", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "run does not exist: missing" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("keep") == kept
+
+
+@pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.RUNNING])
+def test_cli_prune_rejects_active_runs_without_mutation(tmp_path, capsys, status) -> None:
+    database = tmp_path / f"{status.value}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Active work")
+    original_step = coordinator.add_step("run-1", "step-1", objective="Pending")
+    if status is RunStatus.RUNNING:
+        original_run = coordinator.transition("run-1", status)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "prune", "run-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "run is not terminal" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("step-1") == original_step
