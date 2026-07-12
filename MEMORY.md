@@ -1,5 +1,41 @@
 # Automation Memory
 
+- Run: 2026-07-12T12:05:17Z — backlog-replenishment run.
+- Trigger: only 2 unblocked `agent-ready` issues remained (#26, #35, both
+  priority:3), at or below the ≤2 threshold — no issue was implemented.
+- Reviewed: `src/codex_agentic_os/{cli,runtime,chat,providers,sandboxes}.py`,
+  `DEVELOPMENT.md`, and `.plan/0044`–`0046` resume notes for explicitly
+  deferred scope.
+- Created 4 well-scoped issues, each with objective, acceptance criteria,
+  required tests, and dependencies:
+  - [#38](https://github.com/r2r0garza/codex-agentic-os/issues/38) — validate
+    `agent_id` on `run create`/`claim`/`claim-next` against `AgentRegistry`
+    (priority:2, area:runtime/cli). Deferred by plan 0045.
+  - [#39](https://github.com/r2r0garza/codex-agentic-os/issues/39) — add
+    `codex-agentic-os chat send` wiring the existing `chat.py` adapters
+    (OpenAI-compatible, Anthropic, Google) into the CLI (priority:2,
+    area:cli/providers). No CLI currently reaches `adapter_for`.
+  - [#40](https://github.com/r2r0garza/codex-agentic-os/issues/40) — add
+    `--env KEY=VALUE` passthrough to `SandboxSpec`/`run execute-next`
+    (priority:3, area:sandbox/cli), mirroring the completed `--mount` pattern
+    (plan 0044).
+  - [#41](https://github.com/r2r0garza/codex-agentic-os/issues/41) — add
+    `AgentRegistry.heartbeat()` / `agent heartbeat AGENT_ID` and a `last_seen`
+    field (priority:3, area:runtime/cli). Deferred by plan 0045.
+- Did not create: a 5th issue for "capability negotiation" (plan 0045's other
+  deferred item) — too vague to scope without a concrete consumer; revisit
+  once #39 (chat CLI) or a future runtime-selection issue makes the need
+  concrete.
+- Blocked review: `gh issue list --label blocked` returned no results; nothing
+  to re-evaluate.
+- Resulting queue: 6 unblocked `agent-ready` issues — #38 and #39
+  (priority:2), #26, #35, #40, and #41 (priority:3). Within the 5-10 target
+  band. Recommended next: #38 (oldest priority:2 issue; created before #39).
+- Final target state: `main`, worktree clean; no code changes this run, only
+  this MEMORY.md commit.
+
+---
+
 - Run: 2026-07-12T11:35:18Z — implementation run.
 - Selected issue: #25, operator run transition CLI.
 - Completed: added `run transition RUN_ID STATUS [--output JSON]`, delegating
@@ -94,23 +130,3 @@
   (oldest priority:2 issues; #34 created first).
 - Final target state: `main`, pushed to `origin/main`; worktree clean after
   the durable MEMORY.md commit.
-
----
-
-- Run: 2026-07-12T09:31:59Z — implementation run.
-- Selected issue: #33, invalid Anthropic top-level `cache_control` payload.
-- Completed: removed the unsupported field from `AnthropicAdapter.complete()`,
-  updated the exact-payload regression test with an explicit absence assertion,
-  added Plan 0042, and refreshed the deterministic repository index. Public
-  behavior beyond removal of the invalid field is unchanged.
-- Implementation commit: `3ba4d68886e8d0934067aec1814db23403edb024`;
-  pushed to `origin/main`; issue #33 closed with verification results.
-- Verification: `pytest -q tests/test_chat.py` (19 passed); `pytest -q` (236
-  passed); incremental index build (17 files, 374 symbols, 2084 relationships);
-  `index check` current; `git diff --check` clean.
-- Blocked review: no open issues labeled `blocked`.
-- Resulting queue: 6 unblocked `agent-ready` issues — #37 (priority:1), #34 and
-  #36 (priority:2), #25, #26, and #35 (priority:3). Recommended next: #37, the
-  only remaining priority:1 issue.
-- Final target state: `main`, implementation pushed to `origin/main`; worktree
-  clean after the durable MEMORY.md commit.
