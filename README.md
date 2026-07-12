@@ -95,6 +95,7 @@ Implemented foundation:
 - Read-only deterministic listing of durable runs through `run list`.
 - Repeatable lifecycle-status filtering for read-only durable run listings.
 - Exact assigned-agent filtering for read-only durable run listings.
+- Unassigned-run filtering for read-only durable run listings, including status intersections.
 - Operator-facing queued run creation through `run create`.
 - Atomic queued run creation that rejects competing duplicate identifiers without overwrite.
 - Atomic durable step append with globally unique identifiers and contiguous per-run positions.
@@ -113,7 +114,7 @@ Implemented foundation:
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0034 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0035 is complete.
 
 ## Development
 

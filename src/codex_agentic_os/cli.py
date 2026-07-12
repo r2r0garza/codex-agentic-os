@@ -93,6 +93,11 @@ def _parser() -> argparse.ArgumentParser:
         "--agent-id",
         help="include runs assigned to this exact agent identifier",
     )
+    list_runs.add_argument(
+        "--unassigned",
+        action="store_true",
+        help="include only runs without an assigned agent",
+    )
     for command in (create, claim, claim_next, add_step, list_runs):
         command.add_argument(
             "--state-db",
@@ -154,6 +159,7 @@ def _run_list_payload(
     coordinator: RunCoordinator,
     statuses: Sequence[RunStatus] | None = None,
     agent_id: str | None = None,
+    unassigned: bool = False,
 ) -> list[dict[str, object]]:
     """Return JSON-compatible run summaries in stable identifier order."""
 
@@ -163,6 +169,8 @@ def _run_list_payload(
         if included_statuses is not None and run.status not in included_statuses:
             continue
         if agent_id is not None and run.agent_id != agent_id:
+            continue
+        if unassigned and run.agent_id is not None:
             continue
         summary = asdict(run)
         summary["status"] = run.status.value
@@ -229,6 +237,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             elif arguments.run_command == "list":
                 if arguments.agent_id is not None and not arguments.agent_id.strip():
                     raise ValueError("agent id must not be empty")
+                if arguments.unassigned and arguments.agent_id is not None:
+                    raise ValueError("--unassigned cannot be combined with --agent-id")
                 statuses = (
                     None
                     if arguments.status is None
@@ -236,7 +246,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
                 print(
                     json.dumps(
-                        _run_list_payload(coordinator, statuses, arguments.agent_id),
+                        _run_list_payload(
+                            coordinator,
+                            statuses,
+                            arguments.agent_id,
+                            arguments.unassigned,
+                        ),
                         indent=2,
                         sort_keys=True,
                     )

@@ -353,6 +353,63 @@ def test_cli_agent_filter_can_return_no_matches(tmp_path, capsys) -> None:
     assert json.loads(capsys.readouterr().out) == []
 
 
+def test_cli_filters_unassigned_runs_with_status_and_stable_order(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-d", objective="Assigned running", agent_id="agent-1")
+    queued = coordinator.create("run-c", objective="Unassigned queued")
+    running = coordinator.create("run-b", objective="Unassigned running")
+    coordinator.create("run-a", objective="Assigned queued", agent_id="agent-2")
+    coordinator.transition("run-d", RunStatus.RUNNING)
+    coordinator.transition("run-b", RunStatus.RUNNING)
+
+    main(
+        [
+            "run", "list", "--unassigned", "--status", "running",
+            "--state-db", str(database),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [run["run_id"] for run in payload] == ["run-b"]
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-c") == queued
+    assert reloaded.get("run-b").revision == running.revision + 1
+
+
+def test_cli_unassigned_filter_can_return_no_matches(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    RunCoordinator(StateStore(database)).create(
+        "run-1", objective="Assigned", agent_id="agent-1"
+    )
+
+    main(["run", "list", "--unassigned", "--state-db", str(database)])
+
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_cli_rejects_conflicting_assignment_filters_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="Assigned", agent_id="agent-1")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "list", "--unassigned", "--agent-id", "agent-1",
+                "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "--unassigned cannot be combined with --agent-id" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
 def test_cli_agent_filter_rejects_empty_value_without_mutation(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
@@ -419,6 +476,17 @@ def test_cli_agent_filtered_list_reports_invalid_unmatched_run_records(tmp_path,
 
     with pytest.raises(SystemExit) as exit_info:
         main(["run", "list", "--agent-id", "agent-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "run record has invalid objective: broken" in capsys.readouterr().err
+
+
+def test_cli_unassigned_list_reports_invalid_run_records(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).put("run", "broken", status="queued", payload={})
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "list", "--unassigned", "--state-db", str(database)])
 
     assert exit_info.value.code == 2
     assert "run record has invalid objective: broken" in capsys.readouterr().err
