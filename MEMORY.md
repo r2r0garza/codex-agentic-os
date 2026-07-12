@@ -1,5 +1,17 @@
 # Automation Memory
 
+- Run: 2026-07-12T21:00:00Z — implementation, retrospective, and roadmap-maintenance run.
+- Active milestone at start: Sprint 4 "Durable model-backed step execution" (#4). Selected and closed its sole unblocked `agent-ready` issue, #53 (preserve run state across provider failures and mixed steps, priority:3).
+- Completed: `execute_next_step()` now starts a provider-message step running before resolving its adapter and sending the request, and catches `ValueError`/`RuntimeError`/`NotImplementedError` from either into a new `RunCoordinator.fail_step_from_error()`, which durably fails the step (`{"error": ..., "error_type": ...}`) and cascades the run to failed — mirroring the existing nonzero command-result path (`complete_step_from_result`). Command-step executor exceptions are untouched: they still leave the step/run running for explicit `recover_running_step()`, since a sandbox subprocess's side effects may be unknown. Added Plan 0059 and corrected stale `DEVELOPMENT.md` guidance that said all exceptions leave a step running.
+- Verification: focused runtime tests (transport failure, resolver failure, three-step mixed command/model/command execution in order) and one CLI test (`execute-next` reports a structured failed payload, not a crash) all pass; full suite 353 passed (up from 349); index rebuilt/current (20 files, 513 symbols, 2798 relationships); `git diff --check` passed. Live CLI UAT against a real SQLite database confirmed missing-input rejection (`error: step requires exactly one of command or provider message`, exit 2) and a genuine `openai_compatible` adapter `ValueError` (missing `base_url`) producing a structured `failed` run/step with exit code 0. A parallel attempt to live-dispatch a mixed run's command step through real local Docker stalled on an image pull that produced no observable progress in this session's sandboxed shell (Docker registry itself was reachable via `curl`) — recorded as an environment quirk, not a defect, and corrected in the retrospective issue rather than left misreported.
+- Implementation commit `ae72738` pushed to `origin/main`; issue #53 closed by the commit's `Closes #53` trailer, with a follow-up comment adding full verification evidence.
+- Retrospective: created, populated, and closed issue #54 ("Retrospective: Sprint 4") with all five exit criteria marked pass with evidence; added a same-issue correction comment for the unverified live-Docker claim. Closed milestone #4.
+- Blocked review: no `blocked` issues exist anywhere in the repository; nothing to change.
+- Roadmap horizon: closing Sprint 4 left 2 open milestones (Sprint 5, Sprint 6), below the healthy horizon of 3. Ran `codex-agentic-os-plan-sprints` in the same session; evidence showed Sprint 3 durably persists agent heartbeat liveness (`last_seen`) but nothing in the runtime ever acts on it — a run claimed by a crashed/replaced agent has no compare-and-swap-safe reassignment path, directly gapping VISION.md's "worker replacement" and "coordinate multiple agents without conflicting ownership" requirements. Created Sprint 7 "Stale-claim run reassignment" (#7) as a future (non-active) milestone with objective, exit criteria, scope boundary, dependencies, and rationale; no issues created (only the active milestone gets executable issues). Horizon before: 2 open (5, 6). Horizon after: 3 open (5 active, 6, 7 future).
+- Final target: `main`; next eligible issue: none yet — Sprint 5 "Auditable mixed-step run history" (#5) is now active with 0 issues, so the next run should replenish it before any implementation. Worktree dirty only for this MEMORY record until committed and pushed.
+
+---
+
 - Run: 2026-07-12T20:37:10Z — implementation and closure run.
 - Active milestone: Sprint 4 "Durable model-backed step execution" (#4). Selected and closed its sole unblocked `agent-ready` issue, #52 (execute durable model steps through provider adapters, priority:2).
 - Completed: `execute_next_step()` now dispatches queued provider-message steps through an injected adapter resolver, preserves provider/model/system/temperature/max-token inputs in provider configuration and the provider-neutral chat request, and durably persists normalized content/model/raw response output. `run execute-next` resolves built-in provider configuration for model steps without requiring `--sandbox`; command steps retain the existing sandbox path. Added Plan 0058 and updated DEVELOPMENT runtime guidance.
@@ -38,14 +50,3 @@
 - Blocked review: #52 and #53 remain correctly blocked on predecessor contracts; #51 remains open and `agent-ready` pending test verification. No labels changed.
 - Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed.
 - Final target: `main`; implementation commit `b44bbb0` pushed and issue progress recorded. Next eligible issue remains #51 until verification succeeds.
-
----
-
-- Run: 2026-07-12T18:22:04Z — replenishment run.
-- Active milestone: Sprint 4 "Durable model-backed step execution" (#4). It had no issues and its explicit exit criteria had uncovered implementation work, so no code was implemented this run.
-- Created three milestone-scoped issues: #51 (queue and inspect durable provider-message steps, priority:1, `agent-ready`), #52 (execute durable model steps through provider adapters, priority:2, blocked on #51), and #53 (preserve run state across provider failures and mixed steps, priority:3, blocked on #51/#52).
-- Evidence: VISION and milestone contract reviewed; committed code index was current (20 files, 479 symbols, 2635 relationships); relevant runtime, chat-adapter, CLI, persistence, and sandbox boundaries inspected. The queue maps directly to missing-message rejection, successful durable send, provider-failure semantics, and mixed command/model regression criteria.
-- Verification: GitHub confirms exactly three open Sprint 4 issues with one ready issue and two concretely dependency-blocked issues; repository code was not changed; `codex-agentic-os index check` passed before replenishment.
-- Blocked review: #52 and #53 remain correctly blocked by the explicit predecessor contracts; no blocker was resolved and no labels changed.
-- Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6), so no planning run was needed.
-- Final target: `main`; next eligible issue is #51. GitHub issue creation complete; MEMORY commit/push pending; worktree dirty only for this durable record.
