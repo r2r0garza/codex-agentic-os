@@ -170,6 +170,55 @@ def test_cli_lists_runs_in_identifier_order_without_mutation(tmp_path, capsys) -
     assert reloaded.get("run-b").revision == second.revision + 1
 
 
+def test_cli_filters_runs_by_repeated_status_without_duplicates(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    queued = coordinator.create("run-c", objective="Queued")
+    running = coordinator.create("run-b", objective="Running")
+    succeeded = coordinator.create("run-a", objective="Succeeded")
+    coordinator.transition("run-b", RunStatus.RUNNING)
+    coordinator.transition("run-a", RunStatus.RUNNING)
+    coordinator.transition("run-a", RunStatus.SUCCEEDED)
+
+    main(
+        [
+            "run", "list", "--status", "running", "--status", "queued",
+            "--status", "running", "--state-db", str(database),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(run["run_id"], run["status"]) for run in payload] == [
+        ("run-b", "running"),
+        ("run-c", "queued"),
+    ]
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-c") == queued
+    assert reloaded.get("run-b").revision == running.revision + 1
+    assert reloaded.get("run-a").revision == succeeded.revision + 2
+
+
+def test_cli_status_filter_can_return_no_matches(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Queued")
+
+    main(["run", "list", "--status", "failed", "--state-db", str(database)])
+
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_cli_list_rejects_invalid_status_choice(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).initialize()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "list", "--status", "unknown", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "invalid choice: 'unknown'" in capsys.readouterr().err
+
+
 def test_cli_lists_empty_database(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     StateStore(database).initialize()
@@ -191,6 +240,17 @@ def test_cli_list_reports_invalid_run_records(tmp_path, capsys) -> None:
     StateStore(database).put("run", "broken", status="queued", payload={})
     with pytest.raises(SystemExit) as exit_info:
         main(["run", "list", "--state-db", str(database)])
+    assert exit_info.value.code == 2
+    assert "run record has invalid objective: broken" in capsys.readouterr().err
+
+
+def test_cli_filtered_list_reports_invalid_unmatched_run_records(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).put("run", "broken", status="queued", payload={})
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "list", "--status", "failed", "--state-db", str(database)])
+
     assert exit_info.value.code == 2
     assert "run record has invalid objective: broken" in capsys.readouterr().err
 

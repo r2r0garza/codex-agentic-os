@@ -16,7 +16,7 @@ from .index import (
     unstaged_index_paths,
 )
 from .providers import DEFAULT_PROVIDER_SPECS
-from .runtime import RunCoordinator, RuntimeSpec, StepRecoveryReason
+from .runtime import RunCoordinator, RunStatus, RuntimeSpec, StepRecoveryReason
 from .sandboxes import ContainerSandbox, SandboxKind, SandboxSpec, default_sandboxes
 from .state import StateStore
 
@@ -67,6 +67,12 @@ def _parser() -> argparse.ArgumentParser:
     add_step.add_argument("--objective", required=True, help="objective for the queued step")
     add_step.add_argument("--timeout", type=float, help="positive command timeout in seconds")
     add_step.add_argument("step_command", nargs="+", help="command and arguments to execute")
+    list_runs.add_argument(
+        "--status",
+        action="append",
+        choices=[status.value for status in RunStatus],
+        help="include runs with this lifecycle status; repeat to include multiple statuses",
+    )
     for command in (create, add_step, list_runs):
         command.add_argument(
             "--state-db",
@@ -110,11 +116,17 @@ def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
     return {"run": run_data, "steps": steps}
 
 
-def _run_list_payload(coordinator: RunCoordinator) -> list[dict[str, object]]:
+def _run_list_payload(
+    coordinator: RunCoordinator,
+    statuses: Sequence[RunStatus] | None = None,
+) -> list[dict[str, object]]:
     """Return JSON-compatible run summaries in stable identifier order."""
 
+    included_statuses = None if statuses is None else set(statuses)
     summaries = []
     for run in coordinator.list_runs():
+        if included_statuses is not None and run.status not in included_statuses:
+            continue
         summary = asdict(run)
         summary["status"] = run.status.value
         summaries.append(summary)
@@ -158,7 +170,18 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
                 run_id = arguments.run_id
             elif arguments.run_command == "list":
-                print(json.dumps(_run_list_payload(coordinator), indent=2, sort_keys=True))
+                statuses = (
+                    None
+                    if arguments.status is None
+                    else [RunStatus(status) for status in arguments.status]
+                )
+                print(
+                    json.dumps(
+                        _run_list_payload(coordinator, statuses),
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
                 return
             if arguments.run_command == "cancel":
                 coordinator.cancel(arguments.run_id)
