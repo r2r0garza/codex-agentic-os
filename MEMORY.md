@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-12T22:00:00Z — implementation and unblock run.
+- Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). Selected and closed its sole unblocked `agent-ready` issue, #55 (persist atomic run transition history, priority:1).
+- Completed: added a `run_history` SQLite table and `RunHistoryEntry`/`StateStore.list_run_history()`; `StateStore.insert()` (kind="run"), `claim_run()`, `release_run_claim()`, `claim_next_run()`, and `transition_run()` each append one ordered history row (transition, resulting status, agent_id when known, nullable execution_kind) inside the same `BEGIN IMMEDIATE` transaction as their mutation, after all compare-and-swap checks pass and before commit, so losing/rejected attempts append nothing. Threaded an optional `execution_kind` through `RunCoordinator.transition()` and `list_history()`; `complete_step_from_chat_response()` now passes `execution_kind="provider_message"`. Implicit multi-record mutations (`cancel()`, `complete_step_from_result()`, `fail_step_from_error()`, `recover_running_step()`, `start_next_step()`) were left untouched, matching the issue's excluded scope. Added Plan 0060.
+- Verification: focused StateStore/RunCoordinator history tests (ordering, per-run isolation, restart reconstruction, no-phantom-entry on a losing claim and a stale transition, concurrent-claim contention, execution_kind threading) all pass; full suite 360 passed (up from 353); incremental index rebuild current (20 files, 527 symbols, 2887 relationships); `git diff --check` clean. Live CLI UAT (`run create` → `agent register` → `run claim` → `run transition` against a real SQLite database, then `StateStore.list_run_history()` from a fresh process) confirmed durable ordered reconstruction.
+- Implementation commit `7c86a06` pushed to `origin/main`; issue #55 auto-closed by the commit's `Closes #55` trailer, with a follow-up comment adding full verification evidence.
+- Blocked review: #56 was blocked only on #55, now resolved, so `blocked` was removed and `agent-ready` added. #57 remains correctly blocked on #55 and #56 (#56 still open). Sprint 5 now has one ready issue: #56.
+- Roadmap horizon: 3 open milestones before and after (Sprint 5 active; Sprint 6 and Sprint 7 future); no planning run needed.
+- Final target: `main`; next eligible issue: #56. Worktree dirty only for this MEMORY record until committed and pushed.
+
+---
+
 - Run: 2026-07-12T21:32:24Z — replenishment run.
 - Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). It had no issues, so no implementation was permitted; repository evidence showed uncovered work across atomic history persistence, mixed-step lifecycle provenance, and read-only operator inspection.
 - Created three milestone-scoped issues: #55 (persist atomic run transition history, priority:1, `agent-ready`), #56 (record mixed-step lifecycle provenance atomically, priority:2, blocked on #55), and #57 (inspect mixed-run history from the CLI, priority:3, blocked on #55/#56). Each maps directly to named Sprint 5 exit criteria and excludes cross-run analytics, logging infrastructure, retention, and future approval work.
@@ -41,12 +52,3 @@
 - Issue #51 closed with commit hashes and verification evidence. Blocked review: #52's sole dependency (#51) is now resolved, so `blocked` was removed and `agent-ready` added; #53 remains correctly blocked on #52.
 - Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed.
 - Final target: `main`; commits `c8294a9` (test fixes) pushed pending this record; issue #51 closed, #52 unblocked. Next eligible issue is #52. Worktree dirty only for this MEMORY record until committed and pushed.
-
----
-
-- Run: 2026-07-12T19:34:25Z — incomplete implementation verification run.
-- Active milestone: Sprint 4 "Durable model-backed step execution" (#4). Re-selected its sole unblocked `agent-ready` issue, #51 (queue and inspect durable provider-message steps, priority:1); no new implementation was needed because commit `b44bbb0` remains pushed on `main`.
-- Verification completed: direct persistence/reconstruction across process restart passed; missing-input and command-plus-message rejection preserved run revision and step records; Python compilation passed; committed index is current (20 files, 485 symbols, 2691 relationships); `git diff --check` passed.
-- Verification blocker persists: the activated repository `.venv` is valid but contains neither pytest nor the project entry point. A bounded `pip3 install -e '.[dev]'` retry stalled while installing build dependencies, and a bounded binary-only `pip3 install 'pytest>=8.0'` retry also stalled without a package response; both were cancelled. No system Python or alternate installer was used.
-- Issue state: #51 remains open and `agent-ready` because focused and full pytest verification is still required. #52 remains correctly blocked on #51; #53 remains correctly blocked on #51/#52. No labels changed.
-- Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed. Final target is `main`; next eligible issue remains #51. Worktree should be dirty only for this durable record until committed and pushed.
