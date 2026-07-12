@@ -9,7 +9,7 @@ from typing import Callable, Mapping, Protocol, Sequence
 
 from .chat import ChatAdapter, ChatMessage, ChatRequest, ChatResponse
 
-from .state import StateConflictError, StateRecord, StateStore
+from .state import RunHistoryEntry, StateConflictError, StateRecord, StateStore
 
 
 class RuntimeKind(StrEnum):
@@ -254,6 +254,7 @@ class RunCoordinator:
         status: RunStatus,
         *,
         output: Mapping[str, object] | None = None,
+        execution_kind: str | None = None,
     ) -> AgentRun:
         """Advance a run through an allowed lifecycle edge."""
 
@@ -276,12 +277,20 @@ class RunCoordinator:
                 expected_revision=current.revision,
                 status=status,
                 payload=payload,
+                execution_kind=execution_kind,
             )
         except StateConflictError as error:
             raise ValueError(f"run transition conflict: {run_id}") from error
         except KeyError as error:
             raise KeyError(f"run does not exist: {run_id}") from error
         return self._run(record)
+
+    def list_history(self, run_id: str) -> tuple[RunHistoryEntry, ...]:
+        """Return one run's durable lifecycle history in order."""
+
+        if self.get(run_id) is None:
+            raise KeyError(f"run does not exist: {run_id}")
+        return self.store.list_run_history(run_id)
 
     def cancel(self, run_id: str) -> AgentRun:
         """Atomically cancel a run and each of its queued or running steps."""
@@ -664,6 +673,7 @@ class RunCoordinator:
                 run.run_id,
                 RunStatus.SUCCEEDED,
                 output={"completed_steps": len(self.list_steps(run.run_id))},
+                execution_kind="provider_message",
             )
         return step, run
 

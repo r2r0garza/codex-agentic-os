@@ -21,6 +21,18 @@ class StateRecord:
     revision: int
 
 
+@dataclass(frozen=True, slots=True)
+class RunHistoryEntry:
+    """One durable, ordered provenance entry for a run's lifecycle."""
+
+    run_id: str
+    sequence: int
+    transition: str
+    status: str
+    agent_id: str | None = None
+    execution_kind: str | None = None
+
+
 class StateConflictError(ValueError):
     """Raised when insert-only persistence finds an existing identity."""
 
@@ -39,6 +51,17 @@ class StateStore:
             PRIMARY KEY (kind, key),
             CHECK (kind IN ('plan', 'decision', 'run', 'step', 'agent')),
             CHECK (revision > 0)
+        )
+    """
+    _CREATE_HISTORY_TABLE = """
+        CREATE TABLE IF NOT EXISTS run_history (
+            run_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            transition TEXT NOT NULL,
+            status TEXT NOT NULL,
+            agent_id TEXT,
+            execution_kind TEXT,
+            PRIMARY KEY (run_id, sequence)
         )
     """
 
@@ -73,6 +96,7 @@ class StateStore:
                     "INSERT INTO state_records SELECT * FROM state_records_old"
                 )
                 connection.execute("DROP TABLE state_records_old")
+            connection.execute(self._CREATE_HISTORY_TABLE)
             connection.commit()
 
     def put(
@@ -136,6 +160,15 @@ class StateStore:
                     """,
                     (kind, key, status, encoded),
                 )
+                if kind == "run":
+                    self._append_run_history(
+                        connection,
+                        key,
+                        transition="created",
+                        status=status,
+                        agent_id=payload.get("agent_id"),
+                        execution_kind=None,
+                    )
                 connection.commit()
         except sqlite3.IntegrityError as error:
             raise StateConflictError(
@@ -206,6 +239,14 @@ class StateStore:
                 """,
                 (claimed_encoded, claimed_revision, run_id),
             )
+            self._append_run_history(
+                connection,
+                run_id,
+                transition="claimed",
+                status=status,
+                agent_id=agent_id,
+                execution_kind=None,
+            )
             connection.commit()
         return StateRecord("run", run_id, status, claimed_payload, claimed_revision)
 
@@ -248,6 +289,14 @@ class StateStore:
                 """,
                 (released_encoded, released_revision, run_id),
             )
+            self._append_run_history(
+                connection,
+                run_id,
+                transition="claim_released",
+                status=status,
+                agent_id=agent_id,
+                execution_kind=None,
+            )
             connection.commit()
         return StateRecord("run", run_id, status, released_payload, released_revision)
 
@@ -259,6 +308,7 @@ class StateStore:
         expected_revision: int,
         status: str,
         payload: Mapping[str, object],
+        execution_kind: str | None = None,
     ) -> StateRecord:
         """Advance one run in a write transaction when it matches an expected state."""
 
@@ -297,6 +347,14 @@ class StateStore:
                 WHERE kind = 'run' AND key = ?
                 """,
                 (status, encoded, new_revision, run_id),
+            )
+            self._append_run_history(
+                connection,
+                run_id,
+                transition="transitioned",
+                status=status,
+                agent_id=payload.get("agent_id"),
+                execution_kind=execution_kind,
             )
             connection.commit()
         return StateRecord("run", run_id, status, json.loads(encoded), new_revision)
@@ -394,6 +452,14 @@ class StateStore:
                 WHERE kind = 'run' AND key = ?
                 """,
                 (claimed_encoded, claimed_revision, run_id),
+            )
+            self._append_run_history(
+                connection,
+                run_id,
+                transition="claimed",
+                status=status,
+                agent_id=agent_id,
+                execution_kind=None,
             )
             connection.commit()
         return StateRecord("run", run_id, status, claimed_payload, claimed_revision)
@@ -497,6 +563,31 @@ class StateStore:
             connection.commit()
         return StateRecord("step", step_id, status, stored_payload, 1)
 
+    def list_run_history(self, run_id: str) -> tuple[RunHistoryEntry, ...]:
+        """Return one run's durable history entries in stable sequence order."""
+
+        self._validate_identity("run", run_id)
+        self.initialize()
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT run_id, sequence, transition, status, agent_id, execution_kind
+                FROM run_history WHERE run_id = ? ORDER BY sequence
+                """,
+                (run_id,),
+            ).fetchall()
+        return tuple(
+            RunHistoryEntry(
+                run_id=str(row[0]),
+                sequence=int(row[1]),
+                transition=str(row[2]),
+                status=str(row[3]),
+                agent_id=row[4],
+                execution_kind=row[5],
+            )
+            for row in rows
+        )
+
     def get(self, kind: str, key: str) -> StateRecord | None:
         """Return a stored document, or ``None`` when it is absent."""
 
@@ -574,6 +665,38 @@ class StateStore:
             (kind, key, status, encoded, revision),
         )
         return StateRecord(kind, key, status, json.loads(encoded), revision)
+
+    @staticmethod
+    def _append_run_history(
+        connection: sqlite3.Connection,
+        run_id: str,
+        *,
+        transition: str,
+        status: str,
+        agent_id: object,
+        execution_kind: str | None,
+    ) -> None:
+        """Append one ordered history entry on a caller-owned run mutation transaction."""
+
+        row = connection.execute(
+            "SELECT MAX(sequence) FROM run_history WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        sequence = 1 if row is None or row[0] is None else int(row[0]) + 1
+        connection.execute(
+            """
+            INSERT INTO run_history
+                (run_id, sequence, transition, status, agent_id, execution_kind)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                sequence,
+                transition,
+                status,
+                agent_id if isinstance(agent_id, str) else None,
+                execution_kind,
+            ),
+        )
 
     @staticmethod
     def _delete_on_connection(

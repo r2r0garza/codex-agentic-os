@@ -1,8 +1,14 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from codex_agentic_os.state import StateConflictError, StateRecord, StateStore
+from codex_agentic_os.state import (
+    RunHistoryEntry,
+    StateConflictError,
+    StateRecord,
+    StateStore,
+)
 
 
 @pytest.mark.parametrize("kind", ["plan", "decision", "run", "step", "agent"])
@@ -230,6 +236,122 @@ def test_schema_rejects_unknown_kinds_outside_the_api(tmp_path) -> None:
             "INSERT INTO state_records VALUES (?, ?, ?, ?, ?)",
             ("unknown", "key", "active", "{}", 1),
         )
+
+
+def test_run_history_records_creation_claim_release_and_transition_in_order(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("run", "run-1", status="queued", payload={"objective": "Build"})
+    store.claim_run("run-1", "agent-1")
+    store.release_run_claim("run-1", "agent-1")
+    store.claim_run("run-1", "agent-2")
+    store.transition_run(
+        "run-1",
+        expected_status="queued",
+        expected_revision=4,
+        status="running",
+        payload={"objective": "Build", "agent_id": "agent-2"},
+        execution_kind="provider_message",
+    )
+
+    history = StateStore(database).list_run_history("run-1")
+
+    assert history == (
+        RunHistoryEntry("run-1", 1, "created", "queued", None, None),
+        RunHistoryEntry("run-1", 2, "claimed", "queued", "agent-1", None),
+        RunHistoryEntry("run-1", 3, "claim_released", "queued", "agent-1", None),
+        RunHistoryEntry("run-1", 4, "claimed", "queued", "agent-2", None),
+        RunHistoryEntry(
+            "run-1", 5, "transitioned", "running", "agent-2", "provider_message"
+        ),
+    )
+
+
+def test_run_history_is_isolated_per_run_and_reconstructs_after_restart(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("run", "run-1", status="queued", payload={"objective": "First"})
+    store.insert("run", "run-2", status="queued", payload={"objective": "Second"})
+    store.claim_run("run-2", "agent-1")
+
+    reloaded = StateStore(database)
+    assert reloaded.list_run_history("run-1") == (
+        RunHistoryEntry("run-1", 1, "created", "queued", None, None),
+    )
+    assert reloaded.list_run_history("run-2") == (
+        RunHistoryEntry("run-2", 1, "created", "queued", None, None),
+        RunHistoryEntry("run-2", 2, "claimed", "queued", "agent-1", None),
+    )
+    assert reloaded.list_run_history("missing-run") == ()
+
+
+def test_losing_claim_and_stale_transition_append_no_history_entry(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("run", "run-1", status="queued", payload={"objective": "Build"})
+    store.claim_run("run-1", "agent-1")
+
+    with pytest.raises(StateConflictError):
+        store.claim_run("run-1", "agent-2")
+    with pytest.raises(StateConflictError, match="state run transition conflict"):
+        store.transition_run(
+            "run-1",
+            expected_status="queued",
+            expected_revision=99,
+            status="running",
+            payload={"objective": "Build", "agent_id": "agent-1"},
+        )
+
+    assert store.list_run_history("run-1") == (
+        RunHistoryEntry("run-1", 1, "created", "queued", None, None),
+        RunHistoryEntry("run-1", 2, "claimed", "queued", "agent-1", None),
+    )
+
+
+def test_competing_claims_append_exactly_one_history_entry(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("run", "run-1", status="queued", payload={"objective": "Build"})
+    stores = (StateStore(database), StateStore(database))
+
+    def attempt(instance: StateStore, agent_id: str) -> bool:
+        try:
+            instance.claim_run("run-1", agent_id)
+            return True
+        except StateConflictError:
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(attempt, instance, agent_id)
+            for instance, agent_id in zip(stores, ("agent-1", "agent-2"))
+        ]
+        results = [future.result() for future in futures]
+
+    assert sorted(results) == [False, True]
+    claim_entries = [
+        entry
+        for entry in StateStore(database).list_run_history("run-1")
+        if entry.transition == "claimed"
+    ]
+    assert len(claim_entries) == 1
+
+
+def test_claim_next_run_appends_a_claimed_history_entry(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("run", "run-1", status="queued", payload={"objective": "Build"})
+
+    store.claim_next_run("agent-1")
+
+    assert store.list_run_history("run-1") == (
+        RunHistoryEntry("run-1", 1, "created", "queued", None, None),
+        RunHistoryEntry("run-1", 2, "claimed", "queued", "agent-1", None),
+    )
 
 
 def test_existing_database_schema_is_upgraded_for_steps(tmp_path) -> None:

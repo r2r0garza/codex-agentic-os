@@ -1061,6 +1061,52 @@ def test_execute_next_step_sends_provider_message_and_persists_response(tmp_path
     assert RunCoordinator(StateStore(database)).get_step("manual") == step
 
 
+def test_execute_next_step_records_provider_message_execution_kind_in_history(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("Durable answer", model="served-model")
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Coordinate work")
+    coordinator.add_step(
+        "run-1",
+        "manual",
+        objective="Review output",
+        message=ProviderMessage(provider="local", content="Review output"),
+    )
+
+    coordinator.execute_next_step("run-1", adapter_resolver=lambda _: Adapter())
+
+    history = RunCoordinator(StateStore(database)).list_history("run-1")
+    assert [entry.transition for entry in history] == ["created", "transitioned"]
+    assert history[-1].status == "succeeded"
+    assert history[-1].execution_kind == "provider_message"
+
+
+def test_list_history_reflects_create_claim_and_transition_and_rejects_missing_run(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Build feature")
+    coordinator.claim("run-1", "agent-1")
+    coordinator.transition("run-1", RunStatus.RUNNING)
+
+    history = RunCoordinator(StateStore(database)).list_history("run-1")
+
+    assert [(entry.transition, entry.status, entry.agent_id) for entry in history] == [
+        ("created", "queued", None),
+        ("claimed", "queued", "agent-1"),
+        ("transitioned", "running", "agent-1"),
+    ]
+    with pytest.raises(KeyError, match="run does not exist: missing"):
+        coordinator.list_history("missing")
+
+
 def test_competing_model_execution_sends_step_once(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
