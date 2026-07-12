@@ -48,6 +48,17 @@ codex-agentic-os chat send --provider anthropic --model claude-sonnet-4 "Summari
 codex-agentic-os chat send --provider lm_studio "hello"
 ```
 
+Add an optional `--system TEXT` instruction ahead of the message. It maps to each
+provider's native system-message shape (OpenAI-compatible `system` role message,
+Anthropic top-level `system` field, Google `systemInstruction`); omitting it preserves
+today's payloads exactly, and an empty or whitespace-only value is rejected before any
+network call:
+
+```bash
+codex-agentic-os chat send --provider anthropic --model claude-sonnet-4 \
+  --system "Answer in one sentence." "Summarize this repo"
+```
+
 Install locally:
 
 ```bash

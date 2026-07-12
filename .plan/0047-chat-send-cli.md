@@ -33,3 +33,12 @@ now cleanly surfaces `ContainerSandbox`'s "backend is not installed" `RuntimeErr
 `run execute-next`, previously an uncaught traceback) — no existing test relied on that
 error propagating uncaught through `main()`. Resume with the next prioritized unblocked
 `agent-ready` GitHub issue.
+
+## Follow-up: Issue #43 — `--system TEXT` option
+Added optional `chat send --system TEXT`, reusing the existing per-adapter system-message
+mapping in `chat.py` (`AnthropicAdapter`'s top-level `system` field, `GoogleAdapter`'s
+`systemInstruction`, and `OpenAICompatibleAdapter`'s ordinary `system` role message) —
+no adapter changes were needed. The CLI rejects an empty or whitespace-only `--system`
+value with `ValueError` before building the provider spec or invoking the adapter,
+mirroring the existing empty-message check. Omitting `--system` leaves the single
+`ChatMessage("user", ...)` payload unchanged.

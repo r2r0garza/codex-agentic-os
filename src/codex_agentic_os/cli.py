@@ -240,6 +240,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     chat_send.add_argument("--temperature", type=float, help="sampling temperature")
     chat_send.add_argument("--max-tokens", type=int, help="maximum response tokens")
+    chat_send.add_argument(
+        "--system", help="optional system instruction sent ahead of the message"
+    )
     return parser
 
 
@@ -556,12 +559,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif arguments.command == "chat":
             if not arguments.message.strip():
                 raise ValueError("chat message must not be empty")
+            if arguments.system is not None and not arguments.system.strip():
+                raise ValueError("chat system instruction must not be empty")
             spec = _chat_provider_spec(
                 arguments.provider, arguments.model, arguments.base_url, arguments.api_key_env
             )
+            messages = (
+                (ChatMessage("system", arguments.system), ChatMessage("user", arguments.message))
+                if arguments.system
+                else (ChatMessage("user", arguments.message),)
+            )
             response = adapter_for(spec).complete(
                 ChatRequest(
-                    (ChatMessage("user", arguments.message),),
+                    messages,
                     temperature=arguments.temperature,
                     max_tokens=arguments.max_tokens,
                 )
