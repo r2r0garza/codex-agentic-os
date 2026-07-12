@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-12T20:07:00Z — implementation verification and closure run.
+- Active milestone: Sprint 4 "Durable model-backed step execution" (#4). Re-selected its sole unblocked `agent-ready` issue, #51 (queue and inspect durable provider-message steps, priority:1); implementation commit `b44bbb0` was already on `main`, so this run finished verification.
+- Root cause of the prior blocker: the activated `.venv` genuinely had no pytest and no project entry point; earlier `pip3` retries had been cancelled too early. Network to PyPI is slow (~40s/request) but functional. Both `pip3 install 'pytest>=8.0'` and `pip3 install -e '.[dev]'` succeeded when given several minutes.
+- Once pytest ran for the first time, the full suite revealed a real regression: the new exactly-one-of-command-or-message validation rejected the command-less "coordination-only" step that 67 pre-existing tests relied on as a fixture or, in three CLI tests, as a named feature. Fixed in commit `c8294a9` by adding a command or provider message to the affected fixtures, and rewrote `test_cli_add_step_rejects_bare_double_dash_as_objective_only` to expect rejection, removed the now-redundant `test_cli_adds_objective_only_step_and_matches_inspection`, and reworked `test_cli_adds_mixed_objective_only_and_command_steps_in_order` plus the `execute-next` "coordination" failure case to use provider-message steps instead of command-less ones.
+- Verification: full suite 348 passed; direct CLI UAT (create, add-step with provider-message flags, inspect-step, inspect, rejection of a step missing both command and message with exit code 2, persistence across a new process invocation); `codex-agentic-os index check` current after rebuild (20 files, 484 symbols, 2693 relationships); `git diff --check` clean.
+- Issue #51 closed with commit hashes and verification evidence. Blocked review: #52's sole dependency (#51) is now resolved, so `blocked` was removed and `agent-ready` added; #53 remains correctly blocked on #52.
+- Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed.
+- Final target: `main`; commits `c8294a9` (test fixes) pushed pending this record; issue #51 closed, #52 unblocked. Next eligible issue is #52. Worktree dirty only for this MEMORY record until committed and pushed.
+
+---
+
 - Run: 2026-07-12T19:34:25Z — incomplete implementation verification run.
 - Active milestone: Sprint 4 "Durable model-backed step execution" (#4). Re-selected its sole unblocked `agent-ready` issue, #51 (queue and inspect durable provider-message steps, priority:1); no new implementation was needed because commit `b44bbb0` remains pushed on `main`.
 - Verification completed: direct persistence/reconstruction across process restart passed; missing-input and command-plus-message rejection preserved run revision and step records; Python compilation passed; committed index is current (20 files, 485 symbols, 2691 relationships); `git diff --check` passed.
@@ -40,15 +51,3 @@
 - Roadmap horizon: 3 open milestones (Sprint 3, Sprint 4, Sprint 5) before closure, then 2. Invoked `codex-agentic-os-plan-sprints` and created Sprint 6 "Operator approval-gated execution" (#6, future, no issues), restoring exactly 3 open milestones: Sprint 4, Sprint 5, Sprint 6. No issue was created outside the active milestone.
 - Resulting active queue: Sprint 4 has no issues yet and requires a replenishment run derived from its durable model-backed step execution exit criteria; there is no eligible implementation issue until replenishment.
 - Final target: `main`; issue #46 and retrospective #50 closed; Sprint 3 closed; Sprint 6 created; implementation pushed. This MEMORY update is the remaining durable record to commit and push.
-
----
-
-- Run: 2026-07-12T18:15:06Z — retrospective run plus roadmap-horizon maintenance.
-- Active milestone at selection: Sprint 2 "Reproducible sandbox execution context" (#2). All implementation issues were already closed, so this run performed no implementation.
-- Retrospective: created and closed issue #49 after every user-visible exit criterion passed. Direct operator UAT confirmed exact Docker and Podman composition of mounts, environment, absolute workdir, image, and isolated (`--network none`) versus explicitly enabled (`--network bridge`) policy. Invalid image, mount, environment, and workdir regression cases preserve queued run/step state before claim. No remediation milestone was required; Sprint 2 was closed.
-- Verification: full suite (336 passed); composed Docker/Podman command-construction UAT passed in both network modes; `run execute-next --help` confirmed the explicit opt-in and isolated default; index current (20 files, 470 symbols, 2572 relationships); `git diff --check` clean.
-- Architecture/documentation: existing `SandboxSpec` / `ContainerSandbox` validation and deterministic rendering boundary remains intact; no decision change required. DEVELOPMENT already documents the completed operator workflow.
-- Blocked review: no open `blocked` issues; nothing changed.
-- Roadmap horizon: 3 open milestones (Sprint 2, Sprint 3, Sprint 4) before retrospective closure, then 2. Invoked `codex-agentic-os-plan-sprints` and created Sprint 5 "Auditable mixed-step run history" (#5, future, no issues), restoring exactly 3 open milestones: Sprint 3, Sprint 4, Sprint 5. No issue was created outside the active milestone.
-- Resulting active queue: Sprint 3 has one unblocked `agent-ready` priority:3 issue, #46 (read-only agent inspection CLI), which is the next eligible implementation issue.
-- Final target: `main`; retrospective issue and Sprint 2 milestone closed; Sprint 5 created; durable run record commit `08aabb1` pushed to `origin/main`; worktree clean after recording.
