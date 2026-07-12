@@ -85,7 +85,12 @@ def _parser() -> argparse.ArgumentParser:
     add_step.add_argument("step_id")
     add_step.add_argument("--objective", required=True, help="objective for the queued step")
     add_step.add_argument("--timeout", type=float, help="positive command timeout in seconds")
-    add_step.add_argument("step_command", nargs="+", help="command and arguments to execute")
+    add_step.add_argument(
+        "step_command",
+        nargs="*",
+        default=[],
+        help="optional command and arguments to execute; omit for a coordination-only step",
+    )
     list_runs.add_argument(
         "--status",
         action="append",
@@ -238,7 +243,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     arguments.run_id,
                     arguments.step_id,
                     objective=arguments.objective,
-                    command=arguments.step_command,
+                    command=arguments.step_command or None,
                     timeout=arguments.timeout,
                 )
                 run_id = arguments.run_id

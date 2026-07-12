@@ -107,6 +107,95 @@ def test_cli_adds_ordered_command_steps_and_matches_inspection(tmp_path, capsys)
     assert json.loads(capsys.readouterr().out) == second_payload
 
 
+def test_cli_adds_objective_only_step_and_matches_inspection(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    run = coordinator.create("run-1", objective="Coordinate durable work")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Coordination checkpoint",
+            "--state-db", str(database),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["revision"] == run.revision
+    assert payload["steps"][0] == {
+        "command": None,
+        "objective": "Coordination checkpoint",
+        "output": None,
+        "position": 1,
+        "revision": 1,
+        "run_id": "run-1",
+        "status": "queued",
+        "step_id": "step-1",
+        "timeout": None,
+    }
+
+    main(["run", "inspect", "run-1", "--state-db", str(database)])
+    assert json.loads(capsys.readouterr().out) == payload
+
+
+def test_cli_adds_mixed_objective_only_and_command_steps_in_order(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Mixed durable work")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Checkpoint",
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+    main(
+        [
+            "run", "add-step", "run-1", "step-2", "--objective", "Command work",
+            "--state-db", str(database), "true",
+        ]
+    )
+    capsys.readouterr()
+    main(
+        [
+            "run", "add-step", "run-1", "step-3", "--objective", "Final checkpoint",
+            "--state-db", str(database),
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert [step["step_id"] for step in payload["steps"]] == ["step-1", "step-2", "step-3"]
+    assert [step["position"] for step in payload["steps"]] == [1, 2, 3]
+    assert payload["steps"][0]["command"] is None
+    assert payload["steps"][1]["command"] == ["true"]
+    assert payload["steps"][2]["command"] is None
+
+    main(["run", "inspect", "run-1", "--state-db", str(database)])
+    assert json.loads(capsys.readouterr().out) == payload
+
+
+def test_cli_add_step_rejects_timeout_without_command_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Original")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "add-step", "run-1", "step-1", "--objective", "Work",
+                "--timeout", "5", "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "step timeout requires a command" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.list_steps("run-1") == ()
+
+
 def test_cli_claims_run_and_prints_ordered_steps(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

@@ -117,6 +117,7 @@ Implemented foundation:
 - Explicit endpoint and credential policy for OpenAI-compatible, LM Studio, and Ollama providers, with LM Studio and Ollama defaulting to their standard local base URLs and OpenAI-compatible requiring an explicit base URL.
 - Atomic durable run lifecycle transitions using a SQLite compare-and-swap so competing coordinators cannot overwrite a newer run revision.
 - Atomic explicit durable step lifecycle transitions using the same compare-and-swap principle.
+- Operator-facing coordination-only durable step creation through `run add-step` without a sandbox command.
 
 Verification note: the full local pytest suite passes.
 
@@ -302,6 +303,14 @@ run payload:
 ```bash
 codex-agentic-os run add-step run-002 step-001 --objective "Run checks" \
   --timeout 30 --state-db .codex-agentic-os/state.sqlite3 -- pytest -q
+```
+
+Omit the trailing command to append a coordination-only step; a timeout requires a
+command and is rejected otherwise:
+
+```bash
+codex-agentic-os run add-step run-002 step-002 --objective "Await review" \
+  --state-db .codex-agentic-os/state.sqlite3
 ```
 
 Record a sandbox result through the structural execution-result boundary. A zero exit
