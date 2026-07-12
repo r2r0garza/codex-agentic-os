@@ -525,6 +525,8 @@ def test_recover_running_step_fails_step_and_run_durably(tmp_path, reason) -> No
         "failed_step_id": "command",
         "recovery_reason": reason.value,
     }
+    assert step.revision == 3
+    assert run.revision == 3
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get_step("command") == step
     assert reloaded.get("run-1") == run
@@ -553,3 +555,39 @@ def test_recover_running_step_validates_state_and_reason_before_mutation(tmp_pat
 
     assert coordinator.get("run-1").status is RunStatus.RUNNING
     assert coordinator.get_step("command").status is StepStatus.RUNNING
+
+
+def test_recover_running_step_rolls_back_step_and_run_when_batch_write_fails(
+    tmp_path, monkeypatch
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Execute command", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1", "command", objective="Wait", command=("sleep", "10"), timeout=1
+    )
+    original_step = coordinator.start_next_step("run-1")
+    original_run = coordinator.get("run-1")
+    original_write = store._put_on_connection
+    writes = 0
+
+    def fail_after_first_write(connection, kind, key, status, encoded):
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise RuntimeError("injected persistence failure")
+        return original_write(connection, kind, key, status, encoded)
+
+    monkeypatch.setattr(store, "_put_on_connection", fail_after_first_write)
+
+    with pytest.raises(RuntimeError, match="injected persistence failure"):
+        coordinator.recover_running_step(
+            "command",
+            StepRecoveryReason.INTERRUPTED,
+            detail="worker process exited before recording a result",
+        )
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get_step("command") == original_step
+    assert reloaded.get("run-1") == original_run

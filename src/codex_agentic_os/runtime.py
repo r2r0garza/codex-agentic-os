@@ -477,12 +477,34 @@ class RunCoordinator:
         output: dict[str, object] = {"recovery_reason": reason.value}
         if detail is not None:
             output["recovery_detail"] = detail
-        step = self.transition_step(step_id, StepStatus.FAILED, output=output)
-        run = self.transition(
-            run.run_id,
-            RunStatus.FAILED,
-            output={"failed_step_id": step_id, "recovery_reason": reason.value},
+        step_payload: dict[str, object] = {
+            "run_id": current.run_id,
+            "position": current.position,
+            "objective": current.objective,
+            "output": output,
+        }
+        if current.command is not None:
+            step_payload["command"] = list(current.command)
+        if current.timeout is not None:
+            step_payload["timeout"] = current.timeout
+
+        run_payload: dict[str, object] = {
+            "objective": run.objective,
+            "output": {
+                "failed_step_id": step_id,
+                "recovery_reason": reason.value,
+            },
+        }
+        if run.agent_id is not None:
+            run_payload["agent_id"] = run.agent_id
+        stored = self.store.put_many(
+            (
+                ("step", step_id, StepStatus.FAILED, step_payload),
+                ("run", run.run_id, RunStatus.FAILED, run_payload),
+            )
         )
+        step = self._step(stored[0])
+        run = self._run(stored[1])
         return step, run
 
     @staticmethod
