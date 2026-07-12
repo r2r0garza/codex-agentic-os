@@ -6,6 +6,8 @@ codex-agentic-os is an agentic operating system project: a durable home for agen
 
 This repository is being maintained as an incremental, scheduled build. Each run should tackle one focused plan item, update the project record, and leave the repo in a resumable state.
 
+[`VISION.md`](VISION.md) defines the durable product end state and the rolling three-sprint roadmap contract used to choose vertical milestones.
+
 ## First-class model providers
 
 The OS is intentionally provider-neutral. The foundation declares support for:
