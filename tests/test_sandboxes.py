@@ -60,6 +60,43 @@ def test_container_sandbox_respects_optional_limits_and_network() -> None:
     )
 
 
+def test_container_sandbox_renders_mounts_after_resource_flags() -> None:
+    spec = SandboxSpec(
+        kind=SandboxKind.DOCKER,
+        mounts=(("/host/repo", "/workspace"), ("/host/cache", "/cache")),
+    )
+
+    command = ContainerSandbox(spec).command(("true",))
+
+    assert command[-6:] == (
+        "--volume",
+        "/host/repo:/workspace",
+        "--volume",
+        "/host/cache:/cache",
+        "python:3.12-slim",
+        "true",
+    )
+
+
+def test_container_sandbox_renders_one_mount() -> None:
+    spec = SandboxSpec(kind=SandboxKind.PODMAN, mounts=(("/host", "/container"),))
+
+    assert ContainerSandbox(spec).command(("true",))[-4:] == (
+        "--volume",
+        "/host:/container",
+        "python:3.12-slim",
+        "true",
+    )
+
+
+@pytest.mark.parametrize(
+    "mounts", [(('', '/workspace'),), (('/host', ''),), (('/only',),)]
+)
+def test_sandbox_spec_rejects_malformed_mount_pairs(mounts) -> None:
+    with pytest.raises(ValueError, match="non-empty host and container paths"):
+        SandboxSpec(kind=SandboxKind.DOCKER, mounts=mounts)
+
+
 @pytest.mark.parametrize(
     ("argv", "timeout", "message"),
     [

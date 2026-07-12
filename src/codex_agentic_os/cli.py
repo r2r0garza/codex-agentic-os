@@ -142,7 +142,26 @@ def _parser() -> argparse.ArgumentParser:
         "--sandbox", required=True, choices=[kind.value for kind in SandboxKind]
     )
     execute_next.add_argument("--image", help="container image override")
+    execute_next.add_argument(
+        "--mount",
+        action="append",
+        default=[],
+        metavar="HOST:CONTAINER",
+        help="bind mount a host path in the container; repeat for multiple mounts",
+    )
     return parser
+
+
+def _parse_mounts(values: Sequence[str]) -> tuple[tuple[str, str], ...]:
+    """Parse strict HOST:CONTAINER bind mount arguments."""
+
+    mounts = []
+    for value in values:
+        parts = value.split(":")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError("mount must be HOST:CONTAINER with non-empty paths")
+        mounts.append((parts[0], parts[1]))
+    return tuple(mounts)
 
 
 def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
@@ -318,10 +337,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                 kind = SandboxKind(arguments.sandbox)
                 if arguments.image is not None and not arguments.image.strip():
                     raise ValueError("sandbox image must not be empty")
+                mounts = _parse_mounts(arguments.mount)
                 spec = (
-                    SandboxSpec(kind=kind, image=arguments.image)
+                    SandboxSpec(kind=kind, image=arguments.image, mounts=mounts)
                     if arguments.image is not None
-                    else SandboxSpec(kind=kind)
+                    else SandboxSpec(kind=kind, mounts=mounts)
                 )
                 result = coordinator.execute_next_step(
                     arguments.run_id,

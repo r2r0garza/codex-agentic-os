@@ -163,6 +163,8 @@ backend. The optional image override otherwise retains conservative sandbox defa
 ```bash
 codex-agentic-os run execute-next run-002 --sandbox docker
 codex-agentic-os run execute-next run-002 --sandbox podman --image python:3.12-slim
+codex-agentic-os run execute-next run-002 --sandbox docker \
+  --mount /path/to/repository:/workspace
 ```
 
 When no queued work remains, the unchanged run payload includes
