@@ -1,5 +1,32 @@
 # Automation Memory
 
+- Run: 2026-07-12T15:36:07Z — implementation run.
+- Selected issue: #40, environment variable passthrough to container sandbox execution.
+- Completed: added a validated `env: tuple[tuple[str, str], ...]` field to
+  `SandboxSpec` (`src/codex_agentic_os/sandboxes.py`), rendered as repeatable
+  `--env KEY=VALUE` container-engine arguments positioned after mounts and before
+  the image. `run execute-next --env KEY=VALUE` (repeatable, via new `_parse_env`
+  in `cli.py`) rejects malformed values (missing `=`, empty key, or empty value)
+  with a `parser.error` before any queued step is claimed, mirroring the existing
+  `--mount` pattern. Added Plan 0050, a DEVELOPMENT.md example, `test_sandboxes.py`
+  env-rendering/rejection coverage, and `test_run_cli.py` CLI success/rejection
+  coverage. Refreshed the committed index.
+- Implementation commit: `f4c38ca`; pushed to `origin/main`; issue #40 auto-closed
+  by the commit's `Closes #40`; verification comment posted separately.
+- Verification: `pytest -q` (308 passed); `pytest -q tests/test_sandboxes.py
+  tests/test_run_cli.py` (142 passed); `codex-agentic-os index build` then
+  `codex-agentic-os index check` (current — 19 files, 442 symbols, 2441
+  relationships); `git diff --check` clean.
+- Blocked review: `gh issue list --label blocked` returned no results; nothing to
+  re-evaluate.
+- Resulting queue: 4 unblocked `agent-ready` issues — #41, #42, #43, and #44 (all
+  priority:3). At the target-band floor; recommend backlog replenishment soon.
+  Recommended next: #41, the oldest priority:3 issue.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree
+  clean before this durable MEMORY.md update.
+
+---
+
 - Run: 2026-07-12T14:35:58Z — backlog-replenishment run.
 - Trigger: only 2 unblocked `agent-ready` issues remained (#40 and #41, both
   priority:3), at the ≤2 threshold — no issue was implemented.
@@ -102,25 +129,5 @@
 - Resulting queue: 4 unblocked `agent-ready` issues — #26, #35, #40, and #41 (all
   priority:3). Below the 5-10 target band; recommend backlog replenishment soon.
   Recommended next: #26, the oldest priority:3 issue.
-- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
-  before this durable MEMORY.md update.
-
----
-
-- Run: 2026-07-12T12:35:50Z — implementation run.
-- Selected issue: #38, validate run agent references against the durable agent registry.
-- Completed: `RunCoordinator.create()`, `claim()`, and `claim_next()` now reject
-  unknown agent ids before mutation while preserving unassigned creation. Existing
-  runtime/CLI fixtures register their intended identities; focused registered and
-  unregistered success/rejection coverage was added. Updated Plan 0045,
-  DEVELOPMENT.md, and the committed code index.
-- Implementation commit: `d5c02b3`; pushed to `origin/main`; issue #38 closed with
-  verification results.
-- Verification: `pytest -q` (281 passed); clean index build (18 files, 413 symbols,
-  2311 relationships); `codex-agentic-os index check` current; `git diff --check`
-  clean.
-- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
-- Resulting queue: 5 unblocked `agent-ready` issues — #39 (priority:2), #26, #35,
-  #40, and #41 (priority:3). Recommended next: #39, the only priority:2 issue.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree clean
   before this durable MEMORY.md update.
