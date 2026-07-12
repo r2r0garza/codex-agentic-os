@@ -257,13 +257,45 @@ def test_start_next_step_dispatches_in_position_order(tmp_path) -> None:
     assert first == RunStep(
         "first", "run-1", 1, "First command", StepStatus.RUNNING, 2
     )
-    assert coordinator.get("run-1").status is RunStatus.RUNNING
+    assert coordinator.get("run-1") == AgentRun(
+        "run-1", "Build feature", RunStatus.RUNNING, 2
+    )
 
     coordinator.transition_step("first", StepStatus.SUCCEEDED)
     second = coordinator.start_next_step("run-1")
 
     assert second.step_id == "second"
     assert second.status is StepStatus.RUNNING
+    assert second.revision == 2
+    assert coordinator.get("run-1").revision == 2
+
+
+def test_start_next_step_rolls_back_first_dispatch_when_batch_write_fails(
+    tmp_path, monkeypatch
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    original_run = coordinator.create("run-1", objective="Build feature")
+    original_step = coordinator.add_step("run-1", "first", objective="First command")
+    original_write = store._put_on_connection
+    writes = 0
+
+    def fail_after_first_write(connection, kind, key, status, encoded):
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise RuntimeError("injected persistence failure")
+        return original_write(connection, kind, key, status, encoded)
+
+    monkeypatch.setattr(store, "_put_on_connection", fail_after_first_write)
+
+    with pytest.raises(RuntimeError, match="injected persistence failure"):
+        coordinator.start_next_step("run-1")
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("first") == original_step
 
 
 def test_start_next_step_validates_run_and_single_active_step(tmp_path) -> None:

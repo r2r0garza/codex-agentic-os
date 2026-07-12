@@ -241,7 +241,25 @@ class RunCoordinator:
         if next_step is None:
             return None
         if run.status is RunStatus.QUEUED:
-            self.transition(run_id, RunStatus.RUNNING)
+            run_payload: dict[str, object] = {"objective": run.objective}
+            if run.agent_id is not None:
+                run_payload["agent_id"] = run.agent_id
+            step_payload: dict[str, object] = {
+                "run_id": next_step.run_id,
+                "position": next_step.position,
+                "objective": next_step.objective,
+            }
+            if next_step.command is not None:
+                step_payload["command"] = list(next_step.command)
+            if next_step.timeout is not None:
+                step_payload["timeout"] = next_step.timeout
+            stored = self.store.put_many(
+                (
+                    ("run", run_id, RunStatus.RUNNING, run_payload),
+                    ("step", next_step.step_id, StepStatus.RUNNING, step_payload),
+                )
+            )
+            return self._step(stored[1])
         return self.transition_step(next_step.step_id, StepStatus.RUNNING)
 
     def execute_next_step(
