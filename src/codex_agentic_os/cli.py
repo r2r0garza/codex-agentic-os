@@ -16,7 +16,7 @@ from .index import (
     unstaged_index_paths,
 )
 from .providers import DEFAULT_PROVIDER_SPECS
-from .runtime import RunCoordinator, RunStatus, RuntimeSpec, StepRecoveryReason
+from .runtime import RunCoordinator, RunStatus, RunStep, RuntimeSpec, StepRecoveryReason
 from .sandboxes import ContainerSandbox, SandboxKind, SandboxSpec, default_sandboxes
 from .state import StateStore
 
@@ -53,6 +53,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     list_runs = run_commands.add_parser("list", help="list durable runs")
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
+    inspect_step = run_commands.add_parser("inspect-step", help="show one durable step")
     cancel = run_commands.add_parser("cancel", help="cancel a run and its active steps")
     execute_next = run_commands.add_parser(
         "execute-next", help="execute the next queued command step in a container"
@@ -87,8 +88,8 @@ def _parser() -> argparse.ArgumentParser:
             default=Path(".codex-agentic-os/state.sqlite3"),
             help="path to the runtime state database",
         )
-    for command in (inspect, cancel, execute_next, recover):
-        identifier = "step_id" if command is recover else "run_id"
+    for command in (inspect, inspect_step, cancel, execute_next, recover):
+        identifier = "step_id" if command in (inspect_step, recover) else "run_id"
         command.add_argument(identifier)
         command.add_argument(
             "--state-db",
@@ -117,10 +118,16 @@ def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
     run_data["status"] = run.status.value
     steps = []
     for step in coordinator.list_steps(run_id):
-        step_data = asdict(step)
-        step_data["status"] = step.status.value
-        steps.append(step_data)
+        steps.append(_step_payload(step))
     return {"run": run_data, "steps": steps}
+
+
+def _step_payload(step: RunStep) -> dict[str, object]:
+    """Return the standard JSON-compatible view of one durable step."""
+
+    payload = asdict(step)
+    payload["status"] = step.status.value
+    return payload
 
 
 def _run_list_payload(
@@ -157,7 +164,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         if arguments.command == "run":
             if arguments.run_command != "create" and not arguments.state_db.is_file():
                 raise ValueError(f"state database does not exist: {arguments.state_db}")
-            read_only = arguments.run_command in {"inspect", "list"}
+            read_only = arguments.run_command in {"inspect", "inspect-step", "list"}
             coordinator = RunCoordinator(
                 StateStore(arguments.state_db, read_only=read_only)
             )
@@ -199,6 +206,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                         sort_keys=True,
                     )
                 )
+                return
+            elif arguments.run_command == "inspect-step":
+                step = coordinator.get_step(arguments.step_id)
+                if step is None:
+                    raise ValueError(f"step does not exist: {arguments.step_id}")
+                print(json.dumps(_step_payload(step), indent=2, sort_keys=True))
                 return
             if arguments.run_command == "cancel":
                 coordinator.cancel(arguments.run_id)

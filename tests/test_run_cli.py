@@ -414,6 +414,86 @@ def test_cli_reports_a_missing_run(tmp_path, capsys) -> None:
     assert "run does not exist: missing" in capsys.readouterr().err
 
 
+def test_cli_inspects_one_populated_terminal_step_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    run = coordinator.create("run-1", objective="Inspect one step")
+    coordinator.add_step(
+        run.run_id,
+        "step-1",
+        objective="Run command",
+        command=("python", "-c", "print('hello')"),
+        timeout=12.5,
+    )
+    coordinator.transition_step("step-1", StepStatus.RUNNING)
+    terminal = coordinator.transition_step(
+        "step-1", StepStatus.SUCCEEDED, output={"result": "ok"}
+    )
+
+    main(["run", "inspect-step", "step-1", "--state-db", str(database)])
+
+    assert json.loads(capsys.readouterr().out) == {
+        "command": ["python", "-c", "print('hello')"],
+        "objective": "Run command",
+        "output": {"result": "ok"},
+        "position": 1,
+        "revision": 3,
+        "run_id": "run-1",
+        "status": "succeeded",
+        "step_id": "step-1",
+        "timeout": 12.5,
+    }
+    assert RunCoordinator(StateStore(database)).get_step("step-1") == terminal
+
+
+@pytest.mark.parametrize("status", [StepStatus.QUEUED, StepStatus.RUNNING])
+def test_cli_inspects_active_step_statuses(tmp_path, capsys, status) -> None:
+    database = tmp_path / f"{status.value}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Inspect active step")
+    coordinator.add_step("run-1", "step-1", objective="Active")
+    if status is StepStatus.RUNNING:
+        coordinator.transition_step("step-1", status)
+
+    main(["run", "inspect-step", "step-1", "--state-db", str(database)])
+
+    assert json.loads(capsys.readouterr().out)["status"] == status.value
+
+
+def test_cli_step_inspection_rejects_missing_state_without_mutation(tmp_path, capsys) -> None:
+    missing_database = tmp_path / "missing.sqlite3"
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "inspect-step", "step-1", "--state-db", str(missing_database)])
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not missing_database.exists()
+
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).initialize()
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "inspect-step", "missing", "--state-db", str(database)])
+    assert exit_info.value.code == 2
+    assert "step does not exist: missing" in capsys.readouterr().err
+
+
+def test_cli_step_inspection_reports_malformed_record_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    malformed = store.put(
+        "step",
+        "broken",
+        status=StepStatus.QUEUED,
+        payload={"run_id": "", "position": 1, "objective": "Broken"},
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "inspect-step", "broken", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "step record has invalid run id: broken" in capsys.readouterr().err
+    assert StateStore(database).get("step", "broken") == malformed
+
+
 def test_cli_cancels_run_and_active_steps(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
