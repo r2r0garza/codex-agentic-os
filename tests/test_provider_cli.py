@@ -47,3 +47,45 @@ def test_cli_provider_list_performs_no_network_or_state_access(monkeypatch, caps
 
     payload = json.loads(capsys.readouterr().out)
     assert len(payload) == len(DEFAULT_PROVIDER_SPECS)
+
+
+def test_cli_provider_credentials_reports_ordered_readiness(monkeypatch, capsys) -> None:
+    for spec in DEFAULT_PROVIDER_SPECS:
+        if spec.api_key_env:
+            monkeypatch.delenv(spec.api_key_env, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "configured-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+
+    main(["provider", "credentials"])
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert [entry["kind"] for entry in payload] == [
+        spec.kind.value for spec in DEFAULT_PROVIDER_SPECS
+    ]
+    assert payload == [
+        {
+            "kind": spec.kind.value,
+            "api_key_env": spec.api_key_env,
+            "configured": (
+                spec.api_key_env is None or spec.api_key_env == "OPENAI_API_KEY"
+            ),
+        }
+        for spec in DEFAULT_PROVIDER_SPECS
+    ]
+    assert "configured-secret" not in output
+
+
+def test_cli_provider_credentials_performs_no_network_or_state_access(
+    monkeypatch, capsys
+) -> None:
+    def forbidden(*args, **kwargs):
+        raise AssertionError("provider credentials must not access network or state")
+
+    monkeypatch.setattr("codex_agentic_os.chat.urlopen", forbidden)
+    monkeypatch.setattr("codex_agentic_os.cli.StateStore", forbidden)
+
+    main(["provider", "credentials"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload) == len(DEFAULT_PROVIDER_SPECS)

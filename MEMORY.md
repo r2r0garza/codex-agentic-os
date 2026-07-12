@@ -1,5 +1,11 @@
 # Automation Memory
 
+- Run: 2026-07-12T18:00:00Z — implementation run in progress.
+- Active milestone: Sprint 1 (milestone #1); selected issue #45, provider credential readiness reporting, as the sole unblocked `agent-ready` issue in the active milestone.
+- Boundary: implement only the read-only `provider credentials` surface; no credential validation, endpoint probing, state persistence, or provider-spec edits.
+
+---
+
 - Run: 2026-07-12T17:05:00Z — implementation run.
 - Milestone restructuring noted: the repository now uses ordered GitHub milestones as
   vertical sprints (Sprint 1 "Operator-ready provider workflow", Sprint 2 "Reproducible

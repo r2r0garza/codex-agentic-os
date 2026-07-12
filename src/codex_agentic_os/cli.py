@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Sequence
@@ -222,6 +223,9 @@ def _parser() -> argparse.ArgumentParser:
     provider = commands.add_parser("provider", help="inspect configured model providers")
     provider_commands = provider.add_subparsers(dest="provider_command", required=True)
     provider_commands.add_parser("list", help="list default provider specs")
+    provider_commands.add_parser(
+        "credentials", help="report default provider credential readiness"
+    )
 
     chat = commands.add_parser("chat", help="send ad hoc requests through provider adapters")
     chat_commands = chat.add_subparsers(dest="chat_command", required=True)
@@ -549,9 +553,23 @@ def main(argv: Sequence[str] | None = None) -> None:
                     )
                 )
         elif arguments.command == "provider":
+            providers = (
+                [spec.to_dict() for spec in DEFAULT_PROVIDER_SPECS]
+                if arguments.provider_command == "list"
+                else [
+                    {
+                        "kind": spec.kind.value,
+                        "api_key_env": spec.api_key_env,
+                        "configured": (
+                            spec.api_key_env is None or bool(os.getenv(spec.api_key_env))
+                        ),
+                    }
+                    for spec in DEFAULT_PROVIDER_SPECS
+                ]
+            )
             print(
                 json.dumps(
-                    [spec.to_dict() for spec in DEFAULT_PROVIDER_SPECS],
+                    providers,
                     indent=2,
                     sort_keys=True,
                 )

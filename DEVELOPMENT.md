@@ -38,6 +38,14 @@ command performs no network or state-database access:
 codex-agentic-os provider list
 ```
 
+Report whether each default provider's declared credential variable is non-empty.
+Credential-free local providers report as configured. This is a local environment
+readiness check only: values are never printed and credentials are not validated:
+
+```bash
+codex-agentic-os provider credentials
+```
+
 Send a single message through a configured provider adapter from the CLI. Omitted
 `--model`/`--base-url`/`--api-key-env` fall back to the matching `DEFAULT_PROVIDER_SPECS`
 entry for `--provider`, following the same endpoint/credential policy as the library
