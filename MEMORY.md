@@ -1,5 +1,31 @@
 # Automation Memory
 
+- Run: 2026-07-12T14:35:58Z — backlog-replenishment run.
+- Trigger: only 2 unblocked `agent-ready` issues remained (#40 and #41, both
+  priority:3), at the ≤2 threshold — no issue was implemented.
+- Reviewed: the current code index manifest/freshness, provider/chat/agent-registry/
+  sandbox implementation surfaces, DEVELOPMENT.md, plans 0045 and 0047, existing
+  queue issue specifications, and deferred-scope notes.
+- Created 3 bounded priority:3 issues with acceptance criteria, tests, dependencies,
+  and appropriate area labels:
+  - #42 — read-only `provider list` CLI for `DEFAULT_PROVIDER_SPECS` discovery
+    (area:providers/cli).
+  - #43 — optional provider-neutral `chat send --system TEXT`, reusing existing
+    adapter system-message mappings (area:providers/cli).
+  - #44 — validated `SandboxSpec.working_dir` and `run execute-next --workdir`
+    support (area:sandbox/cli).
+- Verification: `.venv` activated at the repository-local path; Python 3.12.13;
+  `codex-agentic-os index check` current. This queue-only run changed no source and
+  did not run the test suite.
+- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
+- Resulting queue: 5 unblocked `agent-ready` issues — #40, #41, #42, #43, and #44
+  (all priority:3). Recommended next: #40, the oldest issue at the highest available
+  priority.
+- Final target state: `main`; source worktree unchanged; this MEMORY.md update is the
+  only repository change and will be committed/pushed as the durable run record.
+
+---
+
 - Run: 2026-07-12T14:03:36Z — implementation run.
 - Selected issue: #35, replace dead plan-checklist scan in hourly heartbeat workflow.
 - Completed: `.github/workflows/hourly-agentic-os.yml`'s heartbeat job no longer greps
@@ -98,39 +124,3 @@
   #40, and #41 (priority:3). Recommended next: #39, the only priority:2 issue.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree clean
   before this durable MEMORY.md update.
-
----
-
-- Run: 2026-07-12T12:05:17Z — backlog-replenishment run.
-- Trigger: only 2 unblocked `agent-ready` issues remained (#26, #35, both
-  priority:3), at or below the ≤2 threshold — no issue was implemented.
-- Reviewed: `src/codex_agentic_os/{cli,runtime,chat,providers,sandboxes}.py`,
-  `DEVELOPMENT.md`, and `.plan/0044`–`0046` resume notes for explicitly
-  deferred scope.
-- Created 4 well-scoped issues, each with objective, acceptance criteria,
-  required tests, and dependencies:
-  - [#38](https://github.com/r2r0garza/codex-agentic-os/issues/38) — validate
-    `agent_id` on `run create`/`claim`/`claim-next` against `AgentRegistry`
-    (priority:2, area:runtime/cli). Deferred by plan 0045.
-  - [#39](https://github.com/r2r0garza/codex-agentic-os/issues/39) — add
-    `codex-agentic-os chat send` wiring the existing `chat.py` adapters
-    (OpenAI-compatible, Anthropic, Google) into the CLI (priority:2,
-    area:cli/providers). No CLI currently reaches `adapter_for`.
-  - [#40](https://github.com/r2r0garza/codex-agentic-os/issues/40) — add
-    `--env KEY=VALUE` passthrough to `SandboxSpec`/`run execute-next`
-    (priority:3, area:sandbox/cli), mirroring the completed `--mount` pattern
-    (plan 0044).
-  - [#41](https://github.com/r2r0garza/codex-agentic-os/issues/41) — add
-    `AgentRegistry.heartbeat()` / `agent heartbeat AGENT_ID` and a `last_seen`
-    field (priority:3, area:runtime/cli). Deferred by plan 0045.
-- Did not create: a 5th issue for "capability negotiation" (plan 0045's other
-  deferred item) — too vague to scope without a concrete consumer; revisit
-  once #39 (chat CLI) or a future runtime-selection issue makes the need
-  concrete.
-- Blocked review: `gh issue list --label blocked` returned no results; nothing
-  to re-evaluate.
-- Resulting queue: 6 unblocked `agent-ready` issues — #38 and #39
-  (priority:2), #26, #35, #40, and #41 (priority:3). Within the 5-10 target
-  band. Recommended next: #38 (oldest priority:2 issue; created before #39).
-- Final target state: `main`, worktree clean; no code changes this run, only
-  this MEMORY.md commit.
