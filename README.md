@@ -96,10 +96,11 @@ Implemented foundation:
 - Operator-facing queued run creation through `run create`.
 - Atomic queued run creation that rejects competing duplicate identifiers without overwrite.
 - Atomic durable step append with globally unique identifiers and contiguous per-run positions.
+- Operator-facing durable command-step creation through `run add-step`.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0019 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0020 is complete.
 
 ## Development
 
@@ -241,6 +242,14 @@ command.
 
 Command arguments and timeouts are stored with the step and survive process restarts.
 Steps may omit a command when they represent coordination-only work.
+
+Append a queued command step to an existing durable run and print the updated ordered
+run payload:
+
+```bash
+codex-agentic-os run add-step run-002 step-001 --objective "Run checks" \
+  --timeout 30 --state-db .codex-agentic-os/state.sqlite3 -- pytest -q
+```
 
 Record a sandbox result through the structural execution-result boundary. A zero exit
 completes the step successfully and succeeds the run when every step is complete; a

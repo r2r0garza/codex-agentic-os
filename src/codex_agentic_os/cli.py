@@ -47,6 +47,9 @@ def _parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="inspect and control durable runs")
     run_commands = run.add_subparsers(dest="run_command", required=True)
     create = run_commands.add_parser("create", help="create a queued durable run")
+    add_step = run_commands.add_parser(
+        "add-step", help="append a queued command step to a durable run"
+    )
     list_runs = run_commands.add_parser("list", help="list durable runs")
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
     cancel = run_commands.add_parser("cancel", help="cancel a run and its active steps")
@@ -56,15 +59,19 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("run_id")
     create.add_argument("--objective", required=True, help="objective for the queued run")
     create.add_argument("--agent-id", help="optional agent assigned to the run")
-    for command in (create, list_runs, inspect, cancel, recover):
-        if command in (create, list_runs):
-            command.add_argument(
-                "--state-db",
-                type=Path,
-                default=Path(".codex-agentic-os/state.sqlite3"),
-                help="path to the runtime state database",
-            )
-            continue
+    add_step.add_argument("run_id")
+    add_step.add_argument("step_id")
+    add_step.add_argument("--objective", required=True, help="objective for the queued step")
+    add_step.add_argument("--timeout", type=float, help="positive command timeout in seconds")
+    add_step.add_argument("step_command", nargs="+", help="command and arguments to execute")
+    for command in (create, add_step, list_runs):
+        command.add_argument(
+            "--state-db",
+            type=Path,
+            default=Path(".codex-agentic-os/state.sqlite3"),
+            help="path to the runtime state database",
+        )
+    for command in (inspect, cancel, recover):
         identifier = "step_id" if command is recover else "run_id"
         command.add_argument(identifier)
         command.add_argument(
@@ -130,6 +137,17 @@ def main(argv: Sequence[str] | None = None) -> None:
                     arguments.run_id,
                     objective=arguments.objective,
                     agent_id=arguments.agent_id,
+                )
+                run_id = arguments.run_id
+            elif arguments.run_command == "add-step":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                coordinator.add_step(
+                    arguments.run_id,
+                    arguments.step_id,
+                    objective=arguments.objective,
+                    command=arguments.step_command,
+                    timeout=arguments.timeout,
                 )
                 run_id = arguments.run_id
             elif arguments.run_command == "list":

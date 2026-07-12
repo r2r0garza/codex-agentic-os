@@ -64,6 +64,91 @@ def test_cli_create_rejects_duplicate_and_empty_values_without_mutation(
     assert RunCoordinator(StateStore(database)).get("run-1") == original
 
 
+def test_cli_adds_ordered_command_steps_and_matches_inspection(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    run = coordinator.create("run-1", objective="Execute durable work")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "First command",
+            "--timeout", "12.5", "--state-db", str(database),
+            "--", "python", "-c", "print('hello')", "tail",
+        ]
+    )
+    first_payload = json.loads(capsys.readouterr().out)
+    assert first_payload["run"]["revision"] == run.revision
+    assert first_payload["steps"][0] == {
+        "command": ["python", "-c", "print('hello')", "tail"],
+        "objective": "First command",
+        "output": None,
+        "position": 1,
+        "revision": 1,
+        "run_id": "run-1",
+        "status": "queued",
+        "step_id": "step-1",
+        "timeout": 12.5,
+    }
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-2", "--objective", "Second command",
+            "--state-db", str(database), "printf", "done",
+        ]
+    )
+    second_payload = json.loads(capsys.readouterr().out)
+    assert [step["step_id"] for step in second_payload["steps"]] == ["step-1", "step-2"]
+    assert second_payload["steps"][1]["position"] == 2
+    assert second_payload["steps"][1]["command"] == ["printf", "done"]
+    assert second_payload["steps"][1]["timeout"] is None
+
+    main(["run", "inspect", "run-1", "--state-db", str(database)])
+    assert json.loads(capsys.readouterr().out) == second_payload
+
+
+@pytest.mark.parametrize(
+    ("setup", "arguments", "message"),
+    [
+        ("missing", ["missing", "step-1", "--objective", "Work", "true"], "run does not exist"),
+        ("terminal", ["run-1", "step-1", "--objective", "Work", "true"], "cannot add a step"),
+        ("duplicate", ["run-1", "step-1", "--objective", "Work", "true"], "step already exists"),
+        ("queued", ["run-1", "step-2", "--objective", " ", "true"], "step objective must not be empty"),
+        ("queued", ["run-1", "step-2", "--objective", "Work", "", "tail"], "step command arguments must be non-empty strings"),
+        ("queued", ["run-1", "step-2", "--objective", "Work", "--timeout", "0", "true"], "step timeout must be positive"),
+    ],
+)
+def test_cli_add_step_rejections_do_not_mutate_state(
+    tmp_path, capsys, setup, arguments, message
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Original")
+    original_step = None
+    if setup == "terminal":
+        coordinator.transition("run-1", RunStatus.RUNNING)
+        original_run = coordinator.transition("run-1", RunStatus.SUCCEEDED)
+    elif setup == "duplicate":
+        original_step = coordinator.add_step(
+            "run-1", "step-1", objective="Original step", command=("echo", "original")
+        )
+
+    with pytest.raises(SystemExit) as exit_info:
+        command_start = next(
+            index for index, value in enumerate(arguments[2:], start=2)
+            if not value.startswith("--") and arguments[index - 1] not in {"--objective", "--timeout"}
+        )
+        main(
+            ["run", "add-step", *arguments[:command_start], "--state-db", str(database),
+             *arguments[command_start:]]
+        )
+
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.list_steps("run-1") == (() if original_step is None else (original_step,))
+
+
 def test_cli_lists_runs_in_identifier_order_without_mutation(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
