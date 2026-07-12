@@ -1,5 +1,45 @@
 # Automation Memory
 
+- Run: 2026-07-12T17:05:00Z — implementation run.
+- Milestone restructuring noted: the repository now uses ordered GitHub milestones as
+  vertical sprints (Sprint 1 "Operator-ready provider workflow", Sprint 2 "Reproducible
+  sandbox execution context", Sprint 3 "Observable durable agent identities"), all open,
+  numbers 1–3, created 2026-07-12T16:41Z. The lowest-numbered open milestone (Sprint 1)
+  is now the active sprint boundary; issue selection is scoped to its assigned issues
+  only, not the flat repository-wide queue used by prior runs.
+- Active milestone: Sprint 1 (milestone #1), objective: an operator can discover
+  provider defaults, determine credential readiness without exposing secrets, and send
+  a controlled system-guided single-turn request through every supported adapter
+  family.
+- Selected issue: #43, optional provider-neutral `chat send --system TEXT` (the older
+  of the two `agent-ready` priority:3 issues assigned to Sprint 1; #45 remains).
+- Completed: added `--system TEXT` to `chat send`, reusing the adapter-level
+  system-message mapping already implemented in `chat.py` (Anthropic top-level
+  `system` field, Google `systemInstruction`, OpenAI-compatible `system` role
+  message) — no adapter changes needed. An empty or whitespace-only `--system` value
+  is rejected via `ValueError` before the provider spec is built or the adapter is
+  invoked, mirroring the existing empty-message check. Omitting `--system` leaves the
+  existing single-message payload unchanged. Extended `.plan/0047-chat-send-cli.md`
+  resume notes and added a `DEVELOPMENT.md` usage example. Refreshed the committed
+  index.
+- Implementation commit: `91f21fb`; pushed to `origin/main`; issue #43 auto-closed by
+  the commit's `Closes #43`; verification comment posted separately.
+- Verification: `pytest -q` (321 passed); `codex-agentic-os index build` then
+  `codex-agentic-os index check` (current — 20 files, 459 symbols, 2525
+  relationships); `git diff --check` clean; manual `chat send --help` and
+  empty-`--system` rejection checked by hand.
+- Blocked review: `gh issue list --label blocked` returned no results; nothing to
+  re-evaluate.
+- Resulting queue: Sprint 1 has 1 remaining unblocked `agent-ready` issue — #45,
+  provider credential readiness reporting (priority:3). Recommended next: #45, the
+  only remaining Sprint 1 issue; likely candidate for a near-term replenishment run to
+  keep Sprint 1's queue in the 3–7 target band, or direct implementation if still
+  agent-ready.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
+  before this durable MEMORY.md update.
+
+---
+
 - Run: 2026-07-12T16:20:26Z — backlog-replenishment run.
 - Trigger: exactly 2 unblocked `agent-ready` issues remained (#43 and #44, both
   priority:3), at the ≤2 threshold — no issue was implemented.
@@ -94,29 +134,4 @@
   Recommended next: #41, the oldest priority:3 issue.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree
   clean before this durable MEMORY.md update.
-
----
-
-- Run: 2026-07-12T14:35:58Z — backlog-replenishment run.
-- Trigger: only 2 unblocked `agent-ready` issues remained (#40 and #41, both
-  priority:3), at the ≤2 threshold — no issue was implemented.
-- Reviewed: the current code index manifest/freshness, provider/chat/agent-registry/
-  sandbox implementation surfaces, DEVELOPMENT.md, plans 0045 and 0047, existing
-  queue issue specifications, and deferred-scope notes.
-- Created 3 bounded priority:3 issues with acceptance criteria, tests, dependencies,
-  and appropriate area labels:
-  - #42 — read-only `provider list` CLI for `DEFAULT_PROVIDER_SPECS` discovery
-    (area:providers/cli).
-  - #43 — optional provider-neutral `chat send --system TEXT`, reusing existing
-    adapter system-message mappings (area:providers/cli).
-  - #44 — validated `SandboxSpec.working_dir` and `run execute-next --workdir`
-    support (area:sandbox/cli).
-- Verification: `.venv` activated at the repository-local path; Python 3.12.13;
-  `codex-agentic-os index check` current. This queue-only run changed no source and
-  did not run the test suite.
-- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
-- Resulting queue: 5 unblocked `agent-ready` issues — #40, #41, #42, #43, and #44
-  (all priority:3). Recommended next: #40, the oldest issue at the highest available
-  priority.
-- Final target state: `main`; source worktree unchanged; this MEMORY.md update is the
-  only repository change and will be committed/pushed as the durable run record.
+</content>
