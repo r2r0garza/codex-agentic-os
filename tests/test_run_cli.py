@@ -107,6 +107,56 @@ def test_cli_adds_ordered_command_steps_and_matches_inspection(tmp_path, capsys)
     assert json.loads(capsys.readouterr().out) == second_payload
 
 
+def test_cli_add_step_accepts_hyphen_prefixed_command_after_double_dash(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Negated command",
+            "--state-db", str(database), "--", "printf", "-n", "done",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"][0]["command"] == ["printf", "-n", "done"]
+
+
+def test_cli_add_step_rejects_bare_double_dash_as_objective_only(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Checkpoint",
+            "--state-db", str(database), "--",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"][0]["command"] is None
+
+
+def test_cli_rejects_unrecognized_arguments_outside_add_step(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "create", "run-1", "--objective", "Build durable work",
+                "--state-db", str(database), "unexpected",
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "unrecognized arguments: unexpected" in capsys.readouterr().err
+    assert not database.exists()
+
+
 def test_cli_adds_objective_only_step_and_matches_inspection(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

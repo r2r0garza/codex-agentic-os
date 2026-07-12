@@ -53,7 +53,17 @@ def _parser() -> argparse.ArgumentParser:
         "claim-next", help="atomically claim the next eligible queued run"
     )
     add_step = run_commands.add_parser(
-        "add-step", help="append a queued command step to a durable run"
+        "add-step",
+        help="append a queued command step to a durable run",
+        usage=(
+            "%(prog)s [-h] --objective OBJECTIVE [--timeout TIMEOUT] "
+            "[--state-db STATE_DB] run_id step_id [command ...]"
+        ),
+        epilog=(
+            "The trailing command (optionally introduced with '--') is parsed "
+            "manually rather than as an argparse positional; omit it for a "
+            "coordination-only step."
+        ),
     )
     list_runs = run_commands.add_parser("list", help="list durable runs")
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
@@ -85,12 +95,6 @@ def _parser() -> argparse.ArgumentParser:
     add_step.add_argument("step_id")
     add_step.add_argument("--objective", required=True, help="objective for the queued step")
     add_step.add_argument("--timeout", type=float, help="positive command timeout in seconds")
-    add_step.add_argument(
-        "step_command",
-        nargs="*",
-        default=[],
-        help="optional command and arguments to execute; omit for a coordination-only step",
-    )
     list_runs.add_argument(
         "--status",
         action="append",
@@ -190,7 +194,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Run a CLI command, defaulting to the foundation capability summary."""
 
     parser = _parser()
-    arguments = parser.parse_args(argv)
+    arguments, extras = parser.parse_known_args(argv)
+    if arguments.command == "run" and arguments.run_command == "add-step":
+        if extras and extras[0] == "--":
+            extras = extras[1:]
+        arguments.step_command = extras
+    elif extras:
+        parser.error(f"unrecognized arguments: {' '.join(extras)}")
     if arguments.command is None:
         print(json.dumps(_foundation_payload(), indent=2, sort_keys=True))
         return
