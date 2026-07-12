@@ -1,5 +1,17 @@
 # Automation Memory
 
+- Run: 2026-07-12T18:15:06Z — retrospective run plus roadmap-horizon maintenance.
+- Active milestone at selection: Sprint 2 "Reproducible sandbox execution context" (#2). All implementation issues were already closed, so this run performed no implementation.
+- Retrospective: created and closed issue #49 after every user-visible exit criterion passed. Direct operator UAT confirmed exact Docker and Podman composition of mounts, environment, absolute workdir, image, and isolated (`--network none`) versus explicitly enabled (`--network bridge`) policy. Invalid image, mount, environment, and workdir regression cases preserve queued run/step state before claim. No remediation milestone was required; Sprint 2 was closed.
+- Verification: full suite (336 passed); composed Docker/Podman command-construction UAT passed in both network modes; `run execute-next --help` confirmed the explicit opt-in and isolated default; index current (20 files, 470 symbols, 2572 relationships); `git diff --check` clean.
+- Architecture/documentation: existing `SandboxSpec` / `ContainerSandbox` validation and deterministic rendering boundary remains intact; no decision change required. DEVELOPMENT already documents the completed operator workflow.
+- Blocked review: no open `blocked` issues; nothing changed.
+- Roadmap horizon: 3 open milestones (Sprint 2, Sprint 3, Sprint 4) before retrospective closure, then 2. Invoked `codex-agentic-os-plan-sprints` and created Sprint 5 "Auditable mixed-step run history" (#5, future, no issues), restoring exactly 3 open milestones: Sprint 3, Sprint 4, Sprint 5. No issue was created outside the active milestone.
+- Resulting active queue: Sprint 3 has one unblocked `agent-ready` priority:3 issue, #46 (read-only agent inspection CLI), which is the next eligible implementation issue.
+- Final target: `main`; retrospective issue and Sprint 2 milestone closed; Sprint 5 created; this MEMORY.md record pending commit/push; worktree otherwise clean.
+
+---
+
 - Run: 2026-07-12T18:05:11Z — implementation run plus roadmap-horizon maintenance.
 - Active milestone at selection: Sprint 2 "Reproducible sandbox execution context" (#2). Selected and closed issue #47, the sole remaining unblocked `agent-ready` issue.
 - Completed: added `run execute-next --network` as an explicit boolean opt-in mapped to the existing `SandboxSpec.network_enabled` field. `SandboxSpec`/`ContainerSandbox.command()` already implemented both network modes from issue #44's prior work; no `sandboxes.py` changes were needed. Help text states the opt-in and isolated default explicitly. Added Plan 0055, a DEVELOPMENT.md example, and refreshed the committed index.
@@ -72,25 +84,3 @@
   agent-ready.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree clean
   before this durable MEMORY.md update.
-
----
-
-- Run: 2026-07-12T16:20:26Z — backlog-replenishment run.
-- Trigger: exactly 2 unblocked `agent-ready` issues remained (#43 and #44, both
-  priority:3), at the ≤2 threshold — no issue was implemented.
-- Reviewed: active `.venv`; current queue specifications; provider, agent-registry,
-  sandbox, and CLI surfaces; recent relevant plans and deferred-scope notes. The
-  stale committed index was rebuilt and verified (20 files, 453 symbols, 2503
-  relationships).
-- Created 3 bounded priority:3 issues with acceptance criteria, tests, dependencies,
-  and appropriate area labels: #45 provider credential readiness (providers/cli),
-  #46 read-only agent inspection (runtime/cli), and #47 explicit sandbox network
-  opt-in (sandbox/cli).
-- Verification: `.venv` activated (Python 3.12.13); `codex-agentic-os index build`
-  and `codex-agentic-os index check` succeeded. Queue-only run; tests not run.
-- Durable index/backlog commit: `e82a465`; pushed to `origin/main`.
-- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
-- Resulting queue: 5 unblocked `agent-ready` issues — #43, #44, #45, #46, and #47
-  (all priority:3). Recommended next: #43, oldest at the highest available priority.
-- Final target state: `main`; source unchanged; refreshed `.code-index/` artifacts
-  and this MEMORY.md update are the durable changes to commit and push.
