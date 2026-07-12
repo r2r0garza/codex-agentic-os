@@ -6,7 +6,7 @@ from codex_agentic_os.runtime import (
     Agent,
     AgentRegistry,
     AgentRun,
-    RunCoordinator,
+    RunCoordinator as _RunCoordinator,
     RunStatus,
     RunStep,
     StepRecoveryReason,
@@ -14,6 +14,16 @@ from codex_agentic_os.runtime import (
 )
 from codex_agentic_os.sandboxes import SandboxResult
 from codex_agentic_os.state import StateStore
+
+
+def RunCoordinator(store: StateStore) -> _RunCoordinator:
+    """Build a coordinator with the registered identities used by legacy fixtures."""
+
+    registry = AgentRegistry(store)
+    for agent_id in ("agent-0", "agent-1", "agent-2", "agent-7", "agent-10"):
+        if store.get("agent", agent_id) is None:
+            registry.register(agent_id)
+    return _RunCoordinator(store)
 
 
 def test_run_lifecycle_is_durable_and_revisioned(tmp_path) -> None:
@@ -79,6 +89,28 @@ def test_run_creation_and_transition_validation(tmp_path) -> None:
         coordinator.transition("missing", RunStatus.RUNNING)
     with pytest.raises(ValueError, match="output is only valid"):
         coordinator.transition("run-1", RunStatus.RUNNING, output={"early": True})
+
+
+def test_run_agent_references_require_registration_without_mutation(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = _RunCoordinator(store)
+
+    with pytest.raises(ValueError, match="agent is not registered: missing"):
+        coordinator.create("rejected", objective="Work", agent_id="missing")
+    assert coordinator.get("rejected") is None
+
+    unassigned = coordinator.create("run-1", objective="Work")
+    with pytest.raises(ValueError, match="agent is not registered: missing"):
+        coordinator.claim("run-1", "missing")
+    with pytest.raises(ValueError, match="agent is not registered: missing"):
+        coordinator.claim_next("missing")
+    assert coordinator.get("run-1") == unassigned
+
+    AgentRegistry(store).register("agent-1")
+    created = coordinator.create("run-2", objective="Assigned", agent_id="agent-1")
+    claimed = coordinator.claim("run-1", "agent-1")
+    assert created.agent_id == "agent-1"
+    assert claimed.agent_id == "agent-1"
 
 
 def test_run_creation_is_atomic_across_coordinators(tmp_path) -> None:

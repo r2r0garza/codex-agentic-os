@@ -55,6 +55,8 @@ and the resulting run is printed with an empty ordered step list:
 
 ```bash
 codex-agentic-os run create run-001 --objective "Build the repository index"
+codex-agentic-os agent register agent-1 --label "Build worker" \
+  --state-db /path/to/state.sqlite3
 codex-agentic-os run create run-002 --objective "Execute durable work" \
   --agent-id agent-1 --state-db /path/to/state.sqlite3
 ```
@@ -162,8 +164,9 @@ codex-agentic-os run claim-next --agent-id agent-1
 codex-agentic-os run claim-next --agent-id agent-1 --state-db /path/to/state.sqlite3
 ```
 
-Claiming requires an existing database and a non-empty agent identifier. No mutation
-occurs when no eligible run exists or validation fails.
+Creating an assigned run or claiming work requires an existing registered agent
+identifier. No mutation occurs when the agent is unknown, no eligible run exists, or
+validation otherwise fails.
 
 Execute at most one queued command step through an explicitly selected container
 backend. The optional image override otherwise retains conservative sandbox defaults:

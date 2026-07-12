@@ -12,4 +12,4 @@ Back agent identities used by `--agent-id` across run commands with a real durab
 - [x] Verify registration, duplicate rejection, listing, and invalid identifier/label rejection without mutation.
 
 ## Resume Notes
-Selected queue issue: #36. `AgentRegistry` lives in `runtime.py` alongside `RunCoordinator` and reuses the already-declared `"agent"` `StateStore.KINDS` entry. No heartbeat/liveness tracking, capability negotiation, or validation that `run claim`/`add-step --agent-id` values reference a registered agent were added; those remain out of scope per the issue. Resume with the next prioritized unblocked `agent-ready` GitHub issue.
+Selected queue issue: #38. `AgentRegistry` lives in `runtime.py` alongside `RunCoordinator` and reuses the already-declared `"agent"` `StateStore.KINDS` entry. Issue #38 adds pre-mutation registered-agent validation to `RunCoordinator.create()`, `claim()`, and `claim_next()`; `add_step`, heartbeat/liveness tracking, and capability negotiation remain out of scope. Resume with the next prioritized unblocked `agent-ready` GitHub issue.

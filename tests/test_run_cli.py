@@ -5,9 +5,24 @@ import json
 import pytest
 
 from codex_agentic_os.cli import main
-from codex_agentic_os.runtime import RunCoordinator, RunStatus, StepStatus
+from codex_agentic_os.runtime import (
+    AgentRegistry,
+    RunCoordinator as _RunCoordinator,
+    RunStatus,
+    StepStatus,
+)
 from codex_agentic_os.sandboxes import ContainerSandbox, SandboxResult
 from codex_agentic_os.state import StateStore
+
+
+def RunCoordinator(store: StateStore) -> _RunCoordinator:
+    """Build a coordinator with the registered identities used by legacy fixtures."""
+
+    registry = AgentRegistry(store)
+    for agent_id in ("agent-0", "agent-1", "agent-2", "agent-7", "agent-10"):
+        if store.get("agent", agent_id) is None:
+            registry.register(agent_id)
+    return _RunCoordinator(store)
 
 
 @pytest.mark.parametrize("agent_id", [None, "agent-1"])
@@ -20,6 +35,7 @@ def test_cli_creates_queued_run_and_matches_inspection(
         "--state-db", str(database),
     ]
     if agent_id is not None:
+        AgentRegistry(StateStore(database)).register(agent_id)
         arguments.extend(["--agent-id", agent_id])
 
     main(arguments)
@@ -63,6 +79,51 @@ def test_cli_create_rejects_duplicate_and_empty_values_without_mutation(
     assert exit_info.value.code == 2
     assert message in capsys.readouterr().err
     assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
+@pytest.mark.parametrize("command", ["create", "claim", "claim-next"])
+def test_cli_rejects_unregistered_agent_without_mutation(
+    tmp_path, capsys, command
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = _RunCoordinator(StateStore(database))
+    original = None
+    if command != "create":
+        original = coordinator.create("run-1", objective="Work")
+    arguments = ["run", command]
+    if command != "claim-next":
+        arguments.append("run-1")
+    if command == "create":
+        arguments.extend(["--objective", "Work"])
+    arguments.extend(["--agent-id", "missing", "--state-db", str(database)])
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(arguments)
+
+    assert exit_info.value.code == 2
+    assert "agent is not registered: missing" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
+@pytest.mark.parametrize("command", ["create", "claim", "claim-next"])
+def test_cli_accepts_registered_agent(tmp_path, capsys, command) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    AgentRegistry(store).register("agent-1")
+    coordinator = RunCoordinator(store)
+    if command != "create":
+        coordinator.create("run-1", objective="Work")
+    arguments = ["run", command]
+    if command != "claim-next":
+        arguments.append("run-1")
+    if command == "create":
+        arguments.extend(["--objective", "Work"])
+    arguments.extend(["--agent-id", "agent-1", "--state-db", str(database)])
+
+    main(arguments)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["agent_id"] == "agent-1"
 
 
 @pytest.mark.parametrize("terminal", ["succeeded", "failed", "cancelled"])
@@ -1177,7 +1238,7 @@ def test_cli_executes_exactly_one_next_step(
     calls = []
     coordinator_calls = []
 
-    execute_next_step = RunCoordinator.execute_next_step
+    execute_next_step = _RunCoordinator.execute_next_step
 
     def execute_via_coordinator(self, run_id, executor):
         coordinator_calls.append((run_id, executor))
@@ -1187,7 +1248,7 @@ def test_cli_executes_exactly_one_next_step(
         calls.append((self.spec, tuple(argv), timeout))
         return SandboxResult((sandbox, *argv), returncode, "hello", "problem")
 
-    monkeypatch.setattr(RunCoordinator, "execute_next_step", execute_via_coordinator)
+    monkeypatch.setattr(_RunCoordinator, "execute_next_step", execute_via_coordinator)
     monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
     arguments = [
         "run", "execute-next", "run-1", "--sandbox", sandbox,

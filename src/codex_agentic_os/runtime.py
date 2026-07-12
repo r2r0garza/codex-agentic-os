@@ -145,6 +145,8 @@ class RunCoordinator:
             raise ValueError("run objective must not be empty")
         if agent_id is not None and not agent_id.strip():
             raise ValueError("agent id must not be empty")
+        if agent_id is not None:
+            self._require_registered_agent(agent_id)
         payload: dict[str, object] = {"objective": objective}
         if agent_id is not None:
             payload["agent_id"] = agent_id
@@ -167,6 +169,7 @@ class RunCoordinator:
 
         if not agent_id.strip():
             raise ValueError("agent id must not be empty")
+        self._require_registered_agent(agent_id)
         try:
             record = self.store.claim_run(run_id, agent_id)
         except StateConflictError as error:
@@ -193,8 +196,13 @@ class RunCoordinator:
 
         if not agent_id.strip():
             raise ValueError("agent id must not be empty")
+        self._require_registered_agent(agent_id)
         record = self.store.claim_next_run(agent_id)
         return None if record is None else self._run(record)
+
+    def _require_registered_agent(self, agent_id: str) -> None:
+        if self.store.get("agent", agent_id) is None:
+            raise ValueError(f"agent is not registered: {agent_id}")
 
     def list_runs(self) -> tuple[AgentRun, ...]:
         """Return all durable runs in stable run identifier order."""
