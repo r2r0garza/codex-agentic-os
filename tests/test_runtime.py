@@ -147,6 +147,52 @@ def test_claim_rejects_invalid_runs_without_mutation(tmp_path) -> None:
     assert coordinator.get("assigned") == assigned
 
 
+def test_claim_next_selects_first_eligible_run_in_identifier_order(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    assigned = coordinator.create("run-a", objective="Assigned", agent_id="agent-0")
+    running = coordinator.create("run-b", objective="Running")
+    coordinator.transition("run-b", RunStatus.RUNNING)
+    terminal = coordinator.create("run-c", objective="Terminal")
+    coordinator.transition("run-c", RunStatus.RUNNING)
+    coordinator.transition("run-c", RunStatus.SUCCEEDED)
+    later = coordinator.create("run-z", objective="Later")
+    first = coordinator.create("run-d", objective="First")
+
+    claimed = coordinator.claim_next("agent-1")
+
+    assert claimed == AgentRun(
+        "run-d", "First", RunStatus.QUEUED, first.revision + 1, "agent-1"
+    )
+    assert coordinator.get("run-a") == assigned
+    assert coordinator.get("run-z") == later
+
+
+def test_competing_claim_next_calls_claim_distinct_runs(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    first = RunCoordinator(StateStore(database))
+    competing = RunCoordinator(StateStore(database))
+    first.create("run-a", objective="First")
+    first.create("run-b", objective="Second")
+
+    first_claim = first.claim_next("agent-1")
+    second_claim = competing.claim_next("agent-2")
+
+    assert first_claim is not None and first_claim.run_id == "run-a"
+    assert second_claim is not None and second_claim.run_id == "run-b"
+    assert competing.get("run-a") == first_claim
+
+
+def test_claim_next_empty_queue_and_invalid_agent_do_not_mutate(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    assigned = coordinator.create("run-a", objective="Assigned", agent_id="agent-0")
+
+    assert coordinator.claim_next("agent-1") is None
+    with pytest.raises(ValueError, match="agent id must not be empty"):
+        coordinator.claim_next(" ")
+
+    assert coordinator.get("run-a") == assigned
+
+
 def test_ordered_steps_are_durable_and_revisioned(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

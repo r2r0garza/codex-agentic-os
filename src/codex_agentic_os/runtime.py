@@ -166,6 +166,14 @@ class RunCoordinator:
             raise KeyError(f"run does not exist: {run_id}") from error
         return self._run(record)
 
+    def claim_next(self, agent_id: str) -> AgentRun | None:
+        """Atomically assign the first eligible queued run to an agent."""
+
+        if not agent_id.strip():
+            raise ValueError("agent id must not be empty")
+        record = self.store.claim_next_run(agent_id)
+        return None if record is None else self._run(record)
+
     def list_runs(self) -> tuple[AgentRun, ...]:
         """Return all durable runs in stable run identifier order."""
 

@@ -209,6 +209,53 @@ class StateStore:
             connection.commit()
         return StateRecord("run", run_id, status, claimed_payload, claimed_revision)
 
+    def claim_next_run(self, agent_id: str) -> StateRecord | None:
+        """Assign the first queued, unassigned run in stable key order."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        if not agent_id.strip():
+            raise ValueError("agent id must not be empty")
+        self.initialize()
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT key, status, payload, revision
+                FROM state_records
+                WHERE kind = 'run'
+                  AND status = 'queued'
+                  AND json_extract(payload, '$.agent_id') IS NULL
+                ORDER BY key
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+
+            run_id, status, encoded, revision = (
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                int(row[3]),
+            )
+            payload = json.loads(encoded)
+            claimed_payload = {**payload, "agent_id": agent_id}
+            claimed_encoded = self._encode_payload(claimed_payload)
+            claimed_revision = revision + 1
+            connection.execute(
+                """
+                UPDATE state_records
+                SET payload = ?, revision = ?
+                WHERE kind = 'run' AND key = ?
+                """,
+                (claimed_encoded, claimed_revision, run_id),
+            )
+            connection.commit()
+        return StateRecord("run", run_id, status, claimed_payload, claimed_revision)
+
     def append_step(
         self,
         step_id: str,
