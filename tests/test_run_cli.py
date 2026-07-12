@@ -6,7 +6,7 @@ import pytest
 
 from codex_agentic_os.cli import main
 from codex_agentic_os.runtime import RunCoordinator, RunStatus, StepStatus
-from codex_agentic_os.sandboxes import SandboxResult
+from codex_agentic_os.sandboxes import ContainerSandbox, SandboxResult
 from codex_agentic_os.state import StateStore
 
 
@@ -650,11 +650,19 @@ def test_cli_executes_exactly_one_next_step(
     )
     coordinator.add_step("run-1", "step-2", objective="Second", command=("true",))
     calls = []
+    coordinator_calls = []
+
+    execute_next_step = RunCoordinator.execute_next_step
+
+    def execute_via_coordinator(self, run_id, executor):
+        coordinator_calls.append((run_id, executor))
+        return execute_next_step(self, run_id, executor)
 
     def execute(self, argv, *, timeout=None):
         calls.append((self.spec, tuple(argv), timeout))
         return SandboxResult((sandbox, *argv), returncode, "hello", "problem")
 
+    monkeypatch.setattr(RunCoordinator, "execute_next_step", execute_via_coordinator)
     monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
     arguments = [
         "run", "execute-next", "run-1", "--sandbox", sandbox,
@@ -665,6 +673,9 @@ def test_cli_executes_exactly_one_next_step(
     main(arguments)
 
     payload = json.loads(capsys.readouterr().out)
+    assert len(coordinator_calls) == 1
+    assert coordinator_calls[0][0] == "run-1"
+    assert isinstance(coordinator_calls[0][1], ContainerSandbox)
     assert len(calls) == 1
     spec, command, timeout = calls[0]
     assert spec.kind.value == sandbox

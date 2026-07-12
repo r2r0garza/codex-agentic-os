@@ -107,7 +107,7 @@ Implemented foundation:
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0027 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0028 is complete.
 
 ## Development
 
