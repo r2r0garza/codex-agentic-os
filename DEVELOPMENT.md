@@ -70,6 +70,14 @@ runs.transition("run-001", RunStatus.RUNNING)
 runs.transition("run-001", RunStatus.SUCCEEDED, output={"artifacts": 4})
 ```
 
+Perform the same explicit lifecycle transitions from the CLI. Terminal output must be
+a JSON object and is accepted only for `succeeded` or `failed` transitions:
+
+```bash
+codex-agentic-os run transition run-001 running
+codex-agentic-os run transition run-001 succeeded --output '{"artifacts": 4}'
+```
+
 Cancel a queued or running run consistently with its active steps. Succeeded, failed,
 or already-cancelled steps retain their terminal status and output:
 

@@ -65,6 +65,101 @@ def test_cli_create_rejects_duplicate_and_empty_values_without_mutation(
     assert RunCoordinator(StateStore(database)).get("run-1") == original
 
 
+@pytest.mark.parametrize("terminal", ["succeeded", "failed", "cancelled"])
+def test_cli_transitions_run_through_terminal_statuses_with_ordered_steps(
+    tmp_path, capsys, terminal
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Operate lifecycle")
+    coordinator.add_step("run-1", "step-2", objective="Second")
+    coordinator.add_step("run-1", "step-1", objective="First")
+
+    main(["run", "transition", "run-1", "running", "--state-db", str(database)])
+    running = json.loads(capsys.readouterr().out)
+    assert running["run"]["status"] == "running"
+    assert [step["position"] for step in running["steps"]] == [1, 2]
+
+    arguments = ["run", "transition", "run-1", terminal, "--state-db", str(database)]
+    if terminal in {"succeeded", "failed"}:
+        arguments.extend(["--output", '{"detail": "operator"}'])
+    main(arguments)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["status"] == terminal
+    assert payload["run"]["output"] == (
+        {"detail": "operator"} if terminal in {"succeeded", "failed"} else None
+    )
+    assert [step["position"] for step in payload["steps"]] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        ("{", "run output must be valid JSON"),
+        ("[]", "run output must be a JSON object"),
+        ("null", "run output must be a JSON object"),
+    ],
+)
+def test_cli_transition_rejects_invalid_output_without_mutation(
+    tmp_path, capsys, output, message
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="Original")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "transition", "run-1", "succeeded", "--output", output,
+                "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
+def test_cli_transition_rejects_output_for_nonterminal_edge_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="Original")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "transition", "run-1", "running", "--output", "{}",
+                "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "run output is only valid" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
+@pytest.mark.parametrize("setup", ["missing-run", "invalid-edge"])
+def test_cli_transition_rejects_missing_run_and_invalid_edge_without_mutation(
+    tmp_path, capsys, setup
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="Original")
+    run_id = "missing" if setup == "missing-run" else "run-1"
+    status = "running" if setup == "missing-run" else "succeeded"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "transition", run_id, status, "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    error = capsys.readouterr().err
+    assert ("run does not exist" if setup == "missing-run" else "invalid run transition") in error
+    assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
 def test_cli_adds_ordered_command_steps_and_matches_inspection(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

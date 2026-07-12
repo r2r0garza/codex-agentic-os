@@ -75,6 +75,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     list_runs = run_commands.add_parser("list", help="list durable runs")
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
+    transition = run_commands.add_parser(
+        "transition", help="advance a run through an explicit lifecycle transition"
+    )
     inspect_step = run_commands.add_parser("inspect-step", help="show one durable step")
     cancel = run_commands.add_parser("cancel", help="cancel a run and its active steps")
     cancel_step = run_commands.add_parser(
@@ -108,6 +111,17 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         choices=[status.value for status in RunStatus],
         help="include runs with this lifecycle status; repeat to include multiple statuses",
+    )
+    transition.add_argument("run_id")
+    transition.add_argument("status", choices=[status.value for status in RunStatus])
+    transition.add_argument(
+        "--output", help="JSON object persisted for a succeeded or failed run"
+    )
+    transition.add_argument(
+        "--state-db",
+        type=Path,
+        default=Path(".codex-agentic-os/state.sqlite3"),
+        help="path to the runtime state database",
     )
     list_runs.add_argument(
         "--agent-id",
@@ -337,6 +351,23 @@ def main(argv: Sequence[str] | None = None) -> None:
                     raise ValueError(f"step does not exist: {arguments.step_id}")
                 print(json.dumps(_step_payload(step), indent=2, sort_keys=True))
                 return
+            elif arguments.run_command == "transition":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                output = None
+                if arguments.output is not None:
+                    try:
+                        output = json.loads(arguments.output)
+                    except json.JSONDecodeError as error:
+                        raise ValueError("run output must be valid JSON") from error
+                    if not isinstance(output, dict):
+                        raise ValueError("run output must be a JSON object")
+                coordinator.transition(
+                    arguments.run_id,
+                    RunStatus(arguments.status),
+                    output=output,
+                )
+                run_id = arguments.run_id
             elif arguments.run_command == "prune":
                 if coordinator.get(arguments.run_id) is None:
                     raise ValueError(f"run does not exist: {arguments.run_id}")
