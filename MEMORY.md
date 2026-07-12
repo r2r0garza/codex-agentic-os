@@ -1,5 +1,27 @@
 # Automation Memory
 
+- Run: 2026-07-12T11:35:18Z — implementation run.
+- Selected issue: #25, operator run transition CLI.
+- Completed: added `run transition RUN_ID STATUS [--output JSON]`, delegating
+  lifecycle/output validation and atomic persistence to `RunCoordinator.transition()`;
+  malformed or non-object JSON is rejected before mutation, and successful commands
+  print the standard ordered run payload. Added Plan 0046, DEVELOPMENT.md usage,
+  regression coverage for all terminal states and rejection paths, and refreshed the
+  index.
+- Implementation commit: `241f505`; pushed to `origin/main`; issue #25 auto-closed
+  by the commit's `Closes #25`; verification comment posted separately.
+- Verification: `pytest -q tests/test_run_cli.py` (105 passed); `pytest -q` (274
+  passed); incremental index build (18 files, 407 symbols, 2262 relationships);
+  `index check` current; `git diff --check` clean.
+- Blocked review: no open issues labeled `blocked`.
+- Resulting queue: 2 unblocked `agent-ready` issues — #26 and #35 (both
+  priority:3). Next run must be backlog replenishment under the ≤2 threshold;
+  current oldest implementation candidate is #26.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree
+  clean before this durable MEMORY.md update.
+
+---
+
 - Run: 2026-07-12T11:38:00Z — implementation run.
 - Selected issue: #36, durable agent registry (register/list) CLI.
 - Completed: added `Agent`/`AgentRegistry` to `runtime.py` (`register`/`list_agents`)
@@ -92,39 +114,3 @@
   only remaining priority:1 issue.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree
   clean after the durable MEMORY.md commit.
-
----
-
-- Run: 2026-07-12T09:05:00Z — backlog-replenishment run.
-- Trigger: only 2 unblocked `agent-ready` issues remained (#25, #26), at the
-  ≤2 threshold; per protocol, analyzed repo state and created issues without
-  implementing one.
-- Analysis: reviewed `src/codex_agentic_os/{chat,sandboxes,cli,state,runtime,
-  providers}.py`, `.github/workflows/*.yml`, `.plan/`, and open-issue bodies
-  for #25/#26 to avoid duplication.
-- Created 4 issues (labels created: `area:sandbox`, `area:ci`):
-  - #33 (priority:1, area:providers, bug): `AnthropicAdapter.complete()` sends
-    an invalid top-level `cache_control` field in the Messages API request
-    body (Anthropic only accepts `cache_control` on individual content
-    blocks); the current behavior is locked in by
-    `tests/test_chat.py::test_anthropic_adapter_posts_native_payload_and_reads_text_blocks`.
-  - #34 (priority:2, area:sandbox, enhancement): `ContainerSandbox` has no
-    bind-mount support, so `run execute-next` cannot expose repository files
-    inside the container; scoped to add `SandboxSpec` mounts, command
-    rendering, and a repeatable `--mount` CLI flag.
-  - #35 (priority:3, area:ci, bug): the hourly heartbeat workflow scans
-    `.plan/*.md` for `- [ ]` unchecked checkboxes, but all 41 plan files use
-    `[x]` and the real queue is GitHub issues labeled `agent-ready`
-    (per README) — the step is permanently dead.
-  - #36 (priority:2, area:runtime/area:cli, enhancement): the `"agent"`
-    `StateStore` kind is declared and documented but never read or written;
-    scoped to add a minimal `agent register`/`agent list` CLI.
-- No implementation commit this run; no issue closed.
-- Verification: none required (no code changes); confirmed no open `blocked`
-  issues exist (empty review, nothing to re-evaluate).
-- Resulting queue: 6 unblocked `agent-ready` issues — #25, #26 (priority:3),
-  #33 (priority:1), #34, #36 (priority:2), #35 (priority:3). Within the 5-10
-  target band. Recommended next run: #33 (priority:1, only issue at that
-  priority — real correctness bug, small bounded fix).
-- Final target state: `main`, matches `origin/main`; worktree clean (no
-  changes made other than this MEMORY.md update, which will be committed).
