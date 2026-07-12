@@ -1082,9 +1082,16 @@ def test_execute_next_step_records_provider_message_execution_kind_in_history(
     coordinator.execute_next_step("run-1", adapter_resolver=lambda _: Adapter())
 
     history = RunCoordinator(StateStore(database)).list_history("run-1")
-    assert [entry.transition for entry in history] == ["created", "transitioned"]
+    assert [entry.transition for entry in history] == [
+        "created",
+        "run_started",
+        "step_started",
+        "step_succeeded",
+        "run_succeeded",
+    ]
     assert history[-1].status == "succeeded"
-    assert history[-1].execution_kind == "provider_message"
+    assert history[-1].execution_kind == "provider"
+    assert history[-2].step_id == "manual"
 
 
 def test_list_history_reflects_create_claim_and_transition_and_rejects_missing_run(
@@ -1216,6 +1223,7 @@ def test_execute_next_step_fails_step_on_adapter_resolution_error(tmp_path) -> N
 
 
 def test_execute_next_step_runs_mixed_command_and_model_steps_in_order(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
     command_calls = []
     model_calls = []
 
@@ -1229,7 +1237,7 @@ def test_execute_next_step_runs_mixed_command_and_model_steps_in_order(tmp_path)
             model_calls.append(request)
             return ChatResponse("Reviewed", model="served-model")
 
-    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Mixed durable work")
     coordinator.add_step("run-1", "step-1", objective="Checkpoint", command=("true",))
     coordinator.add_step(
@@ -1253,6 +1261,31 @@ def test_execute_next_step_runs_mixed_command_and_model_steps_in_order(tmp_path)
     assert command_calls == [("true",), ("true",)]
     assert len(model_calls) == 1
     assert third[1].status is RunStatus.SUCCEEDED
+    history = RunCoordinator(StateStore(database)).list_history("run-1")
+    assert [entry.transition for entry in history] == [
+        "created",
+        "run_started",
+        "step_started",
+        "step_succeeded",
+        "step_started",
+        "step_succeeded",
+        "step_started",
+        "step_succeeded",
+        "run_succeeded",
+    ]
+    assert [
+        (entry.step_id, entry.execution_kind)
+        for entry in history
+        if entry.step_id is not None
+    ] == [
+        ("step-1", "command"),
+        ("step-1", "command"),
+        ("step-2", "provider"),
+        ("step-2", "provider"),
+        ("step-3", "command"),
+        ("step-3", "command"),
+    ]
+    assert all("Review output" not in repr(entry) for entry in history)
 
 
 @pytest.mark.parametrize(

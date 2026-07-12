@@ -332,7 +332,27 @@ class RunCoordinator:
         if current.agent_id is not None:
             run_payload["agent_id"] = current.agent_id
         records.append(("run", run_id, RunStatus.CANCELLED, run_payload))
-        stored = self.store.put_many(records)
+        stored = self.store.put_many(
+            records,
+            expected=(
+                *(("step", step.step_id, step.status, step.revision) for step in active_steps),
+                ("run", run_id, current.status, current.revision),
+            ),
+            history=(
+                *(
+                    RunHistoryEntry(
+                        run_id, 0, "step_cancelled", StepStatus.CANCELLED,
+                        step_id=step.step_id, agent_id=current.agent_id,
+                        execution_kind=self._execution_kind(step),
+                    )
+                    for step in active_steps
+                ),
+                RunHistoryEntry(
+                    run_id, 0, "run_cancelled", RunStatus.CANCELLED,
+                    agent_id=current.agent_id,
+                ),
+            ),
+        )
         return self._run(stored[-1])
 
     def start_next_step(self, run_id: str) -> RunStep | None:
@@ -372,7 +392,22 @@ class RunCoordinator:
                 (
                     ("run", run_id, RunStatus.RUNNING, run_payload),
                     ("step", next_step.step_id, StepStatus.RUNNING, step_payload),
-                )
+                ),
+                expected=(
+                    ("run", run_id, run.status, run.revision),
+                    ("step", next_step.step_id, next_step.status, next_step.revision),
+                ),
+                history=(
+                    RunHistoryEntry(
+                        run_id, 0, "run_started", RunStatus.RUNNING,
+                        agent_id=run.agent_id,
+                    ),
+                    RunHistoryEntry(
+                        run_id, 0, "step_started", StepStatus.RUNNING,
+                        step_id=next_step.step_id, agent_id=run.agent_id,
+                        execution_kind=self._execution_kind(next_step),
+                    ),
+                ),
             )
             return self._step(stored[1])
         return self.transition_step(next_step.step_id, StepStatus.RUNNING)
@@ -532,6 +567,9 @@ class RunCoordinator:
             payload["message"] = self._message_payload(current.message)
         if output is not None:
             payload["output"] = dict(output)
+        run = self.get(current.run_id)
+        if run is None:
+            raise KeyError(f"run does not exist: {current.run_id}")
         try:
             record = self.store.transition_step(
                 step_id,
@@ -539,6 +577,9 @@ class RunCoordinator:
                 expected_revision=current.revision,
                 status=status,
                 payload=payload,
+                run_id=current.run_id,
+                agent_id=run.agent_id,
+                execution_kind=self._execution_kind(current),
             )
         except StateConflictError as error:
             raise ValueError(f"step transition conflict: {step_id}") from error
@@ -558,22 +599,7 @@ class RunCoordinator:
         if current.status is not StepStatus.QUEUED:
             raise ValueError(f"step must be queued to cancel it: {step_id}")
 
-        payload: dict[str, object] = {
-            "run_id": current.run_id,
-            "position": current.position,
-            "objective": current.objective,
-        }
-        if current.command is not None:
-            payload["command"] = list(current.command)
-        if current.timeout is not None:
-            payload["timeout"] = current.timeout
-        if current.message is not None:
-            payload["message"] = self._message_payload(current.message)
-        return self._step(
-            self.store.put(
-                "step", step_id, status=StepStatus.CANCELLED, payload=payload
-            )
-        )
+        return self.transition_step(step_id, StepStatus.CANCELLED)
 
     def complete_step_from_result(
         self, step_id: str, result: ExecutionResult
@@ -627,9 +653,7 @@ class RunCoordinator:
             run_output = {"completed_steps": len(self.list_steps(run.run_id))}
 
         if run_status is None:
-            step = self._step(
-                self.store.put("step", step_id, status=step_status, payload=step_payload)
-            )
+            step = self.transition_step(step_id, step_status, output=output)
             return step, run
 
         run_payload: dict[str, object] = {
@@ -642,7 +666,21 @@ class RunCoordinator:
             (
                 ("step", step_id, step_status, step_payload),
                 ("run", run.run_id, run_status, run_payload),
-            )
+            ),
+            expected=(
+                ("step", step_id, current.status, current.revision),
+                ("run", run.run_id, run.status, run.revision),
+            ),
+            history=(
+                RunHistoryEntry(
+                    run.run_id, 0, f"step_{step_status}", step_status,
+                    step_id=step_id, agent_id=run.agent_id, execution_kind="command",
+                ),
+                RunHistoryEntry(
+                    run.run_id, 0, f"run_{run_status}", run_status,
+                    agent_id=run.agent_id, execution_kind="command",
+                ),
+            ),
         )
         step = self._step(stored[0])
         run = self._run(stored[1])
@@ -661,21 +699,52 @@ class RunCoordinator:
         output: dict[str, object] = {"content": response.content, "model": response.model}
         if response.raw is not None:
             output["raw"] = dict(response.raw)
-        step = self.transition_step(step_id, StepStatus.SUCCEEDED, output=output)
-        run = self.get(step.run_id)
-        if run is None:  # Defensive: durable steps always reference an existing run.
-            raise KeyError(f"run does not exist: {step.run_id}")
-        if all(
-            candidate.status is StepStatus.SUCCEEDED
+        run = self.get(current.run_id)
+        if run is None:
+            raise KeyError(f"run does not exist: {current.run_id}")
+        if run.status is not RunStatus.RUNNING or current.status is not StepStatus.RUNNING:
+            raise ValueError(f"step and run must be running to record a response: {step_id}")
+        step_payload = {
+            "run_id": current.run_id,
+            "position": current.position,
+            "objective": current.objective,
+            "message": self._message_payload(current.message),
+            "output": output,
+        }
+        final = all(
+            candidate.step_id == step_id or candidate.status is StepStatus.SUCCEEDED
             for candidate in self.list_steps(run.run_id)
-        ):
-            run = self.transition(
-                run.run_id,
-                RunStatus.SUCCEEDED,
-                output={"completed_steps": len(self.list_steps(run.run_id))},
-                execution_kind="provider_message",
-            )
-        return step, run
+        )
+        if not final:
+            step = self.transition_step(step_id, StepStatus.SUCCEEDED, output=output)
+            return step, run
+        run_payload: dict[str, object] = {
+            "objective": run.objective,
+            "output": {"completed_steps": len(self.list_steps(run.run_id))},
+        }
+        if run.agent_id is not None:
+            run_payload["agent_id"] = run.agent_id
+        stored = self.store.put_many(
+            (
+                ("step", step_id, StepStatus.SUCCEEDED, step_payload),
+                ("run", run.run_id, RunStatus.SUCCEEDED, run_payload),
+            ),
+            expected=(
+                ("step", step_id, current.status, current.revision),
+                ("run", run.run_id, run.status, run.revision),
+            ),
+            history=(
+                RunHistoryEntry(
+                    run.run_id, 0, "step_succeeded", StepStatus.SUCCEEDED,
+                    step_id=step_id, agent_id=run.agent_id, execution_kind="provider",
+                ),
+                RunHistoryEntry(
+                    run.run_id, 0, "run_succeeded", RunStatus.SUCCEEDED,
+                    agent_id=run.agent_id, execution_kind="provider",
+                ),
+            ),
+        )
+        return self._step(stored[0]), self._run(stored[1])
 
     def fail_step_from_error(
         self, step_id: str, error: Exception
@@ -720,7 +789,21 @@ class RunCoordinator:
             (
                 ("step", step_id, StepStatus.FAILED, step_payload),
                 ("run", run.run_id, RunStatus.FAILED, run_payload),
-            )
+            ),
+            expected=(
+                ("step", step_id, current.status, current.revision),
+                ("run", run.run_id, run.status, run.revision),
+            ),
+            history=(
+                RunHistoryEntry(
+                    run.run_id, 0, "step_failed", StepStatus.FAILED,
+                    step_id=step_id, agent_id=run.agent_id, execution_kind="provider",
+                ),
+                RunHistoryEntry(
+                    run.run_id, 0, "run_failed", RunStatus.FAILED,
+                    agent_id=run.agent_id, execution_kind="provider",
+                ),
+            ),
         )
         step = self._step(stored[0])
         run = self._run(stored[1])
@@ -779,7 +862,23 @@ class RunCoordinator:
             (
                 ("step", step_id, StepStatus.FAILED, step_payload),
                 ("run", run.run_id, RunStatus.FAILED, run_payload),
-            )
+            ),
+            expected=(
+                ("step", step_id, current.status, current.revision),
+                ("run", run.run_id, run.status, run.revision),
+            ),
+            history=(
+                RunHistoryEntry(
+                    run.run_id, 0, "step_recovered", StepStatus.FAILED,
+                    step_id=step_id, agent_id=run.agent_id,
+                    execution_kind=self._execution_kind(current),
+                ),
+                RunHistoryEntry(
+                    run.run_id, 0, "run_failed", RunStatus.FAILED,
+                    agent_id=run.agent_id,
+                    execution_kind=self._execution_kind(current),
+                ),
+            ),
         )
         step = self._step(stored[0])
         run = self._run(stored[1])
@@ -850,6 +949,12 @@ class RunCoordinator:
     @staticmethod
     def _message_payload(message: ProviderMessage) -> dict[str, object]:
         return {key: value for key, value in asdict(message).items() if value is not None}
+
+    @staticmethod
+    def _execution_kind(step: RunStep) -> str:
+        """Return the non-sensitive execution category persisted in history."""
+
+        return "command" if step.command is not None else "provider"
 
     @staticmethod
     def _validate_message(

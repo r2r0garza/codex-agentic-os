@@ -188,6 +188,34 @@ def test_transition_step_advances_status_output_and_revision_atomically(tmp_path
     assert store.get("step", "step-1") == transitioned
 
 
+def test_batch_transition_conflict_appends_no_step_history(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    run = store.insert("run", "run-1", status="running", payload={"agent_id": "a"})
+    step = store.insert(
+        "step", "step-1", status="running", payload={"run_id": "run-1", "position": 1}
+    )
+    before = store.list_run_history("run-1")
+
+    with pytest.raises(StateConflictError, match="step transition conflict"):
+        store.put_many(
+            (
+                ("step", "step-1", "succeeded", step.payload),
+                ("run", "run-1", "succeeded", run.payload),
+            ),
+            expected=(("step", "step-1", "queued", step.revision),),
+            history=(
+                RunHistoryEntry(
+                    "run-1", 0, "step_succeeded", "succeeded",
+                    agent_id="a", execution_kind="command", step_id="step-1",
+                ),
+            ),
+        )
+
+    assert store.get("step", "step-1") == step
+    assert store.get("run", "run-1") == run
+    assert store.list_run_history("run-1") == before
+
+
 def test_transition_step_rejects_missing_and_stale_state_without_mutation(tmp_path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     original = store.insert("step", "step-1", status="queued", payload={})

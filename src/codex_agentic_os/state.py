@@ -31,6 +31,7 @@ class RunHistoryEntry:
     status: str
     agent_id: str | None = None
     execution_kind: str | None = None
+    step_id: str | None = None
 
 
 class StateConflictError(ValueError):
@@ -59,6 +60,7 @@ class StateStore:
             sequence INTEGER NOT NULL,
             transition TEXT NOT NULL,
             status TEXT NOT NULL,
+            step_id TEXT,
             agent_id TEXT,
             execution_kind TEXT,
             PRIMARY KEY (run_id, sequence)
@@ -97,6 +99,12 @@ class StateStore:
                 )
                 connection.execute("DROP TABLE state_records_old")
             connection.execute(self._CREATE_HISTORY_TABLE)
+            history_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(run_history)").fetchall()
+            }
+            if "step_id" not in history_columns:
+                connection.execute("ALTER TABLE run_history ADD COLUMN step_id TEXT")
             connection.commit()
 
     def put(
@@ -179,6 +187,9 @@ class StateStore:
     def put_many(
         self,
         records: Sequence[tuple[str, str, str, Mapping[str, object]]],
+        *,
+        expected: Sequence[tuple[str, str, str, int]] = (),
+        history: Sequence[RunHistoryEntry] = (),
     ) -> tuple[StateRecord, ...]:
         """Insert or replace several documents in one transaction."""
 
@@ -193,9 +204,26 @@ class StateStore:
         stored: list[StateRecord] = []
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            for kind, key, status, revision in expected:
+                row = connection.execute(
+                    "SELECT status, revision FROM state_records WHERE kind = ? AND key = ?",
+                    (kind, key),
+                ).fetchone()
+                if row is None or str(row[0]) != status or int(row[1]) != revision:
+                    raise StateConflictError(f"state {kind} transition conflict: {key}")
             for kind, key, status, encoded in prepared:
                 stored.append(
                     self._put_on_connection(connection, kind, key, status, encoded)
+                )
+            for entry in history:
+                self._append_run_history(
+                    connection,
+                    entry.run_id,
+                    transition=entry.transition,
+                    status=entry.status,
+                    step_id=entry.step_id,
+                    agent_id=entry.agent_id,
+                    execution_kind=entry.execution_kind,
                 )
             connection.commit()
         return tuple(stored)
@@ -367,6 +395,9 @@ class StateStore:
         expected_revision: int,
         status: str,
         payload: Mapping[str, object],
+        run_id: str | None = None,
+        agent_id: str | None = None,
+        execution_kind: str | None = None,
     ) -> StateRecord:
         """Advance one step in a write transaction when it matches an expected state."""
 
@@ -406,6 +437,16 @@ class StateStore:
                 """,
                 (status, encoded, new_revision, step_id),
             )
+            if run_id is not None:
+                self._append_run_history(
+                    connection,
+                    run_id,
+                    transition=("step_started" if status == "running" else f"step_{status}"),
+                    status=status,
+                    step_id=step_id,
+                    agent_id=agent_id,
+                    execution_kind=execution_kind,
+                )
             connection.commit()
         return StateRecord("step", step_id, status, json.loads(encoded), new_revision)
 
@@ -571,7 +612,7 @@ class StateStore:
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 """
-                SELECT run_id, sequence, transition, status, agent_id, execution_kind
+                SELECT run_id, sequence, transition, status, step_id, agent_id, execution_kind
                 FROM run_history WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
@@ -582,8 +623,9 @@ class StateStore:
                 sequence=int(row[1]),
                 transition=str(row[2]),
                 status=str(row[3]),
-                agent_id=row[4],
-                execution_kind=row[5],
+                step_id=row[4],
+                agent_id=row[5],
+                execution_kind=row[6],
             )
             for row in rows
         )
@@ -675,6 +717,7 @@ class StateStore:
         status: str,
         agent_id: object,
         execution_kind: str | None,
+        step_id: str | None = None,
     ) -> None:
         """Append one ordered history entry on a caller-owned run mutation transaction."""
 
@@ -685,14 +728,15 @@ class StateStore:
         connection.execute(
             """
             INSERT INTO run_history
-                (run_id, sequence, transition, status, agent_id, execution_kind)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (run_id, sequence, transition, status, step_id, agent_id, execution_kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
                 sequence,
                 transition,
                 status,
+                step_id,
                 agent_id if isinstance(agent_id, str) else None,
                 execution_kind,
             ),

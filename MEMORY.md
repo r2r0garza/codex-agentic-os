@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-12T22:36:55Z — implementation and unblock run.
+- Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). Selected its sole unblocked `agent-ready` issue, #56 (record mixed-step lifecycle provenance atomically, priority:2).
+- Completed: extended `run_history` with nullable `step_id` (including writable-store migration); every command/provider step start, success, failure, cancellation, and recovery now appends non-sensitive step/run history inside the same transaction as its state mutation. Coupled run/step operations validate expected status and revision under `BEGIN IMMEDIATE`, preventing stale or competing attempts from producing state changes or phantom entries. Mixed command/provider reconstruction survives a fresh store instance. Added Plan 0061.
+- Verification: focused state/runtime suite 123 passed; full suite 361 passed; index rebuilt/current (20 files, 529 symbols, 2925 relationships); `git diff --check` clean. Direct tests cover mixed execution categories, step identity, restart reconstruction, and a rejected stale batch leaving state/history unchanged.
+- Blocked review: #57 was blocked only on #55/#56; after #56 closes, remove `blocked` and add `agent-ready`. No other blocked issues are open.
+- Roadmap horizon: 3 open milestones before and after (Sprint 5 active; Sprint 6 and Sprint 7 future); no planning run needed.
+- Final target: `main`; implementation commit/push and issue closure pending this record. Next eligible issue: #57. Worktree contains only this run's focused changes.
+
+---
+
 - Run: 2026-07-12T22:00:00Z — implementation and unblock run.
 - Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). Selected and closed its sole unblocked `agent-ready` issue, #55 (persist atomic run transition history, priority:1).
 - Completed: added a `run_history` SQLite table and `RunHistoryEntry`/`StateStore.list_run_history()`; `StateStore.insert()` (kind="run"), `claim_run()`, `release_run_claim()`, `claim_next_run()`, and `transition_run()` each append one ordered history row (transition, resulting status, agent_id when known, nullable execution_kind) inside the same `BEGIN IMMEDIATE` transaction as their mutation, after all compare-and-swap checks pass and before commit, so losing/rejected attempts append nothing. Threaded an optional `execution_kind` through `RunCoordinator.transition()` and `list_history()`; `complete_step_from_chat_response()` now passes `execution_kind="provider_message"`. Implicit multi-record mutations (`cancel()`, `complete_step_from_result()`, `fail_step_from_error()`, `recover_running_step()`, `start_next_step()`) were left untouched, matching the issue's excluded scope. Added Plan 0060.
@@ -41,14 +51,3 @@
 - Blocked review: #53's dependencies (#51/#52) are now resolved, so `blocked` was removed and `agent-ready` added. Sprint 4 now has one ready issue: #53.
 - Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed.
 - Final target: `main`; next eligible issue is #53. Worktree dirty only for this MEMORY record until committed and pushed.
-
----
-
-- Run: 2026-07-12T20:07:00Z — implementation verification and closure run.
-- Active milestone: Sprint 4 "Durable model-backed step execution" (#4). Re-selected its sole unblocked `agent-ready` issue, #51 (queue and inspect durable provider-message steps, priority:1); implementation commit `b44bbb0` was already on `main`, so this run finished verification.
-- Root cause of the prior blocker: the activated `.venv` genuinely had no pytest and no project entry point; earlier `pip3` retries had been cancelled too early. Network to PyPI is slow (~40s/request) but functional. Both `pip3 install 'pytest>=8.0'` and `pip3 install -e '.[dev]'` succeeded when given several minutes.
-- Once pytest ran for the first time, the full suite revealed a real regression: the new exactly-one-of-command-or-message validation rejected the command-less "coordination-only" step that 67 pre-existing tests relied on as a fixture or, in three CLI tests, as a named feature. Fixed in commit `c8294a9` by adding a command or provider message to the affected fixtures, and rewrote `test_cli_add_step_rejects_bare_double_dash_as_objective_only` to expect rejection, removed the now-redundant `test_cli_adds_objective_only_step_and_matches_inspection`, and reworked `test_cli_adds_mixed_objective_only_and_command_steps_in_order` plus the `execute-next` "coordination" failure case to use provider-message steps instead of command-less ones.
-- Verification: full suite 348 passed; direct CLI UAT (create, add-step with provider-message flags, inspect-step, inspect, rejection of a step missing both command and message with exit code 2, persistence across a new process invocation); `codex-agentic-os index check` current after rebuild (20 files, 484 symbols, 2693 relationships); `git diff --check` clean.
-- Issue #51 closed with commit hashes and verification evidence. Blocked review: #52's sole dependency (#51) is now resolved, so `blocked` was removed and `agent-ready` added; #53 remains correctly blocked on #52.
-- Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed.
-- Final target: `main`; commits `c8294a9` (test fixes) pushed pending this record; issue #51 closed, #52 unblocked. Next eligible issue is #52. Worktree dirty only for this MEMORY record until committed and pushed.
