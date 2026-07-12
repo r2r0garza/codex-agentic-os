@@ -227,7 +227,12 @@ codex-agentic-os run execute-next run-002 --sandbox docker \
   --mount /path/to/repository:/workspace
 codex-agentic-os run execute-next run-002 --sandbox docker \
   --env API_KEY=secret --env DEBUG=1
+codex-agentic-os run execute-next run-002 --sandbox docker --network
 ```
+
+Container network access is disabled by default; `--network` is an explicit opt-in
+that selects bridge networking for that one step. Omitting the flag preserves the
+prior isolated (`--network none`) command construction exactly.
 
 When no queued work remains, the unchanged run payload includes
 `"execution": {"attempted": false}`. Coordination-only steps fail before mutation;

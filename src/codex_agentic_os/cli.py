@@ -201,6 +201,11 @@ def _parser() -> argparse.ArgumentParser:
         "--workdir",
         help="absolute working directory inside the container",
     )
+    execute_next.add_argument(
+        "--network",
+        action="store_true",
+        help="explicit opt-in to enable container network access (default: isolated, no network)",
+    )
 
     agent = commands.add_parser("agent", help="manage durable agent identities")
     agent_commands = agent.add_subparsers(dest="agent_command", required=True)
@@ -510,6 +515,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 mounts = _parse_mounts(arguments.mount)
                 env = _parse_env(arguments.env)
                 working_dir = arguments.workdir
+                network_enabled = arguments.network
                 spec = (
                     SandboxSpec(
                         kind=kind,
@@ -517,6 +523,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                         mounts=mounts,
                         env=env,
                         working_dir=working_dir,
+                        network_enabled=network_enabled,
                     )
                     if arguments.image is not None
                     else SandboxSpec(
@@ -524,6 +531,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                         mounts=mounts,
                         env=env,
                         working_dir=working_dir,
+                        network_enabled=network_enabled,
                     )
                 )
                 result = coordinator.execute_next_step(

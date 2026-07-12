@@ -1500,6 +1500,49 @@ def test_cli_execute_next_rejects_invalid_workdir_without_mutation(
     assert reloaded.get_step("step-1") == queued_step
 
 
+def test_cli_execute_next_network_flag_enables_bridge_networking(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+    coordinator.add_step("run-1", "step-1", objective="First", command=("true",))
+    calls = []
+
+    execute_next_step = _RunCoordinator.execute_next_step
+
+    def execute_via_coordinator(self, run_id, executor):
+        return execute_next_step(self, run_id, executor)
+
+    def execute(self, argv, *, timeout=None):
+        calls.append(self.spec)
+        return SandboxResult(("docker", *argv), 0, "", "")
+
+    monkeypatch.setattr(_RunCoordinator, "execute_next_step", execute_via_coordinator)
+    monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
+
+    main([
+        "run", "execute-next", "run-1", "--sandbox", "docker",
+        "--workdir", "/workspace", "--network", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+
+    assert len(calls) == 1
+    assert calls[0].network_enabled is True
+    assert calls[0].working_dir == "/workspace"
+
+
+def test_cli_execute_next_help_identifies_network_as_explicit_opt_in(capsys) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "execute-next", "--help"])
+
+    assert exit_info.value.code == 0
+    output = capsys.readouterr().out
+    assert "--network" in output
+    assert "opt-in" in output
+    assert "isolated" in output
+
+
 @pytest.mark.parametrize("failure", ["coordination", "exception"])
 def test_cli_execute_next_failure_preserves_recoverable_state(
     tmp_path, monkeypatch, capsys, failure
