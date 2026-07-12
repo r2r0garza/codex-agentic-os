@@ -20,6 +20,8 @@ The OS is intentionally provider-neutral. The foundation declares support for:
 
 Provider declarations live in `src/codex_agentic_os/providers.py`. Concrete adapters will be added behind this interface as the runtime matures.
 
+`ProviderKind.OPENAI_COMPATIBLE` targets an arbitrary self-hosted or proxied endpoint and requires an explicit `base_url`; it is never defaulted to the public OpenAI endpoint. `ProviderKind.LM_STUDIO` and `ProviderKind.OLLAMA` default to their standard local server URLs when `base_url` is omitted and work without credentials for local use. All provider kinds treat `api_key_env` as optional: a missing or empty environment variable omits the Authorization header instead of failing.
+
 ## Agent runtime strategy
 
 The initial runtime is a small internal core with typed boundaries. This avoids overfitting too early while leaving room to add adapters for orchestration frameworks such as LangChain DeepAgents when a plan calls for them.
@@ -111,10 +113,11 @@ Implemented foundation:
 - Operator-facing queued-step cancellation that preserves its parent run, siblings, and durable positions.
 - Atomic release of an exact queued run claim without overwriting newer ownership or lifecycle state.
 - Operator-facing `run prune` CLI support with machine-readable removed-run and step-count confirmation.
+- Explicit endpoint and credential policy for OpenAI-compatible, LM Studio, and Ollama providers, with LM Studio and Ollama defaulting to their standard local base URLs and OpenAI-compatible requiring an explicit base URL.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0035 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0036 is complete.
 
 ## Development
 

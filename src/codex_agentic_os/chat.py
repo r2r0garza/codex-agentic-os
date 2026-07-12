@@ -9,7 +9,12 @@ from typing import Callable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .providers import ProviderKind, ProviderSpec
+from .providers import LM_STUDIO_DEFAULT_BASE_URL, OLLAMA_DEFAULT_BASE_URL, ProviderKind, ProviderSpec
+
+_LOCAL_DEFAULT_BASE_URLS: Mapping[ProviderKind, str] = {
+    ProviderKind.LM_STUDIO: LM_STUDIO_DEFAULT_BASE_URL,
+    ProviderKind.OLLAMA: OLLAMA_DEFAULT_BASE_URL,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +72,11 @@ class OpenAICompatibleAdapter:
     def complete(self, request: ChatRequest) -> ChatResponse:
         if not request.messages:
             raise ValueError("chat requests require at least one message")
+        if self.spec.kind is ProviderKind.OPENAI_COMPATIBLE and not self.spec.base_url:
+            raise ValueError(
+                "openai_compatible provider configuration requires an explicit base_url; "
+                "it is never defaulted to the public OpenAI endpoint"
+            )
 
         payload: dict[str, object] = {
             "model": self.spec.model,
@@ -77,7 +87,8 @@ class OpenAICompatibleAdapter:
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
 
-        base_url = (self.spec.base_url or "https://api.openai.com/v1").rstrip("/")
+        local_default = _LOCAL_DEFAULT_BASE_URLS.get(self.spec.kind)
+        base_url = (self.spec.base_url or local_default or "https://api.openai.com/v1").rstrip("/")
         headers = {"Content-Type": "application/json"}
         if self.spec.api_key_env:
             api_key = os.getenv(self.spec.api_key_env)

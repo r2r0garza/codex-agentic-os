@@ -36,6 +36,142 @@ def test_compatible_adapter_posts_normalized_payload_and_reads_response() -> Non
     assert response.content == "hello"
 
 
+def test_compatible_adapter_omits_authorization_header_without_credentials() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured.update(url=url, headers=headers)
+        return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(ProviderKind.LM_STUDIO, model="local-model"),
+        transport=transport,
+    )
+    adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert captured["headers"] == {"Content-Type": "application/json"}
+
+
+def test_openai_compatible_requires_explicit_base_url_before_transport() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        raise AssertionError("transport must not be invoked without an explicit base_url")
+
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(ProviderKind.OPENAI_COMPATIBLE, model="custom-model"),
+        transport=transport,
+    )
+    with pytest.raises(ValueError, match="explicit base_url"):
+        adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+
+def test_lm_studio_defaults_to_standard_local_base_url_without_credentials() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured.update(url=url, headers=headers)
+        return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(ProviderKind.LM_STUDIO, model="local-model"),
+        transport=transport,
+    )
+    response = adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert captured["url"] == "http://localhost:1234/v1/chat/completions"
+    assert captured["headers"] == {"Content-Type": "application/json"}
+    assert response.content == "hello"
+
+
+def test_lm_studio_adds_bearer_header_when_credential_env_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured.update(headers=headers)
+        return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    monkeypatch.setenv("LM_STUDIO_API_KEY", "secret")
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(ProviderKind.LM_STUDIO, model="local-model", api_key_env="LM_STUDIO_API_KEY"),
+        transport=transport,
+    )
+    adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert captured["headers"] == {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer secret",
+    }
+
+
+def test_ollama_defaults_to_standard_local_base_url_without_credentials() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured.update(url=url, headers=headers)
+        return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(ProviderKind.OLLAMA, model="llama3.1"),
+        transport=transport,
+    )
+    response = adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert captured["url"] == "http://localhost:11434/v1/chat/completions"
+    assert captured["headers"] == {"Content-Type": "application/json"}
+    assert response.content == "hello"
+
+
+def test_ollama_adds_bearer_header_when_credential_env_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured.update(headers=headers)
+        return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    monkeypatch.setenv("OLLAMA_API_KEY", "secret")
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(ProviderKind.OLLAMA, model="llama3.1", api_key_env="OLLAMA_API_KEY"),
+        transport=transport,
+    )
+    adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert captured["headers"] == {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer secret",
+    }
+
+
+def test_openai_compatible_uses_explicit_base_url_and_credential_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured.update(url=url, headers=headers)
+        return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    monkeypatch.setenv("CUSTOM_API_KEY", "secret")
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(
+            ProviderKind.OPENAI_COMPATIBLE,
+            model="custom-model",
+            base_url="https://proxy.example.com/v1",
+            api_key_env="CUSTOM_API_KEY",
+        ),
+        transport=transport,
+    )
+    adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert captured["url"] == "https://proxy.example.com/v1/chat/completions"
+    assert captured["headers"] == {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer secret",
+    }
+
+
 def test_anthropic_adapter_posts_native_payload_and_reads_text_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
