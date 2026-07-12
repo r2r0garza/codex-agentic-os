@@ -92,6 +92,61 @@ def test_run_creation_is_atomic_across_coordinators(tmp_path) -> None:
     assert first.get("run-1") == original
 
 
+def test_claim_queued_run_persists_agent_and_revision(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    queued = coordinator.create("run-1", objective="Build feature")
+
+    claimed = coordinator.claim("run-1", "agent-1")
+
+    assert claimed == AgentRun(
+        run_id="run-1",
+        objective="Build feature",
+        status=RunStatus.QUEUED,
+        agent_id="agent-1",
+        output=None,
+        revision=queued.revision + 1,
+    )
+    assert RunCoordinator(StateStore(database)).get("run-1") == claimed
+
+
+def test_competing_claims_preserve_first_agent(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    first = RunCoordinator(StateStore(database))
+    competing = RunCoordinator(StateStore(database))
+    first.create("run-1", objective="Build feature")
+
+    claimed = first.claim("run-1", "agent-1")
+    with pytest.raises(ValueError, match="run cannot be claimed"):
+        competing.claim("run-1", "agent-2")
+
+    assert competing.get("run-1") == claimed
+
+
+def test_claim_rejects_invalid_runs_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    assigned = coordinator.create(
+        "assigned", objective="Assigned", agent_id="agent-1"
+    )
+    running = coordinator.create("running", objective="Running")
+    running = coordinator.transition("running", RunStatus.RUNNING)
+    terminal = coordinator.create("terminal", objective="Terminal")
+    terminal = coordinator.transition("terminal", RunStatus.RUNNING)
+    terminal = coordinator.transition("terminal", RunStatus.SUCCEEDED)
+
+    for run in (assigned, running, terminal):
+        with pytest.raises(ValueError, match="run cannot be claimed"):
+            coordinator.claim(run.run_id, "agent-2")
+        assert coordinator.get(run.run_id) == run
+
+    with pytest.raises(KeyError, match="run does not exist"):
+        coordinator.claim("missing", "agent-2")
+    with pytest.raises(ValueError, match="agent id must not be empty"):
+        coordinator.claim("assigned", " ")
+    assert coordinator.get("assigned") == assigned
+
+
 def test_ordered_steps_are_durable_and_revisioned(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

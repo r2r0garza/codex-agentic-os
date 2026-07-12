@@ -97,10 +97,11 @@ Implemented foundation:
 - Atomic queued run creation that rejects competing duplicate identifiers without overwrite.
 - Atomic durable step append with globally unique identifiers and contiguous per-run positions.
 - Operator-facing durable command-step creation through `run add-step`.
+- Atomic queued-run claiming that preserves the first committed agent assignment.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0020 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0021 is complete.
 
 ## Development
 

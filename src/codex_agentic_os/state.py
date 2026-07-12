@@ -167,6 +167,48 @@ class StateStore:
             connection.commit()
         return tuple(stored)
 
+    def claim_run(self, run_id: str, agent_id: str) -> StateRecord:
+        """Assign one queued, unassigned run in a write transaction."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        self._validate_identity("run", run_id)
+        if not agent_id.strip():
+            raise ValueError("agent id must not be empty")
+        self.initialize()
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT status, payload, revision
+                FROM state_records
+                WHERE kind = 'run' AND key = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"state record does not exist: run/{run_id}")
+
+            status, encoded, revision = str(row[0]), str(row[1]), int(row[2])
+            payload = json.loads(encoded)
+            if status != "queued" or payload.get("agent_id") is not None:
+                raise StateConflictError(f"state run cannot be claimed: {run_id}")
+
+            claimed_payload = {**payload, "agent_id": agent_id}
+            claimed_encoded = self._encode_payload(claimed_payload)
+            claimed_revision = revision + 1
+            connection.execute(
+                """
+                UPDATE state_records
+                SET payload = ?, revision = ?
+                WHERE kind = 'run' AND key = ?
+                """,
+                (claimed_encoded, claimed_revision, run_id),
+            )
+            connection.commit()
+        return StateRecord("run", run_id, status, claimed_payload, claimed_revision)
+
     def append_step(
         self,
         step_id: str,

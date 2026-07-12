@@ -153,6 +153,19 @@ class RunCoordinator:
         record = self.store.get("run", run_id)
         return None if record is None else self._run(record)
 
+    def claim(self, run_id: str, agent_id: str) -> AgentRun:
+        """Atomically assign one queued, unassigned run to an agent."""
+
+        if not agent_id.strip():
+            raise ValueError("agent id must not be empty")
+        try:
+            record = self.store.claim_run(run_id, agent_id)
+        except StateConflictError as error:
+            raise ValueError(f"run cannot be claimed: {run_id}") from error
+        except KeyError as error:
+            raise KeyError(f"run does not exist: {run_id}") from error
+        return self._run(record)
+
     def list_runs(self) -> tuple[AgentRun, ...]:
         """Return all durable runs in stable run identifier order."""
 
