@@ -101,6 +101,7 @@ Implemented foundation:
 - Operator-facing durable command-step creation through `run add-step`.
 - Atomic queued-run claiming that preserves the first committed agent assignment.
 - Atomic selection and claiming of the next queued, unassigned run in stable identifier order.
+- Atomic pruning of a terminal run and all of its durable step history.
 - Operator-facing atomic queued-run claiming by explicit run and agent identifiers.
 - Read-only inspection of one durable step by its globally unique identifier.
 - Targeted queued-step cancellation that leaves the active parent run, siblings, and durable positions unchanged.
@@ -108,7 +109,7 @@ Implemented foundation:
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0029 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0030 is complete.
 
 ## Development
 

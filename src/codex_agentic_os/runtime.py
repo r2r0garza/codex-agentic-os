@@ -179,6 +179,22 @@ class RunCoordinator:
 
         return tuple(self._run(record) for record in self.store.list("run"))
 
+    def prune(self, run_id: str) -> tuple[AgentRun, tuple[RunStep, ...]]:
+        """Atomically remove one terminal run and its durable step history."""
+
+        terminal_statuses = frozenset(
+            {RunStatus.SUCCEEDED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
+        )
+        try:
+            run_record, step_records = self.store.prune_run(
+                run_id, terminal_statuses=terminal_statuses
+            )
+        except StateConflictError as error:
+            raise ValueError(f"run is not terminal: {run_id}") from error
+        except KeyError as error:
+            raise KeyError(f"run does not exist: {run_id}") from error
+        return self._run(run_record), tuple(self._step(record) for record in step_records)
+
     def transition(
         self,
         run_id: str,

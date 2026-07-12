@@ -868,3 +868,77 @@ def test_recover_running_step_rolls_back_step_and_run_when_batch_write_fails(
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get_step("command") == original_step
     assert reloaded.get("run-1") == original_run
+
+
+@pytest.mark.parametrize(
+    "status", [RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED]
+)
+def test_prune_removes_terminal_run_and_steps_only(tmp_path, status) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("remove", objective="Completed work")
+    first = coordinator.add_step("remove", "first", objective="First")
+    second = coordinator.add_step("remove", "second", objective="Second")
+    coordinator.create("keep", objective="Unrelated work")
+    kept_step = coordinator.add_step("keep", "kept", objective="Keep")
+    if status is RunStatus.CANCELLED:
+        terminal = coordinator.cancel("remove")
+    else:
+        coordinator.transition("remove", RunStatus.RUNNING)
+        terminal = coordinator.transition("remove", status)
+
+    removed_run, removed_steps = coordinator.prune("remove")
+
+    assert removed_run == terminal
+    assert [step.step_id for step in removed_steps] == [first.step_id, second.step_id]
+    assert coordinator.get("remove") is None
+    assert coordinator.get_step("first") is None
+    assert coordinator.get_step("second") is None
+    assert coordinator.get("keep") is not None
+    assert coordinator.get_step("kept") == kept_step
+
+
+@pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.RUNNING])
+def test_prune_rejects_active_and_missing_runs_without_mutation(tmp_path, status) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    original = coordinator.create("active", objective="Active work")
+    step = coordinator.add_step("active", "step", objective="Pending")
+    if status is RunStatus.RUNNING:
+        original = coordinator.transition("active", status)
+
+    with pytest.raises(ValueError, match="run is not terminal"):
+        coordinator.prune("active")
+    with pytest.raises(KeyError, match="run does not exist"):
+        coordinator.prune("missing")
+
+    assert coordinator.get("active") == original
+    assert coordinator.get_step("step") == step
+
+
+def test_prune_rolls_back_when_deletion_fails(tmp_path, monkeypatch) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Completed work")
+    coordinator.add_step("run-1", "first", objective="First")
+    coordinator.add_step("run-1", "second", objective="Second")
+    coordinator.cancel("run-1")
+    original_run = coordinator.get("run-1")
+    original_steps = coordinator.list_steps("run-1")
+    original_delete = store._delete_on_connection
+    deletions = 0
+
+    def fail_after_first_delete(connection, kind, key):
+        nonlocal deletions
+        deletions += 1
+        if deletions == 2:
+            raise RuntimeError("injected deletion failure")
+        original_delete(connection, kind, key)
+
+    monkeypatch.setattr(store, "_delete_on_connection", fail_after_first_delete)
+
+    with pytest.raises(RuntimeError, match="injected deletion failure"):
+        coordinator.prune("run-1")
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.list_steps("run-1") == original_steps

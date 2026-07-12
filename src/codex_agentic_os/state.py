@@ -256,6 +256,53 @@ class StateStore:
             connection.commit()
         return StateRecord("run", run_id, status, claimed_payload, claimed_revision)
 
+    def prune_run(
+        self, run_id: str, *, terminal_statuses: frozenset[str]
+    ) -> tuple[StateRecord, tuple[StateRecord, ...]]:
+        """Atomically delete one terminal run and all of its durable steps."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        self._validate_identity("run", run_id)
+        if not terminal_statuses:
+            raise ValueError("terminal statuses must not be empty")
+        self.initialize()
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT kind, key, status, payload, revision
+                FROM state_records WHERE kind = 'run' AND key = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"state record does not exist: run/{run_id}")
+            run = self._record(row)
+            if run.status not in terminal_statuses:
+                raise StateConflictError(f"state run is not terminal: {run_id}")
+
+            step_rows = connection.execute(
+                """
+                SELECT kind, key, status, payload, revision
+                FROM state_records
+                WHERE kind = 'step' AND json_extract(payload, '$.run_id') = ?
+                """,
+                (run_id,),
+            ).fetchall()
+            steps = tuple(
+                sorted(
+                    (self._record(step_row) for step_row in step_rows),
+                    key=lambda record: int(record.payload["position"]),
+                )
+            )
+            for step in steps:
+                self._delete_on_connection(connection, "step", step.key)
+            self._delete_on_connection(connection, "run", run_id)
+            connection.commit()
+        return run, steps
+
     def append_step(
         self,
         step_id: str,
@@ -385,6 +432,18 @@ class StateStore:
             (kind, key, status, encoded, revision),
         )
         return StateRecord(kind, key, status, json.loads(encoded), revision)
+
+    @staticmethod
+    def _delete_on_connection(
+        connection: sqlite3.Connection, kind: str, key: str
+    ) -> None:
+        """Delete one known record on a caller-owned transaction."""
+
+        cursor = connection.execute(
+            "DELETE FROM state_records WHERE kind = ? AND key = ?", (kind, key)
+        )
+        if cursor.rowcount != 1:
+            raise StateConflictError(f"state record disappeared: {kind}/{key}")
 
     @classmethod
     def _validate_identity(
