@@ -8,7 +8,7 @@
 - Blocked review: no open `blocked` issues; nothing changed.
 - Roadmap horizon: 3 open milestones (Sprint 2, Sprint 3, Sprint 4) before retrospective closure, then 2. Invoked `codex-agentic-os-plan-sprints` and created Sprint 5 "Auditable mixed-step run history" (#5, future, no issues), restoring exactly 3 open milestones: Sprint 3, Sprint 4, Sprint 5. No issue was created outside the active milestone.
 - Resulting active queue: Sprint 3 has one unblocked `agent-ready` priority:3 issue, #46 (read-only agent inspection CLI), which is the next eligible implementation issue.
-- Final target: `main`; retrospective issue and Sprint 2 milestone closed; Sprint 5 created; this MEMORY.md record pending commit/push; worktree otherwise clean.
+- Final target: `main`; retrospective issue and Sprint 2 milestone closed; Sprint 5 created; durable run record commit `08aabb1` pushed to `origin/main`; worktree clean after recording.
 
 ---
 
