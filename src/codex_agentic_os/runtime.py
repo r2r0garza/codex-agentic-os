@@ -404,23 +404,50 @@ class RunCoordinator:
         step_status = (
             StepStatus.SUCCEEDED if result.returncode == 0 else StepStatus.FAILED
         )
-        step = self.transition_step(step_id, step_status, output=output)
+        step_payload: dict[str, object] = {
+            "run_id": current.run_id,
+            "position": current.position,
+            "objective": current.objective,
+            "output": output,
+        }
+        if current.command is not None:
+            step_payload["command"] = list(current.command)
+        if current.timeout is not None:
+            step_payload["timeout"] = current.timeout
 
+        run_status: RunStatus | None = None
+        run_output: dict[str, object] | None = None
         if step_status is StepStatus.FAILED:
-            run = self.transition(
-                run.run_id,
-                RunStatus.FAILED,
-                output={"failed_step_id": step_id, "exit_code": result.returncode},
-            )
+            run_status = RunStatus.FAILED
+            run_output = {"failed_step_id": step_id, "exit_code": result.returncode}
         elif all(
-            candidate.status is StepStatus.SUCCEEDED
+            candidate.step_id == step_id
+            or candidate.status is StepStatus.SUCCEEDED
             for candidate in self.list_steps(run.run_id)
         ):
-            run = self.transition(
-                run.run_id,
-                RunStatus.SUCCEEDED,
-                output={"completed_steps": len(self.list_steps(run.run_id))},
+            run_status = RunStatus.SUCCEEDED
+            run_output = {"completed_steps": len(self.list_steps(run.run_id))}
+
+        if run_status is None:
+            step = self._step(
+                self.store.put("step", step_id, status=step_status, payload=step_payload)
             )
+            return step, run
+
+        run_payload: dict[str, object] = {
+            "objective": run.objective,
+            "output": run_output,
+        }
+        if run.agent_id is not None:
+            run_payload["agent_id"] = run.agent_id
+        stored = self.store.put_many(
+            (
+                ("step", step_id, step_status, step_payload),
+                ("run", run.run_id, run_status, run_payload),
+            )
+        )
+        step = self._step(stored[0])
+        run = self._run(stored[1])
         return step, run
 
     def recover_running_step(

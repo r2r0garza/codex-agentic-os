@@ -345,7 +345,9 @@ def test_sandbox_results_complete_steps_and_run_without_backend_coupling(tmp_pat
     )
 
     assert second.status is StepStatus.SUCCEEDED
+    assert second.revision == 3
     assert succeeded.status is RunStatus.SUCCEEDED
+    assert succeeded.revision == 3
     assert succeeded.output == {"completed_steps": 2}
 
 
@@ -361,6 +363,7 @@ def test_failed_sandbox_result_fails_step_and_run(tmp_path) -> None:
     )
 
     assert step.status is StepStatus.FAILED
+    assert step.revision == 3
     assert step.output == {
         "command": ["docker", "run", "false"],
         "exit_code": 17,
@@ -368,7 +371,42 @@ def test_failed_sandbox_result_fails_step_and_run(tmp_path) -> None:
         "stderr": "failed\n",
     }
     assert run.status is RunStatus.FAILED
+    assert run.revision == 3
     assert run.output == {"failed_step_id": "command", "exit_code": 17}
+
+
+@pytest.mark.parametrize("returncode", [0, 17])
+def test_terminal_result_rolls_back_step_and_run_when_batch_write_fails(
+    tmp_path, monkeypatch, returncode
+) -> None:
+    database = tmp_path / f"result-{returncode}.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Build feature")
+    coordinator.add_step("run-1", "command", objective="Run command")
+    original_step = coordinator.start_next_step("run-1")
+    original_run = coordinator.get("run-1")
+    original_write = store._put_on_connection
+    writes = 0
+
+    def fail_after_first_write(connection, kind, key, status, encoded):
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise RuntimeError("injected persistence failure")
+        return original_write(connection, kind, key, status, encoded)
+
+    monkeypatch.setattr(store, "_put_on_connection", fail_after_first_write)
+
+    with pytest.raises(RuntimeError, match="injected persistence failure"):
+        coordinator.complete_step_from_result(
+            "command",
+            SandboxResult(("docker", "run", "command"), returncode, "", ""),
+        )
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get_step("command") == original_step
+    assert reloaded.get("run-1") == original_run
 
 
 def test_execution_result_requires_running_run_and_step(tmp_path) -> None:
