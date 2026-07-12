@@ -1,8 +1,14 @@
 # Automation Memory
 
-- Run: 2026-07-12T18:00:00Z — implementation run in progress.
-- Active milestone: Sprint 1 (milestone #1); selected issue #45, provider credential readiness reporting, as the sole unblocked `agent-ready` issue in the active milestone.
-- Boundary: implement only the read-only `provider credentials` surface; no credential validation, endpoint probing, state persistence, or provider-spec edits.
+- Run: 2026-07-12T17:13:30Z — implementation plus required milestone retrospective.
+- Active milestone at selection: Sprint 1 "Operator-ready provider workflow" (#1). Selected and closed issue #45, the sole unblocked `agent-ready` issue; created and closed retrospective issue #48.
+- Completed: added read-only `provider credentials` output in default registry order with provider kind, `api_key_env`, and `configured`; credential-free defaults are ready, while unset or empty named variables are not. Values are never emitted, and tests prohibit network and state access. Added Plan 0053, DEVELOPMENT guidance, and refreshed the committed index.
+- Implementation commit `f727845` pushed to `origin/main`; issue #45 auto-closed and received verification evidence.
+- Verification: focused provider tests (5 passed); full suite (323 passed); operator UAT across all 7 defaults with configured/unset/credential-free states and sentinel non-disclosure; provider/chat offline suite (36 passed); index rebuilt to 20 files, 462 symbols, 2536 relationships and current; `git diff --check` clean.
+- Retrospective #48 passed every Sprint 1 exit criterion with direct test, command, documentation, architecture, and operator evidence; no remediation required. Retrospective closed and milestone #1 closed.
+- Blocked review: no open `blocked` issues; nothing changed.
+- New active milestone: Sprint 2 "Reproducible sandbox execution context" (#2), with two ready priority:3 issues: #44 and #47. Recommended next: #44, oldest at equal priority.
+- Final target: `main`; implementation pushed. This MEMORY update is the remaining durable record to commit and push.
 
 ---
 
@@ -113,31 +119,3 @@
   the 5–10 target band but above the backlog-only threshold.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree clean
   before this durable MEMORY.md update.
-
----
-
-- Run: 2026-07-12T15:36:07Z — implementation run.
-- Selected issue: #40, environment variable passthrough to container sandbox execution.
-- Completed: added a validated `env: tuple[tuple[str, str], ...]` field to
-  `SandboxSpec` (`src/codex_agentic_os/sandboxes.py`), rendered as repeatable
-  `--env KEY=VALUE` container-engine arguments positioned after mounts and before
-  the image. `run execute-next --env KEY=VALUE` (repeatable, via new `_parse_env`
-  in `cli.py`) rejects malformed values (missing `=`, empty key, or empty value)
-  with a `parser.error` before any queued step is claimed, mirroring the existing
-  `--mount` pattern. Added Plan 0050, a DEVELOPMENT.md example, `test_sandboxes.py`
-  env-rendering/rejection coverage, and `test_run_cli.py` CLI success/rejection
-  coverage. Refreshed the committed index.
-- Implementation commit: `f4c38ca`; pushed to `origin/main`; issue #40 auto-closed
-  by the commit's `Closes #40`; verification comment posted separately.
-- Verification: `pytest -q` (308 passed); `pytest -q tests/test_sandboxes.py
-  tests/test_run_cli.py` (142 passed); `codex-agentic-os index build` then
-  `codex-agentic-os index check` (current — 19 files, 442 symbols, 2441
-  relationships); `git diff --check` clean.
-- Blocked review: `gh issue list --label blocked` returned no results; nothing to
-  re-evaluate.
-- Resulting queue: 4 unblocked `agent-ready` issues — #41, #42, #43, and #44 (all
-  priority:3). At the target-band floor; recommend backlog replenishment soon.
-  Recommended next: #41, the oldest priority:3 issue.
-- Final target state: `main`, implementation pushed to `origin/main`; worktree
-  clean before this durable MEMORY.md update.
-</content>
