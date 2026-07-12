@@ -67,6 +67,7 @@ and the resulting run is printed with an empty ordered step list:
 codex-agentic-os run create run-001 --objective "Build the repository index"
 codex-agentic-os agent register agent-1 --label "Build worker" \
   --state-db /path/to/state.sqlite3
+codex-agentic-os agent heartbeat agent-1 --state-db /path/to/state.sqlite3
 codex-agentic-os run create run-002 --objective "Execute durable work" \
   --agent-id agent-1 --state-db /path/to/state.sqlite3
 ```

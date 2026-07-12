@@ -207,7 +207,11 @@ def _parser() -> argparse.ArgumentParser:
     agent_list = agent_commands.add_parser(
         "list", help="list registered agent identities"
     )
-    for command in (agent_register, agent_list):
+    agent_heartbeat = agent_commands.add_parser(
+        "heartbeat", help="refresh a registered agent's liveness timestamp"
+    )
+    agent_heartbeat.add_argument("agent_id")
+    for command in (agent_register, agent_list, agent_heartbeat):
         command.add_argument(
             "--state-db",
             type=Path,
@@ -526,6 +530,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             if arguments.agent_command == "register":
                 registered = registry.register(arguments.agent_id, label=arguments.label)
                 print(json.dumps(_agent_payload(registered), indent=2, sort_keys=True))
+            elif arguments.agent_command == "heartbeat":
+                agent = registry.heartbeat(arguments.agent_id)
+                print(json.dumps(_agent_payload(agent), indent=2, sort_keys=True))
             else:
                 print(
                     json.dumps(

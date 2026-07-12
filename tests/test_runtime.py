@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 import pytest
 
@@ -1109,7 +1110,10 @@ def test_agent_registration_is_durable_and_revisioned(tmp_path) -> None:
 
     registered = registry.register("agent-1", label="Build worker")
 
-    assert registered == Agent("agent-1", "Build worker", 1)
+    assert registered.agent_id == "agent-1"
+    assert registered.label == "Build worker"
+    assert registered.revision == 1
+    assert registered.last_seen is not None
     assert AgentRegistry(StateStore(database)).list_agents() == (registered,)
 
 
@@ -1118,7 +1122,41 @@ def test_agent_registration_without_label(tmp_path) -> None:
 
     registered = registry.register("agent-1")
 
-    assert registered == Agent("agent-1", None, 1)
+    assert registered.agent_id == "agent-1"
+    assert registered.label is None
+    assert registered.revision == 1
+    assert registered.last_seen is not None
+
+
+def test_agent_heartbeat_updates_last_seen_with_injected_clock(tmp_path) -> None:
+    moments = iter(
+        (
+            datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc),
+            datetime(2026, 7, 12, 12, 5, tzinfo=timezone.utc),
+        )
+    )
+    registry = AgentRegistry(
+        StateStore(tmp_path / "state.sqlite3"), clock=lambda: next(moments)
+    )
+    registered = registry.register("agent-1", label="Worker")
+
+    refreshed = registry.heartbeat("agent-1")
+
+    assert registered.last_seen == "2026-07-12T12:00:00+00:00"
+    assert refreshed == Agent(
+        "agent-1", "Worker", 2, "2026-07-12T12:05:00+00:00"
+    )
+
+
+def test_agent_heartbeat_rejects_unregistered_id_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = AgentRegistry(StateStore(database))
+    original = registry.register("agent-1")
+
+    with pytest.raises(ValueError, match="agent does not exist: missing"):
+        registry.heartbeat("missing")
+
+    assert AgentRegistry(StateStore(database)).list_agents() == (original,)
 
 
 def test_agents_are_listed_in_stable_identifier_order(tmp_path) -> None:

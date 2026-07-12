@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 from .state import StateConflictError, StateRecord, StateStore
 
@@ -92,6 +93,7 @@ class Agent:
     agent_id: str
     label: str | None
     revision: int
+    last_seen: str | None = None
 
 
 class ExecutionResult(Protocol):
@@ -702,10 +704,16 @@ class RunCoordinator:
 
 
 class AgentRegistry:
-    """Register and list durable agent identities backed by ``StateStore``."""
+    """Register, heartbeat, and list durable identities backed by ``StateStore``."""
 
-    def __init__(self, store: StateStore) -> None:
+    def __init__(
+        self,
+        store: StateStore,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.store = store
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def register(self, agent_id: str, *, label: str | None = None) -> Agent:
         """Create a durable agent record at revision one, rejecting a duplicate id."""
@@ -714,7 +722,7 @@ class AgentRegistry:
             raise ValueError("agent id must not be empty")
         if label is not None and not label.strip():
             raise ValueError("agent label must not be empty")
-        payload: dict[str, object] = {}
+        payload: dict[str, object] = {"last_seen": self._timestamp()}
         if label is not None:
             payload["label"] = label
         try:
@@ -724,6 +732,19 @@ class AgentRegistry:
         except StateConflictError as error:
             raise ValueError(f"agent already exists: {agent_id}") from error
         return self._agent(record)
+
+    def heartbeat(self, agent_id: str) -> Agent:
+        """Refresh an existing agent's UTC liveness timestamp."""
+
+        if not agent_id.strip():
+            raise ValueError("agent id must not be empty")
+        record = self.store.get("agent", agent_id)
+        if record is None:
+            raise ValueError(f"agent does not exist: {agent_id}")
+        payload = {**record.payload, "last_seen": self._timestamp()}
+        return self._agent(
+            self.store.put("agent", agent_id, status=record.status, payload=payload)
+        )
 
     def list_agents(self) -> tuple[Agent, ...]:
         """Return all registered agents in stable identifier order."""
@@ -735,4 +756,18 @@ class AgentRegistry:
         label = record.payload.get("label")
         if label is not None and not isinstance(label, str):
             raise ValueError(f"agent record has invalid label: {record.key}")
-        return Agent(agent_id=record.key, label=label, revision=record.revision)
+        last_seen = record.payload.get("last_seen")
+        if last_seen is not None and not isinstance(last_seen, str):
+            raise ValueError(f"agent record has invalid last_seen: {record.key}")
+        return Agent(
+            agent_id=record.key,
+            label=label,
+            revision=record.revision,
+            last_seen=last_seen,
+        )
+
+    def _timestamp(self) -> str:
+        moment = self._clock()
+        if moment.tzinfo is None or moment.utcoffset() is None:
+            raise ValueError("agent registry clock must return a timezone-aware datetime")
+        return moment.astimezone(timezone.utc).isoformat()
