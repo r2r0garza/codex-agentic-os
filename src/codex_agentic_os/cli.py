@@ -94,7 +94,7 @@ def _parser() -> argparse.ArgumentParser:
         "prune", help="permanently remove one terminal run and its steps"
     )
     execute_next = run_commands.add_parser(
-        "execute-next", help="execute the next queued command step in a container"
+        "execute-next", help="execute the next queued command or provider-message step"
     )
     recover = run_commands.add_parser(
         "recover", help="fail an interrupted or timed-out running step"
@@ -187,7 +187,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     recover.add_argument("--detail", help="operator context for the recovery")
     execute_next.add_argument(
-        "--sandbox", required=True, choices=[kind.value for kind in SandboxKind]
+        "--sandbox", choices=[kind.value for kind in SandboxKind]
     )
     execute_next.add_argument("--image", help="container image override")
     execute_next.add_argument(
@@ -543,35 +543,67 @@ def main(argv: Sequence[str] | None = None) -> None:
                 step = coordinator.cancel_step(arguments.step_id)
                 run_id = step.run_id
             elif arguments.run_command == "execute-next":
-                kind = SandboxKind(arguments.sandbox)
+                next_step = next(
+                    (
+                        step
+                        for step in coordinator.list_steps(arguments.run_id)
+                        if step.status is StepStatus.QUEUED
+                    ),
+                    None,
+                )
+                if next_step is None:
+                    payload = _run_payload(coordinator, arguments.run_id)
+                    payload["execution"] = {"attempted": False}
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                    return
+                if next_step.command is not None and arguments.sandbox is None:
+                    raise ValueError("next command step requires --sandbox")
+                kind = (
+                    SandboxKind(arguments.sandbox)
+                    if arguments.sandbox is not None
+                    else None
+                )
                 if arguments.image is not None and not arguments.image.strip():
                     raise ValueError("sandbox image must not be empty")
                 mounts = _parse_mounts(arguments.mount)
                 env = _parse_env(arguments.env)
                 working_dir = arguments.workdir
                 network_enabled = arguments.network
-                spec = (
-                    SandboxSpec(
-                        kind=kind,
-                        image=arguments.image,
-                        mounts=mounts,
-                        env=env,
-                        working_dir=working_dir,
-                        network_enabled=network_enabled,
+                if next_step.message is not None:
+
+                    def resolve_adapter(message: ProviderMessage):
+                        provider_spec = _chat_provider_spec(
+                            message.provider, message.model, None, None
+                        )
+                        return adapter_for(provider_spec)
+
+                    result = coordinator.execute_next_step(
+                        arguments.run_id, adapter_resolver=resolve_adapter
                     )
-                    if arguments.image is not None
-                    else SandboxSpec(
-                        kind=kind,
-                        mounts=mounts,
-                        env=env,
-                        working_dir=working_dir,
-                        network_enabled=network_enabled,
+                else:
+                    assert kind is not None
+                    spec = (
+                        SandboxSpec(
+                            kind=kind,
+                            image=arguments.image,
+                            mounts=mounts,
+                            env=env,
+                            working_dir=working_dir,
+                            network_enabled=network_enabled,
+                        )
+                        if arguments.image is not None
+                        else SandboxSpec(
+                            kind=kind,
+                            mounts=mounts,
+                            env=env,
+                            working_dir=working_dir,
+                            network_enabled=network_enabled,
+                        )
                     )
-                )
-                result = coordinator.execute_next_step(
-                    arguments.run_id,
-                    ContainerSandbox(spec),
-                )
+                    result = coordinator.execute_next_step(
+                        arguments.run_id,
+                        ContainerSandbox(spec),
+                    )
                 run_id = arguments.run_id
                 if result is None:
                     payload = _run_payload(coordinator, run_id)

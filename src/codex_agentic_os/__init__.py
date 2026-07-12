@@ -8,6 +8,7 @@ from .runtime import (
     Agent,
     AgentRegistry,
     AgentRun,
+    ChatAdapterResolver,
     ExecutionResult,
     ProviderMessage,
     RunCoordinator,
@@ -20,6 +21,7 @@ from .runtime import (
 
 __all__ = [
     "ChatMessage",
+    "ChatAdapterResolver",
     "ChatRequest",
     "ChatResponse",
     "Agent",

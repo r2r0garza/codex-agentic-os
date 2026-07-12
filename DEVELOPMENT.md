@@ -215,8 +215,9 @@ Creating an assigned run or claiming work requires an existing registered agent
 identifier. No mutation occurs when the agent is unknown, no eligible run exists, or
 validation otherwise fails.
 
-Execute at most one queued command step through an explicitly selected container
-backend. The optional image override otherwise retains conservative sandbox defaults:
+Execute at most one queued step. Command steps require an explicitly selected
+container backend; provider-message steps resolve their persisted provider and model
+through the built-in provider configuration and do not require `--sandbox`:
 
 ```bash
 codex-agentic-os run execute-next run-002 --sandbox docker
@@ -228,6 +229,7 @@ codex-agentic-os run execute-next run-002 --sandbox docker \
 codex-agentic-os run execute-next run-002 --sandbox docker \
   --env API_KEY=secret --env DEBUG=1
 codex-agentic-os run execute-next run-002 --sandbox docker --network
+codex-agentic-os run execute-next run-with-model-step
 ```
 
 Container network access is disabled by default; `--network` is an explicit opt-in
@@ -235,11 +237,12 @@ that selects bridge networking for that one step. Omitting the flag preserves th
 prior isolated (`--network none`) command construction exactly.
 
 When no queued work remains, the unchanged run payload includes
-`"execution": {"attempted": false}`. Coordination-only steps fail before mutation;
-timeouts and interruptions leave the step running for explicit recovery.
+`"execution": {"attempted": false}`. Successful provider responses are persisted as
+normalized step output. Timeouts, interruptions, and provider exceptions leave the
+step running for explicit recovery.
 
-Command arguments and timeouts are stored with the step and survive process restarts.
-Steps may omit a command when they represent coordination-only work.
+Command arguments, timeouts, and provider-message inputs survive process restarts.
+Every step requires exactly one command or provider message.
 
 Append a queued command step to an existing durable run and print the updated ordered
 run payload:
@@ -249,11 +252,13 @@ codex-agentic-os run add-step run-002 step-001 --objective "Run checks" \
   --timeout 30 --state-db .codex-agentic-os/state.sqlite3 -- pytest -q
 ```
 
-Omit the trailing command to append a coordination-only step; a timeout requires a
-command and is rejected otherwise:
+Append a provider-message step with no trailing command. The provider and message are
+required together; model, system, temperature, and token limit are optional:
 
 ```bash
-codex-agentic-os run add-step run-002 step-002 --objective "Await review" \
+codex-agentic-os run add-step run-002 step-002 --objective "Summarize output" \
+  --provider ollama --message "Summarize the test output" --model llama3.1 \
+  --system "Be concise" --temperature 0.2 --max-tokens 256 \
   --state-db .codex-agentic-os/state.sqlite3
 ```
 

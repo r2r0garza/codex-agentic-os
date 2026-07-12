@@ -1438,6 +1438,58 @@ def test_cli_execute_next_reports_empty_queue_without_mutation(tmp_path, capsys)
     assert payload["steps"] == []
 
 
+def test_cli_executes_provider_message_without_sandbox(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable model work")
+    coordinator.add_step(
+        "run-1",
+        "model-1",
+        objective="Ask model",
+        message=ProviderMessage(
+            provider="ollama",
+            content="Hello",
+            model="custom-local",
+            system="Be concise",
+            temperature=0.2,
+            max_tokens=64,
+        ),
+    )
+    captured = {}
+
+    class Adapter:
+        def complete(self, request):
+            captured["request"] = request
+            return ChatResponse("Hi", model="custom-local", raw={"id": "one"})
+
+    def build_adapter(spec):
+        captured["spec"] = spec
+        return Adapter()
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", build_adapter)
+
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert captured["spec"].kind.value == "ollama"
+    assert captured["spec"].model == "custom-local"
+    assert captured["request"].messages[0].content == "Be concise"
+    assert captured["request"].messages[1].content == "Hello"
+    assert captured["request"].temperature == 0.2
+    assert captured["request"].max_tokens == 64
+    assert payload["steps"][0]["status"] == "succeeded"
+    assert payload["steps"][0]["output"] == {
+        "content": "Hi",
+        "model": "custom-local",
+        "raw": {"id": "one"},
+    }
+    assert payload["run"]["status"] == "succeeded"
+
+
 def test_cli_execute_next_rejects_empty_image_without_mutation(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
@@ -1574,45 +1626,29 @@ def test_cli_execute_next_help_identifies_network_as_explicit_opt_in(capsys) -> 
     assert "isolated" in output
 
 
-@pytest.mark.parametrize("failure", ["message", "exception"])
 def test_cli_execute_next_failure_preserves_recoverable_state(
-    tmp_path, monkeypatch, capsys, failure
+    tmp_path, monkeypatch, capsys
 ) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     queued_run = coordinator.create("run-1", objective="Execute durable work")
-    if failure == "message":
-        queued_step = coordinator.add_step(
-            "run-1",
-            "step-1",
-            objective="Work",
-            message=ProviderMessage(provider="local", content="Work"),
-        )
-    else:
-        queued_step = coordinator.add_step(
-            "run-1", "step-1", objective="Work", command=("sleep", "10")
-        )
+    coordinator.add_step(
+        "run-1", "step-1", objective="Work", command=("sleep", "10")
+    )
 
-    if failure == "exception":
-        def execute(self, argv, *, timeout=None):
-            raise TimeoutError("sandbox command timed out")
-        monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
+    def execute(self, argv, *, timeout=None):
+        raise TimeoutError("sandbox command timed out")
+    monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
 
-    with pytest.raises((SystemExit, TimeoutError)) as error:
+    with pytest.raises(TimeoutError):
         main([
             "run", "execute-next", "run-1", "--sandbox", "podman",
             "--state-db", str(database),
         ])
 
     reloaded = RunCoordinator(StateStore(database))
-    if failure == "message":
-        assert error.value.code == 2
-        assert "next step does not have a command" in capsys.readouterr().err
-        assert reloaded.get("run-1") == queued_run
-        assert reloaded.get_step("step-1") == queued_step
-    else:
-        assert reloaded.get("run-1").status is RunStatus.RUNNING
-        assert reloaded.get_step("step-1").status is StepStatus.RUNNING
+    assert reloaded.get("run-1").status is RunStatus.RUNNING
+    assert reloaded.get_step("step-1").status is StepStatus.RUNNING
 
 
 @pytest.mark.parametrize(

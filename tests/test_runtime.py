@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from codex_agentic_os.chat import ChatResponse
 from codex_agentic_os.runtime import (
     Agent,
     AgentRegistry,
@@ -1011,21 +1012,88 @@ def test_execute_next_step_records_nonzero_result(tmp_path) -> None:
     assert run.output == {"failed_step_id": "command", "exit_code": 9}
 
 
-def test_execute_next_step_rejects_non_command_without_mutation(tmp_path) -> None:
-    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
-    queued = coordinator.create("run-1", objective="Coordinate work")
-    step = coordinator.add_step(
+def test_execute_next_step_sends_provider_message_and_persists_response(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    resolved = []
+    requests = []
+
+    class Adapter:
+        def complete(self, request):
+            requests.append(request)
+            return ChatResponse("Durable answer", model="served-model", raw={"id": "r1"})
+
+    def resolve(message):
+        resolved.append(message)
+        return Adapter()
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Coordinate work")
+    message = ProviderMessage(
+        provider="local",
+        content="Review output",
+        model="requested-model",
+        system="Be concise",
+        temperature=0.25,
+        max_tokens=120,
+    )
+    coordinator.add_step(
         "run-1",
         "manual",
         objective="Review output",
-        message=ProviderMessage(provider="local", content="Review output"),
+        message=message,
     )
 
-    with pytest.raises(ValueError, match="does not have a command"):
-        coordinator.execute_next_step("run-1", object())
+    step, run = coordinator.execute_next_step("run-1", adapter_resolver=resolve)
 
-    assert coordinator.get("run-1") == queued
-    assert coordinator.get_step("manual") == step
+    assert resolved == [message]
+    assert requests[0].messages[0].role == "system"
+    assert requests[0].messages[0].content == "Be concise"
+    assert requests[0].messages[1].content == "Review output"
+    assert requests[0].temperature == 0.25
+    assert requests[0].max_tokens == 120
+    assert step.status is StepStatus.SUCCEEDED
+    assert step.output == {
+        "content": "Durable answer",
+        "model": "served-model",
+        "raw": {"id": "r1"},
+    }
+    assert run.status is RunStatus.SUCCEEDED
+    assert RunCoordinator(StateStore(database)).get_step("manual") == step
+
+
+def test_competing_model_execution_sends_step_once(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Coordinate work")
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Review output",
+        message=ProviderMessage(provider="local", content="Review output"),
+    )
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    calls = []
+
+    class Adapter:
+        def complete(self, request):
+            calls.append(request)
+            return ChatResponse("answer")
+
+    def execute():
+        instance = RunCoordinator(StateStore(database))
+        try:
+            return instance.execute_next_step(
+                "run-1", adapter_resolver=lambda _: Adapter()
+            )
+        except ValueError as error:
+            return str(error)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = tuple(pool.map(lambda _: execute(), range(2)))
+
+    assert len(calls) == 1
+    assert sum(not isinstance(result, str) for result in results) == 1
+    assert RunCoordinator(StateStore(database)).get_step("model").status is StepStatus.SUCCEEDED
 
 
 def test_execute_next_step_leaves_running_state_when_executor_raises(tmp_path) -> None:

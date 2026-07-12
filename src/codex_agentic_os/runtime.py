@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Callable, Mapping, Protocol, Sequence
 
+from .chat import ChatAdapter, ChatMessage, ChatRequest, ChatResponse
+
 from .state import StateConflictError, StateRecord, StateStore
 
 
@@ -124,6 +126,12 @@ class SandboxExecutor(Protocol):
     def execute(
         self, argv: Sequence[str], *, timeout: float | None = None
     ) -> ExecutionResult: ...
+
+
+class ChatAdapterResolver(Protocol):
+    """Resolve the configured adapter for one persisted provider message."""
+
+    def __call__(self, message: ProviderMessage) -> ChatAdapter: ...
 
 
 class RunCoordinator:
@@ -361,9 +369,13 @@ class RunCoordinator:
         return self.transition_step(next_step.step_id, StepStatus.RUNNING)
 
     def execute_next_step(
-        self, run_id: str, executor: SandboxExecutor
+        self,
+        run_id: str,
+        executor: SandboxExecutor | None = None,
+        *,
+        adapter_resolver: ChatAdapterResolver | None = None,
     ) -> tuple[RunStep, AgentRun] | None:
-        """Execute and complete the next queued command through an injected sandbox."""
+        """Execute and complete the next queued command or provider message."""
 
         run = self.get(run_id)
         if run is None:
@@ -379,14 +391,45 @@ class RunCoordinator:
         )
         if next_step is None:
             return None
-        if next_step.command is None:
-            raise ValueError(f"next step does not have a command: {next_step.step_id}")
+        adapter: ChatAdapter | None = None
+        request: ChatRequest | None = None
+        if next_step.command is not None:
+            if executor is None:
+                raise ValueError(
+                    f"next command step requires a sandbox: {next_step.step_id}"
+                )
+        elif next_step.message is not None:
+            if adapter_resolver is None:
+                raise ValueError(
+                    f"next provider-message step requires an adapter: {next_step.step_id}"
+                )
+            adapter = adapter_resolver(next_step.message)
+            messages = (
+                (
+                    ChatMessage("system", next_step.message.system),
+                    ChatMessage("user", next_step.message.content),
+                )
+                if next_step.message.system is not None
+                else (ChatMessage("user", next_step.message.content),)
+            )
+            request = ChatRequest(
+                messages,
+                temperature=next_step.message.temperature,
+                max_tokens=next_step.message.max_tokens,
+            )
+        else:  # Defensive: durable step validation rejects missing execution input.
+            raise ValueError(f"next step has no execution input: {next_step.step_id}")
 
         running_step = self.start_next_step(run_id)
         if running_step is None:  # Defensive: next_step proved queued above.
             return None
-        result = executor.execute(running_step.command, timeout=running_step.timeout)
-        return self.complete_step_from_result(running_step.step_id, result)
+        if running_step.command is not None:
+            assert executor is not None
+            result = executor.execute(running_step.command, timeout=running_step.timeout)
+            return self.complete_step_from_result(running_step.step_id, result)
+        assert adapter is not None and request is not None
+        response = adapter.complete(request)
+        return self.complete_step_from_chat_response(running_step.step_id, response)
 
     def add_step(
         self,
@@ -592,6 +635,34 @@ class RunCoordinator:
         )
         step = self._step(stored[0])
         run = self._run(stored[1])
+        return step, run
+
+    def complete_step_from_chat_response(
+        self, step_id: str, response: ChatResponse
+    ) -> tuple[RunStep, AgentRun]:
+        """Persist a normalized adapter response and complete a model-backed step."""
+
+        current = self.get_step(step_id)
+        if current is None:
+            raise KeyError(f"step does not exist: {step_id}")
+        if current.message is None:
+            raise ValueError(f"step does not have a provider message: {step_id}")
+        output: dict[str, object] = {"content": response.content, "model": response.model}
+        if response.raw is not None:
+            output["raw"] = dict(response.raw)
+        step = self.transition_step(step_id, StepStatus.SUCCEEDED, output=output)
+        run = self.get(step.run_id)
+        if run is None:  # Defensive: durable steps always reference an existing run.
+            raise KeyError(f"run does not exist: {step.run_id}")
+        if all(
+            candidate.status is StepStatus.SUCCEEDED
+            for candidate in self.list_steps(run.run_id)
+        ):
+            run = self.transition(
+                run.run_id,
+                RunStatus.SUCCEEDED,
+                output={"completed_steps": len(self.list_steps(run.run_id))},
+            )
         return step, run
 
     def recover_running_step(
