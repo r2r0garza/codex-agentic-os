@@ -1,5 +1,25 @@
 # Automation Memory
 
+- Run: 2026-07-12T10:33:45Z — implementation run.
+- Selected issue: #34, container bind-mount support.
+- Completed: added validated host/container mount pairs to `SandboxSpec`, rendered
+  repeatable `--volume` arguments after resource limits and before the image, and
+  wired strict repeatable `run execute-next --mount HOST:CONTAINER` parsing before
+  step execution can mutate state. Added zero/one/multiple and malformed-input
+  coverage, Plan 0044, a DEVELOPMENT example, and refreshed the index.
+- Implementation commit: `bd72155`; pushed to `origin/main`; issue #34 closed
+  with verification results.
+- Verification: `pytest -q tests/test_sandboxes.py tests/test_run_cli.py` (107
+  passed); `pytest -q` (248 passed); clean index build (17 files, 383 symbols,
+  2121 relationships); `index check` current; `git diff --check` clean.
+- Blocked review: no open issues labeled `blocked`.
+- Resulting queue: 4 unblocked `agent-ready` issues — #36 (priority:2), #25,
+  #26, and #35 (priority:3). Recommended next: #36, the only priority:2 issue.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree
+  clean after the durable MEMORY.md commit.
+
+---
+
 - Run: 2026-07-12T10:14:00Z — implementation run.
 - Selected issue: #37, `run add-step` parsing incompatible with Python 3.11.
 - Completed: removed the trailing `step_command` `nargs="*"` positional
@@ -102,37 +122,3 @@
   focused issues without implementing one.
 - Final target state: `main`, pushed to `origin/main`; worktree retains unrelated
   user changes (`README.md` modified, `DEVELOPMENT.md` untracked).
-
----
-
-- Run: 2026-07-12T08:05:15Z — implementation run.
-- Selected issue: #31, coordination-only step creation CLI.
-- Completed: made `run add-step`'s trailing command positional optional
-  (`nargs="*"`, normalized to `command=None`), preserving command-bearing
-  creation and existing timeout-without-command rejection in
-  `RunCoordinator.add_step()`/`_validate_command()` (already supported
-  command-less steps). Added Plan 0040, README CLI example and status line,
-  refreshed index.
-- Implementation commit: `f675afb2e263c757b4aec99a9f9fd795f5dbafdc`; pushed to
-  `origin/main`; issue #31 closed (a follow-up comment corrected an initially
-  mistyped commit hash in the close comment).
-- Verification: `pytest -q tests/test_run_cli.py` (89 passed, 3 new); `pytest -q`
-  (230 passed); incremental index build (17 files, 369 symbols, 2069
-  relationships); `index check` current; `git diff --check` clean; manual CLI
-  smoke test of objective-only, command-bearing, and rejected
-  timeout-without-command step creation with durable read-back.
-- Blocked review: no open issues labeled `blocked`.
-- Resulting queue after closing #31: 3 unblocked `agent-ready` issues — #32
-  (priority:2), #26 and #25 (priority:3, #25 older). Total open-issue count (3)
-  is below the target 5-10 band; next backlog-replenishment run (triggered when
-  ≤2 unblocked agent-ready issues remain) should also consider adding issues to
-  restore that range. Recommended next: #32 (priority:2, only issue at that
-  priority).
-- Final target state: `main`, pushed to `origin/main`, clean worktree.
-
-## Follow-up
-- Run time (UTC): 2026-07-12T08:39:00Z
-- User authorized the preserved documentation changes. Reviewed, committed, and
-  pushed `README.md` plus new `DEVELOPMENT.md` in
-  `528fe34c0d3783851a1641569200e3677b35d32d`.
-- Final repository state: `main` matches `origin/main`; worktree clean.
