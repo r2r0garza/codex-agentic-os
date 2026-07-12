@@ -7,6 +7,7 @@ from codex_agentic_os.runtime import (
     Agent,
     AgentRegistry,
     AgentRun,
+    ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
     RunStep,
@@ -436,6 +437,46 @@ def test_step_command_and_timeout_are_durable(tmp_path) -> None:
     assert reloaded is not None
     assert reloaded.command == created.command
     assert reloaded.timeout == created.timeout
+
+
+def test_provider_message_step_round_trips_across_restart(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ask a model")
+    message = ProviderMessage(
+        provider="openrouter",
+        content="Summarize the change",
+        model="example/model",
+        system="Be concise",
+        temperature=0.25,
+        max_tokens=321,
+    )
+
+    created = coordinator.add_step(
+        "run-1", "model", objective="Summarize", message=message
+    )
+
+    assert created.message == message
+    assert RunCoordinator(StateStore(database)).get_step("model") == created
+
+
+def test_step_requires_exactly_one_execution_input_without_mutation(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    run = coordinator.create("run-1", objective="Validate inputs")
+
+    with pytest.raises(ValueError, match="exactly one"):
+        coordinator.add_step("run-1", "empty", objective="Empty")
+    with pytest.raises(ValueError, match="exactly one"):
+        coordinator.add_step(
+            "run-1",
+            "ambiguous",
+            objective="Ambiguous",
+            command=("true",),
+            message=ProviderMessage(provider="local", content="Hello"),
+        )
+
+    assert coordinator.get("run-1") == run
+    assert coordinator.list_steps("run-1") == ()
 
 
 @pytest.mark.parametrize(

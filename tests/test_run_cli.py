@@ -370,6 +370,33 @@ def test_cli_adds_ordered_command_steps_and_matches_inspection(tmp_path, capsys)
     assert json.loads(capsys.readouterr().out) == second_payload
 
 
+def test_cli_adds_and_inspects_provider_message_step(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    RunCoordinator(StateStore(database)).create("run-1", objective="Ask a model")
+
+    arguments = [
+        "run", "add-step", "run-1", "model", "--objective", "Summarize",
+        "--provider", "openrouter", "--message", "Summarize this change",
+        "--model", "example/model", "--system", "Be concise",
+        "--temperature", "0.25", "--max-tokens", "321",
+        "--state-db", str(database),
+    ]
+    main(arguments)
+    created = json.loads(capsys.readouterr().out)
+
+    main(["run", "inspect-step", "model", "--state-db", str(database)])
+    inspected = json.loads(capsys.readouterr().out)
+    assert inspected == created["steps"][0]
+    assert inspected["message"] == {
+        "provider": "openrouter",
+        "content": "Summarize this change",
+        "model": "example/model",
+        "system": "Be concise",
+        "temperature": 0.25,
+        "max_tokens": 321,
+    }
+
+
 def test_cli_add_step_accepts_hyphen_prefixed_command_after_double_dash(
     tmp_path, capsys
 ) -> None:

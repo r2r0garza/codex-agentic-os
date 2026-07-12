@@ -21,6 +21,7 @@ from .providers import DEFAULT_PROVIDER_SPECS, ProviderKind, ProviderSpec
 from .runtime import (
     Agent,
     AgentRegistry,
+    ProviderMessage,
     RunCoordinator,
     RunStatus,
     RunStep,
@@ -65,7 +66,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     add_step = run_commands.add_parser(
         "add-step",
-        help="append a queued command step to a durable run",
+        help="append a queued command or provider-message step to a durable run",
         usage=(
             "%(prog)s [-h] --objective OBJECTIVE [--timeout TIMEOUT] "
             "[--state-db STATE_DB] run_id step_id [command ...]"
@@ -73,7 +74,7 @@ def _parser() -> argparse.ArgumentParser:
         epilog=(
             "The trailing command (optionally introduced with '--') is parsed "
             "manually rather than as an argparse positional; omit it for a "
-            "coordination-only step."
+            "provider-message step."
         ),
     )
     list_runs = run_commands.add_parser("list", help="list durable runs")
@@ -112,6 +113,12 @@ def _parser() -> argparse.ArgumentParser:
     add_step.add_argument("step_id")
     add_step.add_argument("--objective", required=True, help="objective for the queued step")
     add_step.add_argument("--timeout", type=float, help="positive command timeout in seconds")
+    add_step.add_argument("--provider", help="provider name for a model step")
+    add_step.add_argument("--message", help="user content for a model step")
+    add_step.add_argument("--model", help="optional provider model override")
+    add_step.add_argument("--system", help="optional system instruction")
+    add_step.add_argument("--temperature", type=float, help="optional non-negative sampling temperature")
+    add_step.add_argument("--max-tokens", type=int, help="optional positive response token limit")
     list_runs.add_argument(
         "--status",
         action="append",
@@ -305,6 +312,8 @@ def _step_payload(step: RunStep) -> dict[str, object]:
     """Return the standard JSON-compatible view of one durable step."""
 
     payload = asdict(step)
+    if step.message is None:
+        payload.pop("message")
     payload["status"] = step.status.value
     return payload
 
@@ -412,12 +421,33 @@ def main(argv: Sequence[str] | None = None) -> None:
             elif arguments.run_command == "add-step":
                 if coordinator.get(arguments.run_id) is None:
                     raise ValueError(f"run does not exist: {arguments.run_id}")
+                message = None
+                if any(
+                    value is not None
+                    for value in (
+                        arguments.provider,
+                        arguments.message,
+                        arguments.model,
+                        arguments.system,
+                        arguments.temperature,
+                        arguments.max_tokens,
+                    )
+                ):
+                    message = ProviderMessage(
+                        provider=arguments.provider or "",
+                        content=arguments.message or "",
+                        model=arguments.model,
+                        system=arguments.system,
+                        temperature=arguments.temperature,
+                        max_tokens=arguments.max_tokens,
+                    )
                 coordinator.add_step(
                     arguments.run_id,
                     arguments.step_id,
                     objective=arguments.objective,
                     command=arguments.step_command or None,
                     timeout=arguments.timeout,
+                    message=message,
                 )
                 run_id = arguments.run_id
             elif arguments.run_command == "list":

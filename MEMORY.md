@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-12T18:52:41Z — incomplete implementation run.
+- Active milestone: Sprint 4 "Durable model-backed step execution" (#4). Selected its sole unblocked `agent-ready` issue, #51 (queue and inspect durable provider-message steps, priority:1).
+- Implemented but not closed: added validated `ProviderMessage` persistence and reconstruction, `run add-step` provider-message flags, stable inspection JSON, exact-one-of command/message validation, focused tests, Plan 0057, and refreshed the committed index. Existing command-step JSON remains unchanged.
+- Verification: direct CLI add/inspect across process restart passed; direct library missing-input and command-plus-message rejection preserved the run revision and empty step list; Python compilation passed; index rebuilt/current (20 files, 485 symbols, 2691 relationships); `git diff --check` passed. Focused and full pytest runs are blocked because the activated `.venv` has no pytest and dependency retrieval stalled until cancelled.
+- Blocked review: #52 and #53 remain correctly blocked on predecessor contracts; #51 remains open and `agent-ready` pending test verification. No labels changed.
+- Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed.
+- Final target: `main`; implementation commit `79b22be` pushed and issue progress recorded. Next eligible issue remains #51 until verification succeeds.
+
+---
+
 - Run: 2026-07-12T18:22:04Z — replenishment run.
 - Active milestone: Sprint 4 "Durable model-backed step execution" (#4). It had no issues and its explicit exit criteria had uncovered implementation work, so no code was implemented this run.
 - Created three milestone-scoped issues: #51 (queue and inspect durable provider-message steps, priority:1, `agent-ready`), #52 (execute durable model steps through provider adapters, priority:2, blocked on #51), and #53 (preserve run state across provider failures and mixed steps, priority:3, blocked on #51/#52).
@@ -46,13 +56,3 @@
 - Roadmap horizon: 2 open milestones (Sprint 2, Sprint 3) before this run's post-work check, below the required 3. Created Sprint 4 "Durable model-backed step execution" (#4, 0 issues — future milestone, not yet active) via `codex-agentic-os-plan-sprints`, composing Sprint 1's provider adapters with Sprint 2's run/step CAS lifecycle to let a durable step persist a model response as output. Resulting horizon: 3 open milestones (Sprint 2, Sprint 3, Sprint 4) as required. No issues created outside the (still-forming) active milestone.
 - Recommended next: run a Sprint 2 retrospective (all issues closed) before or alongside implementing Sprint 3 issue #46; #46 remains the next eligible implementation issue if the retrospective is deferred.
 - Final target: `main`; implementation and this MEMORY.md update both pushed; worktree clean.
-
----
-
-- Run: 2026-07-12T17:25:41Z — implementation run.
-- Active milestone: Sprint 2 "Reproducible sandbox execution context" (#2). Selected issue #44, the oldest of two unblocked `agent-ready` priority:3 issues assigned to the milestone.
-- Completed: added optional validated `SandboxSpec.working_dir` and `run execute-next --workdir PATH`. Docker and Podman render `--workdir` after mounts and environment variables and before the image; omission preserves the prior command. Empty, whitespace-only, and relative paths fail before a queued step is claimed. Added Plan 0054, DEVELOPMENT guidance, and refreshed the committed index.
-- Verification: focused sandbox/run CLI suite (153 passed); full suite (334 passed); index rebuilt to 20 files, 466 symbols, 2558 relationships and current; `git diff --check` clean.
-- Blocked review: no open `blocked` issues; nothing changed.
-- Resulting queue after closure: Sprint 2 has one remaining unblocked `agent-ready` issue, #47 (explicit sandbox network opt-in, priority:3). It is the next eligible issue; retrospective is not yet eligible because #47 remains open.
-- Final target: `main`; implementation, issue closure, and push pending in this run.

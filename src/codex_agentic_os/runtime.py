@@ -84,6 +84,19 @@ class RunStep:
     output: Mapping[str, object] | None = None
     command: tuple[str, ...] | None = None
     timeout: float | None = None
+    message: ProviderMessage | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderMessage:
+    """Provider-neutral input for one durable model-backed step."""
+
+    provider: str
+    content: str
+    model: str | None = None
+    system: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,6 +307,8 @@ class RunCoordinator:
                 payload["command"] = list(step.command)
             if step.timeout is not None:
                 payload["timeout"] = step.timeout
+            if step.message is not None:
+                payload["message"] = self._message_payload(step.message)
             records.append(("step", step.step_id, StepStatus.CANCELLED, payload))
 
         run_payload: dict[str, object] = {"objective": current.objective}
@@ -334,6 +349,8 @@ class RunCoordinator:
                 step_payload["command"] = list(next_step.command)
             if next_step.timeout is not None:
                 step_payload["timeout"] = next_step.timeout
+            if next_step.message is not None:
+                step_payload["message"] = self._message_payload(next_step.message)
             stored = self.store.put_many(
                 (
                     ("run", run_id, RunStatus.RUNNING, run_payload),
@@ -379,6 +396,7 @@ class RunCoordinator:
         objective: str,
         command: Sequence[str] | None = None,
         timeout: float | None = None,
+        message: ProviderMessage | Mapping[str, object] | None = None,
     ) -> RunStep:
         """Append a queued step to a non-terminal run."""
 
@@ -390,6 +408,9 @@ class RunCoordinator:
         if not objective.strip():
             raise ValueError("step objective must not be empty")
         normalized_command = self._validate_command(command, timeout)
+        normalized_message = self._validate_message(message)
+        if (normalized_command is None) == (normalized_message is None):
+            raise ValueError("step requires exactly one of command or provider message")
         payload: dict[str, object] = {
             "objective": objective,
         }
@@ -397,6 +418,8 @@ class RunCoordinator:
             payload["command"] = list(normalized_command)
         if timeout is not None:
             payload["timeout"] = timeout
+        if normalized_message is not None:
+            payload["message"] = self._message_payload(normalized_message)
         try:
             record = self.store.append_step(
                 step_id,
@@ -451,6 +474,8 @@ class RunCoordinator:
             payload["command"] = list(current.command)
         if current.timeout is not None:
             payload["timeout"] = current.timeout
+        if current.message is not None:
+            payload["message"] = self._message_payload(current.message)
         if output is not None:
             payload["output"] = dict(output)
         try:
@@ -488,6 +513,8 @@ class RunCoordinator:
             payload["command"] = list(current.command)
         if current.timeout is not None:
             payload["timeout"] = current.timeout
+        if current.message is not None:
+            payload["message"] = self._message_payload(current.message)
         return self._step(
             self.store.put(
                 "step", step_id, status=StepStatus.CANCELLED, payload=payload
@@ -529,6 +556,8 @@ class RunCoordinator:
             step_payload["command"] = list(current.command)
         if current.timeout is not None:
             step_payload["timeout"] = current.timeout
+        if current.message is not None:
+            step_payload["message"] = self._message_payload(current.message)
 
         run_status: RunStatus | None = None
         run_output: dict[str, object] | None = None
@@ -602,6 +631,8 @@ class RunCoordinator:
             step_payload["command"] = list(current.command)
         if current.timeout is not None:
             step_payload["timeout"] = current.timeout
+        if current.message is not None:
+            step_payload["message"] = self._message_payload(current.message)
 
         run_payload: dict[str, object] = {
             "objective": run.objective,
@@ -654,6 +685,7 @@ class RunCoordinator:
         output = record.payload.get("output")
         command = record.payload.get("command")
         timeout = record.payload.get("timeout")
+        message = record.payload.get("message")
         if not isinstance(run_id, str) or not run_id:
             raise ValueError(f"step record has invalid run id: {record.key}")
         if not isinstance(position, int) or isinstance(position, bool) or position < 1:
@@ -663,6 +695,9 @@ class RunCoordinator:
         if output is not None and not isinstance(output, dict):
             raise ValueError(f"step record has invalid output: {record.key}")
         normalized_command = RunCoordinator._validate_command(command, timeout)
+        normalized_message = RunCoordinator._validate_message(message)
+        if normalized_command is not None and normalized_message is not None:
+            raise ValueError(f"step record has ambiguous execution input: {record.key}")
         try:
             status = StepStatus(record.status)
         except ValueError as error:
@@ -677,6 +712,59 @@ class RunCoordinator:
             output=output,
             command=normalized_command,
             timeout=timeout,
+            message=normalized_message,
+        )
+
+    @staticmethod
+    def _message_payload(message: ProviderMessage) -> dict[str, object]:
+        return {key: value for key, value in asdict(message).items() if value is not None}
+
+    @staticmethod
+    def _validate_message(
+        message: ProviderMessage | Mapping[str, object] | object | None,
+    ) -> ProviderMessage | None:
+        if message is None:
+            return None
+        if isinstance(message, ProviderMessage):
+            values = asdict(message)
+        elif isinstance(message, Mapping):
+            allowed = {"provider", "content", "model", "system", "temperature", "max_tokens"}
+            if set(message) - allowed:
+                raise ValueError("step provider message has unknown fields")
+            values = dict(message)
+        else:
+            raise ValueError("step provider message must be an object")
+        provider = values.get("provider")
+        content = values.get("content")
+        model = values.get("model")
+        system = values.get("system")
+        temperature = values.get("temperature")
+        max_tokens = values.get("max_tokens")
+        if not isinstance(provider, str) or not provider.strip():
+            raise ValueError("step provider must be a non-empty string")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("step message content must be a non-empty string")
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise ValueError("step model must be a non-empty string")
+        if system is not None and (not isinstance(system, str) or not system.strip()):
+            raise ValueError("step system message must be a non-empty string")
+        if temperature is not None and (
+            not isinstance(temperature, (int, float))
+            or isinstance(temperature, bool)
+            or temperature < 0
+        ):
+            raise ValueError("step temperature must be non-negative")
+        if max_tokens is not None and (
+            not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens < 1
+        ):
+            raise ValueError("step max tokens must be a positive integer")
+        return ProviderMessage(
+            provider=provider,
+            content=content,
+            model=model,
+            system=system,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
 
     @staticmethod
