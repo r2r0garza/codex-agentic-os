@@ -229,9 +229,19 @@ class RunCoordinator:
             payload["agent_id"] = current.agent_id
         if output is not None:
             payload["output"] = dict(output)
-        return self._run(
-            self.store.put("run", run_id, status=status, payload=payload)
-        )
+        try:
+            record = self.store.transition_run(
+                run_id,
+                expected_status=current.status,
+                expected_revision=current.revision,
+                status=status,
+                payload=payload,
+            )
+        except StateConflictError as error:
+            raise ValueError(f"run transition conflict: {run_id}") from error
+        except KeyError as error:
+            raise KeyError(f"run does not exist: {run_id}") from error
+        return self._run(record)
 
     def cancel(self, run_id: str) -> AgentRun:
         """Atomically cancel a run and each of its queued or running steps."""

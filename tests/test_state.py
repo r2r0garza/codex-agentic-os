@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from codex_agentic_os.state import StateRecord, StateStore
+from codex_agentic_os.state import StateConflictError, StateRecord, StateStore
 
 
 @pytest.mark.parametrize("kind", ["plan", "decision", "run", "step", "agent"])
@@ -76,6 +76,90 @@ def test_put_rejects_invalid_records(tmp_path, kind, key, status, payload, messa
     with pytest.raises(ValueError, match=message):
         StateStore(tmp_path / "state.sqlite3").put(
             kind, key, status=status, payload=payload
+        )
+
+
+def test_transition_run_advances_status_and_revision_atomically(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.insert("run", "run-1", status="queued", payload={"objective": "Build"})
+
+    transitioned = store.transition_run(
+        "run-1",
+        expected_status="queued",
+        expected_revision=1,
+        status="running",
+        payload={"objective": "Build"},
+    )
+
+    assert transitioned == StateRecord(
+        kind="run",
+        key="run-1",
+        status="running",
+        payload={"objective": "Build"},
+        revision=2,
+    )
+    assert store.get("run", "run-1") == transitioned
+
+
+def test_transition_run_rejects_missing_run_without_mutation(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+
+    with pytest.raises(KeyError, match="state record does not exist: run/missing"):
+        store.transition_run(
+            "missing",
+            expected_status="queued",
+            expected_revision=1,
+            status="running",
+            payload={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("expected_status", "expected_revision"),
+    [
+        ("running", 1),
+        ("queued", 2),
+    ],
+)
+def test_transition_run_rejects_stale_expectations_without_mutation(
+    tmp_path, expected_status, expected_revision
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    original = store.insert("run", "run-1", status="queued", payload={"objective": "Build"})
+
+    with pytest.raises(StateConflictError, match="state run transition conflict: run-1"):
+        store.transition_run(
+            "run-1",
+            expected_status=expected_status,
+            expected_revision=expected_revision,
+            status="running",
+            payload={"objective": "Build"},
+        )
+
+    assert store.get("run", "run-1") == original
+
+
+@pytest.mark.parametrize(
+    ("expected_status", "expected_revision", "status", "message"),
+    [
+        (" ", 1, "running", "expected status must not be empty"),
+        ("queued", 0, "running", "expected revision must be positive"),
+        ("queued", 1, " ", "status must not be empty"),
+    ],
+)
+def test_transition_run_rejects_invalid_arguments(
+    tmp_path, expected_status, expected_revision, status, message
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.insert("run", "run-1", status="queued", payload={"objective": "Build"})
+
+    with pytest.raises(ValueError, match=message):
+        store.transition_run(
+            "run-1",
+            expected_status=expected_status,
+            expected_revision=expected_revision,
+            status=status,
+            payload={"objective": "Build"},
         )
 
 

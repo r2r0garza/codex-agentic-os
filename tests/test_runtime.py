@@ -212,6 +212,37 @@ def test_competing_release_cannot_clear_changed_claim(tmp_path) -> None:
     assert competing.get("run-1") == reclaimed
 
 
+def test_competing_transitions_cannot_both_succeed_or_overwrite_each_other(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    creator = RunCoordinator(StateStore(database))
+    creator.create("run-1", objective="Build feature")
+    coordinators = (
+        RunCoordinator(StateStore(database)),
+        RunCoordinator(StateStore(database)),
+    )
+
+    def attempt(coordinator: RunCoordinator) -> AgentRun | ValueError:
+        try:
+            return coordinator.transition("run-1", RunStatus.RUNNING)
+        except ValueError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(attempt, coordinator) for coordinator in coordinators
+        ]
+        results = [future.result() for future in futures]
+
+    successes = [result for result in results if isinstance(result, AgentRun)]
+    failures = [result for result in results if isinstance(result, ValueError)]
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert successes[0].status is RunStatus.RUNNING
+    assert successes[0].revision == 2
+    assert creator.get("run-1") == successes[0]
+
+
 def test_claim_next_selects_first_eligible_run_in_identifier_order(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     assigned = coordinator.create("run-a", objective="Assigned", agent_id="agent-0")
