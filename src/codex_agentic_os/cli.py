@@ -58,6 +58,9 @@ def _parser() -> argparse.ArgumentParser:
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
     inspect_step = run_commands.add_parser("inspect-step", help="show one durable step")
     cancel = run_commands.add_parser("cancel", help="cancel a run and its active steps")
+    cancel_step = run_commands.add_parser(
+        "cancel-step", help="cancel one queued durable step"
+    )
     execute_next = run_commands.add_parser(
         "execute-next", help="execute the next queued command step in a container"
     )
@@ -94,8 +97,8 @@ def _parser() -> argparse.ArgumentParser:
             default=Path(".codex-agentic-os/state.sqlite3"),
             help="path to the runtime state database",
         )
-    for command in (inspect, inspect_step, cancel, execute_next, recover):
-        identifier = "step_id" if command in (inspect_step, recover) else "run_id"
+    for command in (inspect, inspect_step, cancel, cancel_step, execute_next, recover):
+        identifier = "step_id" if command in (inspect_step, cancel_step, recover) else "run_id"
         command.add_argument(identifier)
         command.add_argument(
             "--state-db",
@@ -237,6 +240,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             if arguments.run_command == "cancel":
                 coordinator.cancel(arguments.run_id)
                 run_id = arguments.run_id
+            elif arguments.run_command == "cancel-step":
+                current = coordinator.get_step(arguments.step_id)
+                if current is None:
+                    raise ValueError(f"step does not exist: {arguments.step_id}")
+                if coordinator.get(current.run_id) is None:
+                    raise ValueError(f"run does not exist: {current.run_id}")
+                step = coordinator.cancel_step(arguments.step_id)
+                run_id = step.run_id
             elif arguments.run_command == "execute-next":
                 kind = SandboxKind(arguments.sandbox)
                 if arguments.image is not None and not arguments.image.strip():

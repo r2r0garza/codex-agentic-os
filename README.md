@@ -104,13 +104,14 @@ Implemented foundation:
 - Atomic pruning of a terminal run and all of its durable step history.
 - Operator-facing atomic queued-run claiming by explicit run and agent identifiers.
 - Read-only inspection of one durable step by its globally unique identifier.
-- Targeted queued-step cancellation that leaves the active parent run, siblings, and durable positions unchanged.
+- Coordinator-level queued-step cancellation that leaves the active parent run, siblings, and durable positions unchanged.
 - Operator-facing execution of one queued durable command through an explicitly selected Docker or Podman sandbox.
 - Operator-facing worker CLI that atomically claims the next eligible queued run without a known identifier.
+- Operator-facing queued-step cancellation that preserves its parent run, siblings, and durable positions.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0031 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0032 is complete.
 
 ## Development
 

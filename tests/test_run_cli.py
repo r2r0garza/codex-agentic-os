@@ -587,6 +587,107 @@ def test_cli_cancel_rejects_missing_database_without_creating_it(tmp_path, capsy
     assert not database.exists()
 
 
+@pytest.mark.parametrize("parent_status", [RunStatus.QUEUED, RunStatus.RUNNING])
+def test_cli_cancels_one_queued_step_and_prints_ordered_parent(
+    tmp_path, capsys, parent_status
+) -> None:
+    database = tmp_path / f"{parent_status.value}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Cancel selected work")
+    first = coordinator.add_step("run-1", "first", objective="First")
+    target = coordinator.add_step("run-1", "target", objective="Skip")
+    last = coordinator.add_step("run-1", "last", objective="Last")
+    if parent_status is RunStatus.RUNNING:
+        original_run = coordinator.transition("run-1", RunStatus.RUNNING)
+
+    main(["run", "cancel-step", "target", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["status"] == parent_status.value
+    assert payload["run"]["revision"] == original_run.revision
+    assert [step["step_id"] for step in payload["steps"]] == ["first", "target", "last"]
+    assert [step["position"] for step in payload["steps"]] == [1, 2, 3]
+    assert payload["steps"][1]["status"] == "cancelled"
+    assert payload["steps"][1]["revision"] == target.revision + 1
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("first") == first
+    assert reloaded.get_step("last") == last
+
+
+def test_cli_cancel_step_rejects_missing_database_without_creating_it(tmp_path, capsys) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "cancel-step", "step-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not database.exists()
+
+
+@pytest.mark.parametrize(
+    ("setup", "message"),
+    [
+        ("missing", "step does not exist"),
+        ("malformed", "step record has invalid run id"),
+        ("orphaned", "run does not exist"),
+        ("running", "step must be queued"),
+        ("succeeded", "step must be queued"),
+        ("failed", "step must be queued"),
+        ("cancelled", "step must be queued"),
+        ("terminal-parent", "run must be active"),
+    ],
+)
+def test_cli_cancel_step_rejections_do_not_mutate_state(
+    tmp_path, capsys, setup, message
+) -> None:
+    database = tmp_path / f"{setup}.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    original_run = None
+    original_step = None
+    if setup == "missing":
+        store.initialize()
+    elif setup in {"malformed", "orphaned"}:
+        original_step = store.put(
+            "step",
+            "step-1",
+            status=StepStatus.QUEUED,
+            payload={
+                "run_id": "" if setup == "malformed" else "missing-run",
+                "position": 1,
+                "objective": "Broken",
+            },
+        )
+    else:
+        original_run = coordinator.create("run-1", objective="Work")
+        original_step = coordinator.add_step("run-1", "step-1", objective="Target")
+        if setup == "terminal-parent":
+            coordinator.transition("run-1", RunStatus.RUNNING)
+            original_run = coordinator.transition("run-1", RunStatus.SUCCEEDED)
+        elif setup == "cancelled":
+            original_step = coordinator.transition_step("step-1", StepStatus.CANCELLED)
+        else:
+            original_step = coordinator.transition_step("step-1", StepStatus.RUNNING)
+            if setup != "running":
+                original_step = coordinator.transition_step("step-1", StepStatus(setup))
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "cancel-step", "step-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    if original_run is not None:
+        assert reloaded.get("run-1") == original_run
+    if setup in {"malformed", "orphaned"}:
+        assert reloaded.store.get("step", "step-1") == original_step
+    else:
+        assert reloaded.get_step("step-1") == original_step
+
+
 def test_cli_cancel_rejects_terminal_run(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
