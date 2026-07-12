@@ -1,5 +1,25 @@
 # Automation Memory
 
+- Run: 2026-07-12T12:35:50Z — implementation run.
+- Selected issue: #38, validate run agent references against the durable agent registry.
+- Completed: `RunCoordinator.create()`, `claim()`, and `claim_next()` now reject
+  unknown agent ids before mutation while preserving unassigned creation. Existing
+  runtime/CLI fixtures register their intended identities; focused registered and
+  unregistered success/rejection coverage was added. Updated Plan 0045,
+  DEVELOPMENT.md, and the committed code index.
+- Implementation commit: `d5c02b3`; pushed to `origin/main`; issue #38 closed with
+  verification results.
+- Verification: `pytest -q` (281 passed); clean index build (18 files, 413 symbols,
+  2311 relationships); `codex-agentic-os index check` current; `git diff --check`
+  clean.
+- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
+- Resulting queue: 5 unblocked `agent-ready` issues — #39 (priority:2), #26, #35,
+  #40, and #41 (priority:3). Recommended next: #39, the only priority:2 issue.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
+  before this durable MEMORY.md update.
+
+---
+
 - Run: 2026-07-12T12:05:17Z — backlog-replenishment run.
 - Trigger: only 2 unblocked `agent-ready` issues remained (#26, #35, both
   priority:3), at or below the ≤2 threshold — no issue was implemented.
@@ -103,30 +123,3 @@
   #26, and #35 (priority:3). Recommended next: #36, the only priority:2 issue.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree
   clean after the durable MEMORY.md commit.
-
----
-
-- Run: 2026-07-12T10:14:00Z — implementation run.
-- Selected issue: #37, `run add-step` parsing incompatible with Python 3.11.
-- Completed: removed the trailing `step_command` `nargs="*"` positional
-  (interleaved with `--objective`/`--timeout`/`--state-db`, argparse resolves
-  it inconsistently across 3.11 vs 3.12 regardless of `add_argument()` order);
-  now parse `add-step` with `parser.parse_known_args()` and manually assemble
-  the trailing command from leftover tokens (stripping one leading `--`).
-  Every other subcommand still hard-rejects leftover tokens. Added Plan 0043,
-  Decision 0007, 3 new regression tests, and refreshed the index.
-- Implementation commit: `594003d`; pushed to `origin/main`; issue #37
-  auto-closed by the commit's `Closes #37`; verification comment posted
-  separately.
-- Verification: `pytest -q tests/test_run_cli.py` — 92 passed (Python
-  3.11.15), 89 passed (Python 3.12.13); `pytest -q` full suite — 239 passed
-  under both versions; incremental index build (17 files, 377 symbols, 2098
-  relationships); `index check` current; `git diff --check` clean; pushed CI
-  run succeeded (https://github.com/r2r0garza/codex-agentic-os/actions/runs/29188821906),
-  same workflow/job that failed pre-fix.
-- Blocked review: no open issues labeled `blocked`.
-- Resulting queue: 5 unblocked `agent-ready` issues — #34 and #36
-  (priority:2), #25, #26, and #35 (priority:3). Recommended next: #34 or #36
-  (oldest priority:2 issues; #34 created first).
-- Final target state: `main`, pushed to `origin/main`; worktree clean after
-  the durable MEMORY.md commit.
