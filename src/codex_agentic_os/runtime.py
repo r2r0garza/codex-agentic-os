@@ -85,6 +85,15 @@ class RunStep:
     timeout: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class Agent:
+    """Typed view of a durable agent registry record."""
+
+    agent_id: str
+    label: str | None
+    revision: int
+
+
 class ExecutionResult(Protocol):
     """Backend-neutral command result accepted by run coordination."""
 
@@ -682,3 +691,40 @@ class RunCoordinator:
         ):
             raise ValueError("step timeout must be positive")
         return normalized
+
+
+class AgentRegistry:
+    """Register and list durable agent identities backed by ``StateStore``."""
+
+    def __init__(self, store: StateStore) -> None:
+        self.store = store
+
+    def register(self, agent_id: str, *, label: str | None = None) -> Agent:
+        """Create a durable agent record at revision one, rejecting a duplicate id."""
+
+        if not agent_id.strip():
+            raise ValueError("agent id must not be empty")
+        if label is not None and not label.strip():
+            raise ValueError("agent label must not be empty")
+        payload: dict[str, object] = {}
+        if label is not None:
+            payload["label"] = label
+        try:
+            record = self.store.insert(
+                "agent", agent_id, status="registered", payload=payload
+            )
+        except StateConflictError as error:
+            raise ValueError(f"agent already exists: {agent_id}") from error
+        return self._agent(record)
+
+    def list_agents(self) -> tuple[Agent, ...]:
+        """Return all registered agents in stable identifier order."""
+
+        return tuple(self._agent(record) for record in self.store.list("agent"))
+
+    @staticmethod
+    def _agent(record: StateRecord) -> Agent:
+        label = record.payload.get("label")
+        if label is not None and not isinstance(label, str):
+            raise ValueError(f"agent record has invalid label: {record.key}")
+        return Agent(agent_id=record.key, label=label, revision=record.revision)

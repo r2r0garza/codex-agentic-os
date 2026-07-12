@@ -5,6 +5,8 @@ from .sandboxes import ContainerSandbox, SandboxKind, SandboxResult, SandboxSpec
 from .state import StateRecord, StateStore
 from .chat import ChatMessage, ChatRequest, ChatResponse
 from .runtime import (
+    Agent,
+    AgentRegistry,
     AgentRun,
     ExecutionResult,
     RunCoordinator,
@@ -19,6 +21,8 @@ __all__ = [
     "ChatMessage",
     "ChatRequest",
     "ChatResponse",
+    "Agent",
+    "AgentRegistry",
     "AgentRun",
     "ExecutionResult",
     "ProviderKind",

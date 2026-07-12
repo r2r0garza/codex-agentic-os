@@ -16,7 +16,15 @@ from .index import (
     unstaged_index_paths,
 )
 from .providers import DEFAULT_PROVIDER_SPECS
-from .runtime import RunCoordinator, RunStatus, RunStep, RuntimeSpec, StepRecoveryReason
+from .runtime import (
+    Agent,
+    AgentRegistry,
+    RunCoordinator,
+    RunStatus,
+    RunStep,
+    RuntimeSpec,
+    StepRecoveryReason,
+)
 from .sandboxes import ContainerSandbox, SandboxKind, SandboxSpec, default_sandboxes
 from .state import StateStore
 
@@ -149,6 +157,24 @@ def _parser() -> argparse.ArgumentParser:
         metavar="HOST:CONTAINER",
         help="bind mount a host path in the container; repeat for multiple mounts",
     )
+
+    agent = commands.add_parser("agent", help="manage durable agent identities")
+    agent_commands = agent.add_subparsers(dest="agent_command", required=True)
+    agent_register = agent_commands.add_parser(
+        "register", help="register a durable agent identity"
+    )
+    agent_register.add_argument("agent_id")
+    agent_register.add_argument("--label", help="optional human-readable label")
+    agent_list = agent_commands.add_parser(
+        "list", help="list registered agent identities"
+    )
+    for command in (agent_register, agent_list):
+        command.add_argument(
+            "--state-db",
+            type=Path,
+            default=Path(".codex-agentic-os/state.sqlite3"),
+            help="path to the runtime state database",
+        )
     return parser
 
 
@@ -207,6 +233,12 @@ def _run_list_payload(
         summary["status"] = run.status.value
         summaries.append(summary)
     return summaries
+
+
+def _agent_payload(agent: Agent) -> dict[str, object]:
+    """Return the standard JSON-compatible view of one registered agent."""
+
+    return asdict(agent)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -366,6 +398,22 @@ def main(argv: Sequence[str] | None = None) -> None:
             else:
                 run_id = arguments.run_id
             print(json.dumps(_run_payload(coordinator, run_id), indent=2, sort_keys=True))
+        elif arguments.command == "agent":
+            if arguments.agent_command != "register" and not arguments.state_db.is_file():
+                raise ValueError(f"state database does not exist: {arguments.state_db}")
+            read_only = arguments.agent_command == "list"
+            registry = AgentRegistry(StateStore(arguments.state_db, read_only=read_only))
+            if arguments.agent_command == "register":
+                registered = registry.register(arguments.agent_id, label=arguments.label)
+                print(json.dumps(_agent_payload(registered), indent=2, sort_keys=True))
+            else:
+                print(
+                    json.dumps(
+                        [_agent_payload(agent) for agent in registry.list_agents()],
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
         elif arguments.index_command == "build":
             builder = build_incremental_index if arguments.incremental else build_clean_index
             manifest = builder(repository)

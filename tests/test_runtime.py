@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from codex_agentic_os.runtime import (
+    Agent,
+    AgentRegistry,
     AgentRun,
     RunCoordinator,
     RunStatus,
@@ -1067,3 +1069,78 @@ def test_prune_rolls_back_when_deletion_fails(tmp_path, monkeypatch) -> None:
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get("run-1") == original_run
     assert reloaded.list_steps("run-1") == original_steps
+
+
+def test_agent_registration_is_durable_and_revisioned(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = AgentRegistry(StateStore(database))
+
+    registered = registry.register("agent-1", label="Build worker")
+
+    assert registered == Agent("agent-1", "Build worker", 1)
+    assert AgentRegistry(StateStore(database)).list_agents() == (registered,)
+
+
+def test_agent_registration_without_label(tmp_path) -> None:
+    registry = AgentRegistry(StateStore(tmp_path / "state.sqlite3"))
+
+    registered = registry.register("agent-1")
+
+    assert registered == Agent("agent-1", None, 1)
+
+
+def test_agents_are_listed_in_stable_identifier_order(tmp_path) -> None:
+    registry = AgentRegistry(StateStore(tmp_path / "state.sqlite3"))
+    second = registry.register("agent-b")
+    first = registry.register("agent-a", label="First")
+
+    assert registry.list_agents() == (first, second)
+
+
+def test_agent_list_is_empty_when_no_agents_are_registered(tmp_path) -> None:
+    registry = AgentRegistry(StateStore(tmp_path / "state.sqlite3"))
+
+    assert registry.list_agents() == ()
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "label", "message"),
+    [
+        (" ", None, "agent id must not be empty"),
+        ("", None, "agent id must not be empty"),
+        ("agent-1", " ", "agent label must not be empty"),
+    ],
+)
+def test_agent_registration_rejects_empty_identity_without_mutation(
+    tmp_path, agent_id, label, message
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = AgentRegistry(StateStore(database))
+
+    with pytest.raises(ValueError, match=message):
+        registry.register(agent_id, label=label)
+
+    assert registry.list_agents() == ()
+
+
+def test_agent_registration_rejects_duplicate_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = AgentRegistry(StateStore(database))
+    original = registry.register("agent-1", label="First")
+
+    with pytest.raises(ValueError, match="agent already exists: agent-1"):
+        registry.register("agent-1", label="Replacement")
+
+    assert AgentRegistry(StateStore(database)).list_agents() == (original,)
+
+
+def test_agent_registration_is_atomic_across_registries(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    first = AgentRegistry(StateStore(database))
+    competing = AgentRegistry(StateStore(database))
+
+    original = first.register("agent-1", label="Original")
+    with pytest.raises(ValueError, match="agent already exists: agent-1"):
+        competing.register("agent-1", label="Replacement")
+
+    assert AgentRegistry(StateStore(database)).list_agents() == (original,)

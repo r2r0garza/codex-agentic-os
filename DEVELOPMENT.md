@@ -242,6 +242,19 @@ Pruning requires an existing database, a run that exists, and a succeeded, faile
 cancelled run status. There is no bulk cleanup, retention policy, or confirmation
 prompt.
 
+Register a durable agent identity and list registered agents in stable identifier
+order. Registration rejects a duplicate agent id, and both commands reject
+empty/whitespace-only values without mutation:
+
+```bash
+codex-agentic-os agent register agent-1 --label "Build worker"
+codex-agentic-os agent list
+codex-agentic-os agent list --state-db /path/to/state.sqlite3
+```
+
+The registry only records that an agent id exists; it does not track liveness and
+`run claim`/`run add-step --agent-id` still accept any unchecked identifier.
+
 Inspect declared capabilities:
 
 ```bash
