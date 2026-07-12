@@ -48,6 +48,7 @@ def _parser() -> argparse.ArgumentParser:
     run_commands = run.add_subparsers(dest="run_command", required=True)
     create = run_commands.add_parser("create", help="create a queued durable run")
     claim = run_commands.add_parser("claim", help="claim a queued durable run")
+    release = run_commands.add_parser("release", help="release a queued durable run claim")
     claim_next = run_commands.add_parser(
         "claim-next", help="atomically claim the next eligible queued run"
     )
@@ -75,6 +76,8 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--agent-id", help="optional agent assigned to the run")
     claim.add_argument("run_id")
     claim.add_argument("--agent-id", required=True, help="agent claiming the queued run")
+    release.add_argument("run_id")
+    release.add_argument("--agent-id", required=True, help="agent releasing the queued run")
     claim_next.add_argument(
         "--agent-id", required=True, help="agent claiming the next eligible run"
     )
@@ -98,7 +101,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="include only runs without an assigned agent",
     )
-    for command in (create, claim, claim_next, add_step, list_runs):
+    for command in (create, claim, release, claim_next, add_step, list_runs):
         command.add_argument(
             "--state-db",
             type=Path,
@@ -207,6 +210,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                 if coordinator.get(arguments.run_id) is None:
                     raise ValueError(f"run does not exist: {arguments.run_id}")
                 coordinator.claim(arguments.run_id, arguments.agent_id)
+                run_id = arguments.run_id
+            elif arguments.run_command == "release":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                coordinator.release_claim(arguments.run_id, arguments.agent_id)
                 run_id = arguments.run_id
             elif arguments.run_command == "claim-next":
                 claimed = coordinator.claim_next(arguments.agent_id)

@@ -112,6 +112,7 @@ Implemented foundation:
 - Operator-facing worker CLI that atomically claims the next eligible queued run without a known identifier.
 - Operator-facing queued-step cancellation that preserves its parent run, siblings, and durable positions.
 - Atomic release of an exact queued run claim without overwriting newer ownership or lifecycle state.
+- Operator-facing release of an exact queued run claim.
 - Operator-facing `run prune` CLI support with machine-readable removed-run and step-count confirmation.
 - Explicit endpoint and credential policy for OpenAI-compatible, LM Studio, and Ollama providers, with LM Studio and Ollama defaulting to their standard local base URLs and OpenAI-compatible requiring an explicit base URL.
 - Atomic durable run lifecycle transitions using a SQLite compare-and-swap so competing coordinators cannot overwrite a newer run revision.
@@ -119,7 +120,7 @@ Implemented foundation:
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0038 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0039 is complete.
 
 ## Development
 
