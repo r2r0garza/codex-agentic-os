@@ -357,6 +357,126 @@ def test_cancel_rolls_back_every_record_when_a_batch_write_fails(
     assert reloaded.list_steps("run-1") == (original_first, original_second)
 
 
+@pytest.mark.parametrize("parent_status", [RunStatus.QUEUED, RunStatus.RUNNING])
+def test_cancel_step_changes_only_one_queued_step(tmp_path, parent_status) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / f"{parent_status}.sqlite3"))
+    original_run = coordinator.create(
+        "run-1", objective="Build feature", agent_id="agent-1"
+    )
+    first = coordinator.add_step("run-1", "first", objective="Already done")
+    target = coordinator.add_step(
+        "run-1",
+        "target",
+        objective="Skip this",
+        command=("python", "-m", "pytest"),
+        timeout=30,
+    )
+    last = coordinator.add_step("run-1", "last", objective="Still queued")
+    coordinator.transition_step("first", StepStatus.RUNNING)
+    first = coordinator.transition_step(
+        "first", StepStatus.SUCCEEDED, output={"result": "ok"}
+    )
+    if parent_status is RunStatus.RUNNING:
+        original_run = coordinator.transition("run-1", RunStatus.RUNNING)
+
+    cancelled = coordinator.cancel_step("target")
+
+    assert cancelled == RunStep(
+        "target",
+        "run-1",
+        2,
+        "Skip this",
+        StepStatus.CANCELLED,
+        target.revision + 1,
+        command=("python", "-m", "pytest"),
+        timeout=30,
+    )
+    assert coordinator.get("run-1") == original_run
+    assert coordinator.list_steps("run-1") == (first, cancelled, last)
+
+    appended = coordinator.add_step("run-1", "appended", objective="Added later")
+    assert appended.position == 4
+
+
+@pytest.mark.parametrize(
+    "step_status",
+    [StepStatus.RUNNING, StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.CANCELLED],
+)
+def test_cancel_step_rejects_non_queued_steps_without_mutation(
+    tmp_path, step_status
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / f"{step_status}.sqlite3"))
+    original_run = coordinator.create("run-1", objective="Build feature")
+    coordinator.add_step("run-1", "step-1", objective="Work")
+    if step_status is StepStatus.RUNNING:
+        original_step = coordinator.transition_step("step-1", StepStatus.RUNNING)
+    elif step_status is StepStatus.CANCELLED:
+        original_step = coordinator.transition_step("step-1", StepStatus.CANCELLED)
+    else:
+        coordinator.transition_step("step-1", StepStatus.RUNNING)
+        original_step = coordinator.transition_step("step-1", step_status)
+
+    with pytest.raises(ValueError, match="step must be queued"):
+        coordinator.cancel_step("step-1")
+
+    assert coordinator.get("run-1") == original_run
+    assert coordinator.get_step("step-1") == original_step
+
+
+@pytest.mark.parametrize(
+    "parent_status", [RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED]
+)
+def test_cancel_step_rejects_terminal_parent_without_mutation(
+    tmp_path, parent_status
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / f"{parent_status}.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    original_step = coordinator.add_step("run-1", "step-1", objective="Work")
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    original_run = coordinator.transition("run-1", parent_status)
+
+    with pytest.raises(ValueError, match="run must be active"):
+        coordinator.cancel_step("step-1")
+
+    assert coordinator.get("run-1") == original_run
+    assert coordinator.get_step("step-1") == original_step
+
+
+def test_cancel_step_rejects_missing_or_orphaned_step_without_mutation(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+
+    with pytest.raises(KeyError, match="step does not exist"):
+        coordinator.cancel_step("missing")
+
+    orphan = store.put(
+        "step",
+        "orphan",
+        status=StepStatus.QUEUED,
+        payload={"run_id": "missing-run", "position": 1, "objective": "Orphan"},
+    )
+    with pytest.raises(KeyError, match="run does not exist"):
+        coordinator.cancel_step("orphan")
+
+    assert store.get("step", "orphan") == orphan
+
+
+def test_cancel_step_rejects_malformed_step_without_mutation(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    malformed = store.put(
+        "step",
+        "malformed",
+        status=StepStatus.QUEUED,
+        payload={"run_id": "", "position": 1, "objective": "Malformed"},
+    )
+
+    with pytest.raises(ValueError, match="invalid run id"):
+        coordinator.cancel_step("malformed")
+
+    assert store.get("step", "malformed") == malformed
+
+
 def test_start_next_step_dispatches_in_position_order(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Build feature")

@@ -391,6 +391,35 @@ class RunCoordinator:
             self.store.put("step", step_id, status=status, payload=payload)
         )
 
+    def cancel_step(self, step_id: str) -> RunStep:
+        """Cancel one queued step without changing its active parent run."""
+
+        current = self.get_step(step_id)
+        if current is None:
+            raise KeyError(f"step does not exist: {step_id}")
+        run = self.get(current.run_id)
+        if run is None:
+            raise KeyError(f"run does not exist: {current.run_id}")
+        if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
+            raise ValueError(f"run must be active to cancel a step: {run.run_id}")
+        if current.status is not StepStatus.QUEUED:
+            raise ValueError(f"step must be queued to cancel it: {step_id}")
+
+        payload: dict[str, object] = {
+            "run_id": current.run_id,
+            "position": current.position,
+            "objective": current.objective,
+        }
+        if current.command is not None:
+            payload["command"] = list(current.command)
+        if current.timeout is not None:
+            payload["timeout"] = current.timeout
+        return self._step(
+            self.store.put(
+                "step", step_id, status=StepStatus.CANCELLED, payload=payload
+            )
+        )
+
     def complete_step_from_result(
         self, step_id: str, result: ExecutionResult
     ) -> tuple[RunStep, AgentRun]:
