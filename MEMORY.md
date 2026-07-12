@@ -1,5 +1,18 @@
 # Automation Memory
 
+- Run: 2026-07-12T18:20:00Z — implementation, retrospective, and roadmap-horizon maintenance.
+- Active milestone at selection: Sprint 3 "Observable durable agent identities" (#3). Selected and closed its sole unblocked `agent-ready` issue, #46 (read-only agent inspection CLI, priority:3).
+- Completed: added `AgentRegistry.get()` and `agent inspect AGENT_ID [--state-db PATH]`. Inspection opens the state database read-only, emits the standard agent JSON payload, supports legacy `last_seen: null`, rejects missing databases, unknown agents, and empty identifiers cleanly, and preserves record revision/liveness. Added Plan 0056, DEVELOPMENT guidance, and refreshed the committed index.
+- Implementation commit `34e77ed` pushed to `origin/main`; issue #46 closed with verification evidence.
+- Verification: focused agent suite (36 passed); full suite (346 passed); index rebuilt/current (20 files, 479 symbols, 2635 relationships); `git diff --check` clean. Direct operator UAT passed for registration, heartbeat, stable listing, repeated byte-identical read-only inspection, legacy inspection, unknown identity rejection, and creation/inspection of a run owned by the registered identity.
+- Retrospective: created and closed issue #50 after every Sprint 3 exit criterion passed. No architecture decision changed and no remediation was required; Sprint 3 was closed.
+- Blocked review: no open `blocked` issues; nothing changed.
+- Roadmap horizon: 3 open milestones (Sprint 3, Sprint 4, Sprint 5) before closure, then 2. Invoked `codex-agentic-os-plan-sprints` and created Sprint 6 "Operator approval-gated execution" (#6, future, no issues), restoring exactly 3 open milestones: Sprint 4, Sprint 5, Sprint 6. No issue was created outside the active milestone.
+- Resulting active queue: Sprint 4 has no issues yet and requires a replenishment run derived from its durable model-backed step execution exit criteria; there is no eligible implementation issue until replenishment.
+- Final target: `main`; issue #46 and retrospective #50 closed; Sprint 3 closed; Sprint 6 created; implementation pushed. This MEMORY update is the remaining durable record to commit and push.
+
+---
+
 - Run: 2026-07-12T18:15:06Z — retrospective run plus roadmap-horizon maintenance.
 - Active milestone at selection: Sprint 2 "Reproducible sandbox execution context" (#2). All implementation issues were already closed, so this run performed no implementation.
 - Retrospective: created and closed issue #49 after every user-visible exit criterion passed. Direct operator UAT confirmed exact Docker and Podman composition of mounts, environment, absolute workdir, image, and isolated (`--network none`) versus explicitly enabled (`--network bridge`) policy. Invalid image, mount, environment, and workdir regression cases preserve queued run/step state before claim. No remediation milestone was required; Sprint 2 was closed.
@@ -44,43 +57,3 @@
 - Blocked review: no open `blocked` issues; nothing changed.
 - New active milestone: Sprint 2 "Reproducible sandbox execution context" (#2), with two ready priority:3 issues: #44 and #47. Recommended next: #44, oldest at equal priority.
 - Final target: `main`; implementation pushed. This MEMORY update is the remaining durable record to commit and push.
-
----
-
-- Run: 2026-07-12T17:05:00Z — implementation run.
-- Milestone restructuring noted: the repository now uses ordered GitHub milestones as
-  vertical sprints (Sprint 1 "Operator-ready provider workflow", Sprint 2 "Reproducible
-  sandbox execution context", Sprint 3 "Observable durable agent identities"), all open,
-  numbers 1–3, created 2026-07-12T16:41Z. The lowest-numbered open milestone (Sprint 1)
-  is now the active sprint boundary; issue selection is scoped to its assigned issues
-  only, not the flat repository-wide queue used by prior runs.
-- Active milestone: Sprint 1 (milestone #1), objective: an operator can discover
-  provider defaults, determine credential readiness without exposing secrets, and send
-  a controlled system-guided single-turn request through every supported adapter
-  family.
-- Selected issue: #43, optional provider-neutral `chat send --system TEXT` (the older
-  of the two `agent-ready` priority:3 issues assigned to Sprint 1; #45 remains).
-- Completed: added `--system TEXT` to `chat send`, reusing the adapter-level
-  system-message mapping already implemented in `chat.py` (Anthropic top-level
-  `system` field, Google `systemInstruction`, OpenAI-compatible `system` role
-  message) — no adapter changes needed. An empty or whitespace-only `--system` value
-  is rejected via `ValueError` before the provider spec is built or the adapter is
-  invoked, mirroring the existing empty-message check. Omitting `--system` leaves the
-  existing single-message payload unchanged. Extended `.plan/0047-chat-send-cli.md`
-  resume notes and added a `DEVELOPMENT.md` usage example. Refreshed the committed
-  index.
-- Implementation commit: `91f21fb`; pushed to `origin/main`; issue #43 auto-closed by
-  the commit's `Closes #43`; verification comment posted separately.
-- Verification: `pytest -q` (321 passed); `codex-agentic-os index build` then
-  `codex-agentic-os index check` (current — 20 files, 459 symbols, 2525
-  relationships); `git diff --check` clean; manual `chat send --help` and
-  empty-`--system` rejection checked by hand.
-- Blocked review: `gh issue list --label blocked` returned no results; nothing to
-  re-evaluate.
-- Resulting queue: Sprint 1 has 1 remaining unblocked `agent-ready` issue — #45,
-  provider credential readiness reporting (priority:3). Recommended next: #45, the
-  only remaining Sprint 1 issue; likely candidate for a near-term replenishment run to
-  keep Sprint 1's queue in the 3–7 target band, or direct implementation if still
-  agent-ready.
-- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
-  before this durable MEMORY.md update.
