@@ -108,10 +108,11 @@ Implemented foundation:
 - Operator-facing execution of one queued durable command through an explicitly selected Docker or Podman sandbox.
 - Operator-facing worker CLI that atomically claims the next eligible queued run without a known identifier.
 - Operator-facing queued-step cancellation that preserves its parent run, siblings, and durable positions.
+- Atomic release of an exact queued run claim without overwriting newer ownership or lifecycle state.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0032 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0033 is complete.
 
 ## Development
 

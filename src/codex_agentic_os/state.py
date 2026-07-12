@@ -209,6 +209,48 @@ class StateStore:
             connection.commit()
         return StateRecord("run", run_id, status, claimed_payload, claimed_revision)
 
+    def release_run_claim(self, run_id: str, agent_id: str) -> StateRecord:
+        """Clear an exact queued run assignment in a write transaction."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        self._validate_identity("run", run_id)
+        if not agent_id.strip():
+            raise ValueError("agent id must not be empty")
+        self.initialize()
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT status, payload, revision
+                FROM state_records
+                WHERE kind = 'run' AND key = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"state record does not exist: run/{run_id}")
+
+            status, encoded, revision = str(row[0]), str(row[1]), int(row[2])
+            payload = json.loads(encoded)
+            if status != "queued" or payload.get("agent_id") != agent_id:
+                raise StateConflictError(f"state run claim cannot be released: {run_id}")
+
+            released_payload = {**payload, "agent_id": None}
+            released_encoded = self._encode_payload(released_payload)
+            released_revision = revision + 1
+            connection.execute(
+                """
+                UPDATE state_records
+                SET payload = ?, revision = ?
+                WHERE kind = 'run' AND key = ?
+                """,
+                (released_encoded, released_revision, run_id),
+            )
+            connection.commit()
+        return StateRecord("run", run_id, status, released_payload, released_revision)
+
     def claim_next_run(self, agent_id: str) -> StateRecord | None:
         """Assign the first queued, unassigned run in stable key order."""
 

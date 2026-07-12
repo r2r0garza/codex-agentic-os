@@ -147,6 +147,71 @@ def test_claim_rejects_invalid_runs_without_mutation(tmp_path) -> None:
     assert coordinator.get("assigned") == assigned
 
 
+def test_release_claim_clears_exact_queued_assignment(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    claimed = coordinator.create(
+        "run-1", objective="Build feature", agent_id="agent-1"
+    )
+    unrelated = coordinator.create("run-2", objective="Other work", agent_id="agent-2")
+
+    released = coordinator.release_claim("run-1", "agent-1")
+
+    assert released == AgentRun(
+        run_id="run-1",
+        objective="Build feature",
+        status=RunStatus.QUEUED,
+        agent_id=None,
+        output=None,
+        revision=claimed.revision + 1,
+    )
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == released
+    assert reloaded.get("run-2") == unrelated
+
+
+def test_release_claim_rejects_invalid_runs_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    unassigned = coordinator.create("unassigned", objective="Unassigned")
+    mismatched = coordinator.create(
+        "mismatched", objective="Mismatched", agent_id="agent-1"
+    )
+    running = coordinator.create("running", objective="Running", agent_id="agent-1")
+    running = coordinator.transition("running", RunStatus.RUNNING)
+
+    for run, owner in (
+        (unassigned, "agent-1"),
+        (mismatched, "agent-2"),
+        (running, "agent-1"),
+    ):
+        with pytest.raises(ValueError, match="run claim cannot be released"):
+            coordinator.release_claim(run.run_id, owner)
+        assert coordinator.get(run.run_id) == run
+
+    with pytest.raises(KeyError, match="run does not exist"):
+        coordinator.release_claim("missing", "agent-1")
+    with pytest.raises(ValueError, match="agent id must not be empty"):
+        coordinator.release_claim("mismatched", " ")
+    assert coordinator.get("mismatched") == mismatched
+
+
+def test_competing_release_cannot_clear_changed_claim(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    first = RunCoordinator(StateStore(database))
+    competing = RunCoordinator(StateStore(database))
+    claimed = first.create("run-1", objective="Build feature", agent_id="agent-1")
+
+    released = first.release_claim("run-1", "agent-1")
+    reclaimed = first.claim("run-1", "agent-2")
+    with pytest.raises(ValueError, match="run claim cannot be released"):
+        competing.release_claim("run-1", "agent-1")
+
+    assert released.revision == claimed.revision + 1
+    assert reclaimed.revision == released.revision + 1
+    assert competing.get("run-1") == reclaimed
+
+
 def test_claim_next_selects_first_eligible_run_in_identifier_order(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     assigned = coordinator.create("run-a", objective="Assigned", agent_id="agent-0")

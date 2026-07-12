@@ -166,6 +166,19 @@ class RunCoordinator:
             raise KeyError(f"run does not exist: {run_id}") from error
         return self._run(record)
 
+    def release_claim(self, run_id: str, agent_id: str) -> AgentRun:
+        """Atomically release an exact queued run assignment."""
+
+        if not agent_id.strip():
+            raise ValueError("agent id must not be empty")
+        try:
+            record = self.store.release_run_claim(run_id, agent_id)
+        except StateConflictError as error:
+            raise ValueError(f"run claim cannot be released: {run_id}") from error
+        except KeyError as error:
+            raise KeyError(f"run does not exist: {run_id}") from error
+        return self._run(record)
+
     def claim_next(self, agent_id: str) -> AgentRun | None:
         """Atomically assign the first eligible queued run to an agent."""
 
