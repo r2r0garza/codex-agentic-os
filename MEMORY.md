@@ -6,7 +6,7 @@
 - Verification: direct CLI add/inspect across process restart passed; direct library missing-input and command-plus-message rejection preserved the run revision and empty step list; Python compilation passed; index rebuilt/current (20 files, 485 symbols, 2691 relationships); `git diff --check` passed. Focused and full pytest runs are blocked because the activated `.venv` has no pytest and dependency retrieval stalled until cancelled.
 - Blocked review: #52 and #53 remain correctly blocked on predecessor contracts; #51 remains open and `agent-ready` pending test verification. No labels changed.
 - Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed.
-- Final target: `main`; implementation commit `79b22be` pushed and issue progress recorded. Next eligible issue remains #51 until verification succeeds.
+- Final target: `main`; implementation commit `b44bbb0` pushed and issue progress recorded. Next eligible issue remains #51 until verification succeeds.
 
 ---
 
