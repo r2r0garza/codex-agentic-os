@@ -1,5 +1,28 @@
 # Automation Memory
 
+- Run: 2026-07-12T15:37:27Z — implementation run.
+- Selected issue: #41, explicit heartbeat/liveness tracking for registered agents.
+- Completed: `Agent` now exposes a durable ISO-8601 UTC `last_seen`; registration
+  initializes it, and injected-clock `AgentRegistry.heartbeat()` refreshes it while
+  preserving the record and rejecting unknown ids without mutation. Added `agent
+  heartbeat AGENT_ID [--state-db PATH]`, JSON output coverage for register/list/
+  heartbeat, Plan 0051, a DEVELOPMENT.md example, and refreshed the committed index.
+  Legacy agent payloads without `last_seen` remain readable as `None`; automatic
+  heartbeats, expiry, staleness, and liveness-based eligibility remain out of scope.
+- Implementation commit: `9081360`; pushed to `origin/main`; issue #41 auto-closed
+  by the commit's `Closes #41`; verification comment posted separately.
+- Verification: `pytest -q tests/test_runtime.py tests/test_agent_cli.py` (89 passed);
+  `pytest -q` (313 passed); clean index build then `codex-agentic-os index check`
+  (current — 19 files, 448 symbols, 2485 relationships); `git diff --check` clean.
+- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
+- Resulting queue: 3 unblocked `agent-ready` issues — #42, #43, and #44 (all
+  priority:3). Recommended next: #42, the oldest priority:3 issue; the queue is below
+  the 5–10 target band but above the backlog-only threshold.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
+  before this durable MEMORY.md update.
+
+---
+
 - Run: 2026-07-12T15:36:07Z — implementation run.
 - Selected issue: #40, environment variable passthrough to container sandbox execution.
 - Completed: added a validated `env: tuple[tuple[str, str], ...]` field to
@@ -98,36 +121,5 @@
 - Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
 - Resulting queue: 3 unblocked `agent-ready` issues — #35, #40, and #41 (all
   priority:3). Recommended next: #35, the oldest priority:3 issue.
-- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
-  before this durable MEMORY.md update.
-
----
-
-- Run: 2026-07-12T13:35:50Z — implementation run.
-- Selected issue: #39, chat CLI command wiring `chat.py` provider adapters.
-- Completed: added `codex-agentic-os chat send --provider KIND [--model]
-  [--base-url] [--api-key-env] [--temperature] [--max-tokens] MESSAGE`, building a
-  `ProviderSpec` that falls back to the matching `DEFAULT_PROVIDER_SPECS` entry for
-  `model`/`base_url`/`api_key_env` when a flag is omitted, then prints
-  `adapter_for(spec).complete(...)` as JSON. Empty message and unknown `--provider`
-  are rejected via argparse/`parser.error` before any network call. Extended
-  `main()`'s exception handling to also catch `RuntimeError` so adapter/transport
-  failures surface as a clean CLI error (also fixes the previously-uncaught
-  `ContainerSandbox` "backend is not installed" path on `run execute-next`). Added
-  Plan 0047, `tests/test_chat_cli.py` (compatible/Anthropic/Google success paths,
-  malformed-input rejection, adapter-error surfacing — all via an injected fake
-  `codex_agentic_os.chat.urlopen`, no live network calls), a DEVELOPMENT.md example,
-  and refreshed the index. No live API key was available, so only the
-  offline/injected-transport path was verified, per DEVELOPMENT.md's
-  provider-credential policy.
-- Implementation commit: `4f8ea3b`; pushed to `origin/main`; issue #39 auto-closed
-  by the commit's `Closes #39`; verification comment posted separately.
-- Verification: `pytest -q` (288 passed); clean index build (18 files, 414 symbols,
-  2334 relationships); `codex-agentic-os index check` current; `git diff --check`
-  clean.
-- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
-- Resulting queue: 4 unblocked `agent-ready` issues — #26, #35, #40, and #41 (all
-  priority:3). Below the 5-10 target band; recommend backlog replenishment soon.
-  Recommended next: #26, the oldest priority:3 issue.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree clean
   before this durable MEMORY.md update.
