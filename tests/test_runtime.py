@@ -330,14 +330,20 @@ def test_ordered_steps_are_durable_and_revisioned(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Build feature")
 
-    first = coordinator.add_step("run-1", "test", objective="Write tests")
-    second = coordinator.add_step("run-1", "code", objective="Implement feature")
+    first = coordinator.add_step(
+        "run-1", "test", objective="Write tests", command=("true",)
+    )
+    second = coordinator.add_step(
+        "run-1", "code", objective="Implement feature", command=("true",)
+    )
     coordinator.transition_step("test", StepStatus.RUNNING)
     completed = coordinator.transition_step(
         "test", StepStatus.SUCCEEDED, output={"tests": 3}
     )
 
-    assert first == RunStep("test", "run-1", 1, "Write tests", StepStatus.QUEUED, 1)
+    assert first == RunStep(
+        "test", "run-1", 1, "Write tests", StepStatus.QUEUED, 1, command=("true",)
+    )
     assert second.position == 2
     assert completed.revision == 3
     assert completed.output == {"tests": 3}
@@ -351,8 +357,12 @@ def test_competing_step_transitions_cannot_both_succeed_or_mutate_family(tmp_pat
     database = tmp_path / "state.sqlite3"
     creator = RunCoordinator(StateStore(database))
     run = creator.create("run-1", objective="Build feature")
-    original = creator.add_step("run-1", "step-1", objective="First")
-    sibling = creator.add_step("run-1", "step-2", objective="Second")
+    original = creator.add_step(
+        "run-1", "step-1", objective="First", command=("true",)
+    )
+    sibling = creator.add_step(
+        "run-1", "step-2", objective="Second", command=("true",)
+    )
     coordinators = (
         RunCoordinator(StateStore(database)),
         RunCoordinator(StateStore(database)),
@@ -392,6 +402,7 @@ def test_step_append_is_atomic_across_coordinators(tmp_path) -> None:
                 "run-1",
                 f"step-{index}",
                 objective=f"Work {index}",
+                command=("true",),
             )
             for index, coordinator in enumerate(coordinators, start=1)
         ]
@@ -411,7 +422,9 @@ def test_duplicate_step_append_preserves_original_across_coordinators(tmp_path) 
     )
 
     with pytest.raises(ValueError, match="step already exists: step-1"):
-        competing.add_step("run-1", "step-1", objective="Replacement")
+        competing.add_step(
+            "run-1", "step-1", objective="Replacement", command=("true",)
+        )
 
     assert first.get_step("step-1") == original
     assert original.revision == 1
@@ -512,9 +525,11 @@ def test_step_validation_and_terminal_run_rules(tmp_path) -> None:
     with pytest.raises(KeyError, match="run does not exist"):
         coordinator.add_step("missing", "step-1", objective="Work")
 
-    coordinator.add_step("run-1", "step-1", objective="Work")
+    coordinator.add_step("run-1", "step-1", objective="Work", command=("true",))
     with pytest.raises(ValueError, match="step already exists"):
-        coordinator.add_step("run-1", "step-1", objective="Duplicate")
+        coordinator.add_step(
+            "run-1", "step-1", objective="Duplicate", command=("true",)
+        )
     with pytest.raises(ValueError, match="invalid step transition"):
         coordinator.transition_step("step-1", StepStatus.SUCCEEDED)
     with pytest.raises(ValueError, match="output is only valid"):
@@ -532,11 +547,21 @@ def test_cancelling_run_cancels_active_steps_and_preserves_completed_steps(
     database = tmp_path / f"{run_status}.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Build feature")
-    coordinator.add_step("run-1", "completed", objective="Already done")
-    coordinator.add_step("run-1", "active", objective="In progress")
-    coordinator.add_step("run-1", "queued", objective="Not started")
-    coordinator.add_step("run-1", "failed", objective="Already failed")
-    coordinator.add_step("run-1", "cancelled", objective="Already cancelled")
+    coordinator.add_step(
+        "run-1", "completed", objective="Already done", command=("true",)
+    )
+    coordinator.add_step(
+        "run-1", "active", objective="In progress", command=("true",)
+    )
+    coordinator.add_step(
+        "run-1", "queued", objective="Not started", command=("true",)
+    )
+    coordinator.add_step(
+        "run-1", "failed", objective="Already failed", command=("true",)
+    )
+    coordinator.add_step(
+        "run-1", "cancelled", objective="Already cancelled", command=("true",)
+    )
     coordinator.transition_step("completed", StepStatus.RUNNING)
     completed = coordinator.transition_step(
         "completed", StepStatus.SUCCEEDED, output={"artifact": "result.json"}
@@ -555,8 +580,14 @@ def test_cancelling_run_cancels_active_steps_and_preserves_completed_steps(
     assert cancelled.status is RunStatus.CANCELLED
     assert RunCoordinator(StateStore(database)).list_steps("run-1") == (
         completed,
-        RunStep("active", "run-1", 2, "In progress", StepStatus.CANCELLED, 3),
-        RunStep("queued", "run-1", 3, "Not started", StepStatus.CANCELLED, 2),
+        RunStep(
+            "active", "run-1", 2, "In progress", StepStatus.CANCELLED, 3,
+            command=("true",),
+        ),
+        RunStep(
+            "queued", "run-1", 3, "Not started", StepStatus.CANCELLED, 2,
+            command=("true",),
+        ),
         failed,
         cancelled_step,
     )
@@ -582,8 +613,12 @@ def test_cancel_rolls_back_every_record_when_a_batch_write_fails(
     store = StateStore(database)
     coordinator = RunCoordinator(store)
     original_run = coordinator.create("run-1", objective="Build feature")
-    original_first = coordinator.add_step("run-1", "first", objective="First")
-    original_second = coordinator.add_step("run-1", "second", objective="Second")
+    original_first = coordinator.add_step(
+        "run-1", "first", objective="First", command=("true",)
+    )
+    original_second = coordinator.add_step(
+        "run-1", "second", objective="Second", command=("true",)
+    )
     original_write = store._put_on_connection
     writes = 0
 
@@ -610,7 +645,9 @@ def test_cancel_step_changes_only_one_queued_step(tmp_path, parent_status) -> No
     original_run = coordinator.create(
         "run-1", objective="Build feature", agent_id="agent-1"
     )
-    first = coordinator.add_step("run-1", "first", objective="Already done")
+    first = coordinator.add_step(
+        "run-1", "first", objective="Already done", command=("true",)
+    )
     target = coordinator.add_step(
         "run-1",
         "target",
@@ -618,7 +655,9 @@ def test_cancel_step_changes_only_one_queued_step(tmp_path, parent_status) -> No
         command=("python", "-m", "pytest"),
         timeout=30,
     )
-    last = coordinator.add_step("run-1", "last", objective="Still queued")
+    last = coordinator.add_step(
+        "run-1", "last", objective="Still queued", command=("true",)
+    )
     coordinator.transition_step("first", StepStatus.RUNNING)
     first = coordinator.transition_step(
         "first", StepStatus.SUCCEEDED, output={"result": "ok"}
@@ -641,7 +680,9 @@ def test_cancel_step_changes_only_one_queued_step(tmp_path, parent_status) -> No
     assert coordinator.get("run-1") == original_run
     assert coordinator.list_steps("run-1") == (first, cancelled, last)
 
-    appended = coordinator.add_step("run-1", "appended", objective="Added later")
+    appended = coordinator.add_step(
+        "run-1", "appended", objective="Added later", command=("true",)
+    )
     assert appended.position == 4
 
 
@@ -654,7 +695,7 @@ def test_cancel_step_rejects_non_queued_steps_without_mutation(
 ) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / f"{step_status}.sqlite3"))
     original_run = coordinator.create("run-1", objective="Build feature")
-    coordinator.add_step("run-1", "step-1", objective="Work")
+    coordinator.add_step("run-1", "step-1", objective="Work", command=("true",))
     if step_status is StepStatus.RUNNING:
         original_step = coordinator.transition_step("step-1", StepStatus.RUNNING)
     elif step_status is StepStatus.CANCELLED:
@@ -678,7 +719,9 @@ def test_cancel_step_rejects_terminal_parent_without_mutation(
 ) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / f"{parent_status}.sqlite3"))
     coordinator.create("run-1", objective="Build feature")
-    original_step = coordinator.add_step("run-1", "step-1", objective="Work")
+    original_step = coordinator.add_step(
+        "run-1", "step-1", objective="Work", command=("true",)
+    )
     coordinator.transition("run-1", RunStatus.RUNNING)
     original_run = coordinator.transition("run-1", parent_status)
 
@@ -727,13 +770,18 @@ def test_cancel_step_rejects_malformed_step_without_mutation(tmp_path) -> None:
 def test_start_next_step_dispatches_in_position_order(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Build feature")
-    coordinator.add_step("run-1", "first", objective="First command")
-    coordinator.add_step("run-1", "second", objective="Second command")
+    coordinator.add_step(
+        "run-1", "first", objective="First command", command=("true",)
+    )
+    coordinator.add_step(
+        "run-1", "second", objective="Second command", command=("true",)
+    )
 
     first = coordinator.start_next_step("run-1")
 
     assert first == RunStep(
-        "first", "run-1", 1, "First command", StepStatus.RUNNING, 2
+        "first", "run-1", 1, "First command", StepStatus.RUNNING, 2,
+        command=("true",),
     )
     assert coordinator.get("run-1") == AgentRun(
         "run-1", "Build feature", RunStatus.RUNNING, 2
@@ -755,7 +803,9 @@ def test_start_next_step_rolls_back_first_dispatch_when_batch_write_fails(
     store = StateStore(database)
     coordinator = RunCoordinator(store)
     original_run = coordinator.create("run-1", objective="Build feature")
-    original_step = coordinator.add_step("run-1", "first", objective="First command")
+    original_step = coordinator.add_step(
+        "run-1", "first", objective="First command", command=("true",)
+    )
     original_write = store._put_on_connection
     writes = 0
 
@@ -785,8 +835,12 @@ def test_start_next_step_validates_run_and_single_active_step(tmp_path) -> None:
     coordinator.create("run-1", objective="Build feature")
     assert coordinator.start_next_step("run-1") is None
 
-    coordinator.add_step("run-1", "first", objective="First command")
-    coordinator.add_step("run-1", "second", objective="Second command")
+    coordinator.add_step(
+        "run-1", "first", objective="First command", command=("true",)
+    )
+    coordinator.add_step(
+        "run-1", "second", objective="Second command", command=("true",)
+    )
     coordinator.start_next_step("run-1")
     with pytest.raises(ValueError, match="already has a running step"):
         coordinator.start_next_step("run-1")
@@ -799,8 +853,12 @@ def test_start_next_step_validates_run_and_single_active_step(tmp_path) -> None:
 def test_sandbox_results_complete_steps_and_run_without_backend_coupling(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Build feature")
-    coordinator.add_step("run-1", "first", objective="First command")
-    coordinator.add_step("run-1", "second", objective="Second command")
+    coordinator.add_step(
+        "run-1", "first", objective="First command", command=("true",)
+    )
+    coordinator.add_step(
+        "run-1", "second", objective="Second command", command=("true",)
+    )
     coordinator.transition("run-1", RunStatus.RUNNING)
     coordinator.transition_step("first", StepStatus.RUNNING)
 
@@ -832,7 +890,9 @@ def test_sandbox_results_complete_steps_and_run_without_backend_coupling(tmp_pat
 def test_failed_sandbox_result_fails_step_and_run(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Build feature")
-    coordinator.add_step("run-1", "command", objective="Run command")
+    coordinator.add_step(
+        "run-1", "command", objective="Run command", command=("true",)
+    )
     coordinator.transition("run-1", RunStatus.RUNNING)
     coordinator.transition_step("command", StepStatus.RUNNING)
 
@@ -861,7 +921,9 @@ def test_terminal_result_rolls_back_step_and_run_when_batch_write_fails(
     store = StateStore(database)
     coordinator = RunCoordinator(store)
     coordinator.create("run-1", objective="Build feature")
-    coordinator.add_step("run-1", "command", objective="Run command")
+    coordinator.add_step(
+        "run-1", "command", objective="Run command", command=("true",)
+    )
     original_step = coordinator.start_next_step("run-1")
     original_run = coordinator.get("run-1")
     original_write = store._put_on_connection
@@ -890,7 +952,9 @@ def test_terminal_result_rolls_back_step_and_run_when_batch_write_fails(
 def test_execution_result_requires_running_run_and_step(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Build feature")
-    coordinator.add_step("run-1", "command", objective="Run command")
+    coordinator.add_step(
+        "run-1", "command", objective="Run command", command=("true",)
+    )
     result = SandboxResult(("docker", "run", "true"), 0, "", "")
 
     with pytest.raises(ValueError, match="run must be running"):
@@ -950,7 +1014,12 @@ def test_execute_next_step_records_nonzero_result(tmp_path) -> None:
 def test_execute_next_step_rejects_non_command_without_mutation(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     queued = coordinator.create("run-1", objective="Coordinate work")
-    step = coordinator.add_step("run-1", "manual", objective="Review output")
+    step = coordinator.add_step(
+        "run-1",
+        "manual",
+        objective="Review output",
+        message=ProviderMessage(provider="local", content="Review output"),
+    )
 
     with pytest.raises(ValueError, match="does not have a command"):
         coordinator.execute_next_step("run-1", object())
@@ -1077,10 +1146,16 @@ def test_recover_running_step_rolls_back_step_and_run_when_batch_write_fails(
 def test_prune_removes_terminal_run_and_steps_only(tmp_path, status) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("remove", objective="Completed work")
-    first = coordinator.add_step("remove", "first", objective="First")
-    second = coordinator.add_step("remove", "second", objective="Second")
+    first = coordinator.add_step(
+        "remove", "first", objective="First", command=("true",)
+    )
+    second = coordinator.add_step(
+        "remove", "second", objective="Second", command=("true",)
+    )
     coordinator.create("keep", objective="Unrelated work")
-    kept_step = coordinator.add_step("keep", "kept", objective="Keep")
+    kept_step = coordinator.add_step(
+        "keep", "kept", objective="Keep", command=("true",)
+    )
     if status is RunStatus.CANCELLED:
         terminal = coordinator.cancel("remove")
     else:
@@ -1102,7 +1177,9 @@ def test_prune_removes_terminal_run_and_steps_only(tmp_path, status) -> None:
 def test_prune_rejects_active_and_missing_runs_without_mutation(tmp_path, status) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     original = coordinator.create("active", objective="Active work")
-    step = coordinator.add_step("active", "step", objective="Pending")
+    step = coordinator.add_step(
+        "active", "step", objective="Pending", command=("true",)
+    )
     if status is RunStatus.RUNNING:
         original = coordinator.transition("active", status)
 
@@ -1120,8 +1197,8 @@ def test_prune_rolls_back_when_deletion_fails(tmp_path, monkeypatch) -> None:
     store = StateStore(database)
     coordinator = RunCoordinator(store)
     coordinator.create("run-1", objective="Completed work")
-    coordinator.add_step("run-1", "first", objective="First")
-    coordinator.add_step("run-1", "second", objective="Second")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.add_step("run-1", "second", objective="Second", command=("true",))
     coordinator.cancel("run-1")
     original_run = coordinator.get("run-1")
     original_steps = coordinator.list_steps("run-1")

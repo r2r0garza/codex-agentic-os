@@ -7,6 +7,7 @@ import pytest
 from codex_agentic_os.cli import main
 from codex_agentic_os.runtime import (
     AgentRegistry,
+    ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
     StepStatus,
@@ -133,8 +134,8 @@ def test_cli_transitions_run_through_terminal_statuses_with_ordered_steps(
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Operate lifecycle")
-    coordinator.add_step("run-1", "step-2", objective="Second")
-    coordinator.add_step("run-1", "step-1", objective="First")
+    coordinator.add_step("run-1", "step-2", objective="Second", command=("true",))
+    coordinator.add_step("run-1", "step-1", objective="First", command=("true",))
 
     main(["run", "transition", "run-1", "running", "--state-db", str(database)])
     running = json.loads(capsys.readouterr().out)
@@ -233,8 +234,13 @@ def test_cli_transitions_step_through_terminal_status_with_durable_output(
         "step-1",
         objective="Selected step",
         command=("python", "-V") if with_command else None,
+        message=None if with_command else ProviderMessage(
+            provider="local", content="Selected step"
+        ),
     )
-    sibling = coordinator.add_step("run-1", "step-2", objective="Untouched sibling")
+    sibling = coordinator.add_step(
+        "run-1", "step-2", objective="Untouched sibling", command=("true",)
+    )
 
     main(["run", "transition-step", "step-1", "running", "--state-db", str(database)])
     running = json.loads(capsys.readouterr().out)
@@ -272,7 +278,9 @@ def test_cli_transition_step_rejects_invalid_output_without_mutation(
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Original")
-    original = coordinator.add_step("run-1", "step-1", objective="Original")
+    original = coordinator.add_step(
+        "run-1", "step-1", objective="Original", command=("true",)
+    )
 
     with pytest.raises(SystemExit) as exit_info:
         main(
@@ -294,7 +302,9 @@ def test_cli_transition_step_rejections_do_not_mutate_state(
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Original")
-    original = coordinator.add_step("run-1", "step-1", objective="Original")
+    original = coordinator.add_step(
+        "run-1", "step-1", objective="Original", command=("true",)
+    )
     step_id = "missing" if setup == "missing" else "step-1"
     arguments = ["run", "transition-step", step_id, "succeeded"]
     if setup == "invalid-output-edge":
@@ -415,20 +425,24 @@ def test_cli_add_step_accepts_hyphen_prefixed_command_after_double_dash(
     assert payload["steps"][0]["command"] == ["printf", "-n", "done"]
 
 
-def test_cli_add_step_rejects_bare_double_dash_as_objective_only(tmp_path, capsys) -> None:
+def test_cli_add_step_rejects_bare_double_dash_without_message(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
-    coordinator.create("run-1", objective="Execute durable work")
+    original_run = coordinator.create("run-1", objective="Execute durable work")
 
-    main(
-        [
-            "run", "add-step", "run-1", "step-1", "--objective", "Checkpoint",
-            "--state-db", str(database), "--",
-        ]
-    )
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "add-step", "run-1", "step-1", "--objective", "Checkpoint",
+                "--state-db", str(database), "--",
+            ]
+        )
 
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["steps"][0]["command"] is None
+    assert exit_info.value.code == 2
+    assert "exactly one of command or provider message" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.list_steps("run-1") == ()
 
 
 def test_cli_rejects_unrecognized_arguments_outside_add_step(tmp_path, capsys) -> None:
@@ -447,37 +461,7 @@ def test_cli_rejects_unrecognized_arguments_outside_add_step(tmp_path, capsys) -
     assert not database.exists()
 
 
-def test_cli_adds_objective_only_step_and_matches_inspection(tmp_path, capsys) -> None:
-    database = tmp_path / "state.sqlite3"
-    coordinator = RunCoordinator(StateStore(database))
-    run = coordinator.create("run-1", objective="Coordinate durable work")
-
-    main(
-        [
-            "run", "add-step", "run-1", "step-1", "--objective", "Coordination checkpoint",
-            "--state-db", str(database),
-        ]
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["run"]["revision"] == run.revision
-    assert payload["steps"][0] == {
-        "command": None,
-        "objective": "Coordination checkpoint",
-        "output": None,
-        "position": 1,
-        "revision": 1,
-        "run_id": "run-1",
-        "status": "queued",
-        "step_id": "step-1",
-        "timeout": None,
-    }
-
-    main(["run", "inspect", "run-1", "--state-db", str(database)])
-    assert json.loads(capsys.readouterr().out) == payload
-
-
-def test_cli_adds_mixed_objective_only_and_command_steps_in_order(tmp_path, capsys) -> None:
+def test_cli_adds_mixed_command_and_provider_message_steps_in_order(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Mixed durable work")
@@ -485,6 +469,7 @@ def test_cli_adds_mixed_objective_only_and_command_steps_in_order(tmp_path, caps
     main(
         [
             "run", "add-step", "run-1", "step-1", "--objective", "Checkpoint",
+            "--provider", "local", "--message", "Checkpoint",
             "--state-db", str(database),
         ]
     )
@@ -499,6 +484,7 @@ def test_cli_adds_mixed_objective_only_and_command_steps_in_order(tmp_path, caps
     main(
         [
             "run", "add-step", "run-1", "step-3", "--objective", "Final checkpoint",
+            "--provider", "local", "--message", "Final checkpoint",
             "--state-db", str(database),
         ]
     )
@@ -507,8 +493,10 @@ def test_cli_adds_mixed_objective_only_and_command_steps_in_order(tmp_path, caps
     assert [step["step_id"] for step in payload["steps"]] == ["step-1", "step-2", "step-3"]
     assert [step["position"] for step in payload["steps"]] == [1, 2, 3]
     assert payload["steps"][0]["command"] is None
+    assert payload["steps"][0]["message"]["content"] == "Checkpoint"
     assert payload["steps"][1]["command"] == ["true"]
     assert payload["steps"][2]["command"] is None
+    assert payload["steps"][2]["message"]["content"] == "Final checkpoint"
 
     main(["run", "inspect", "run-1", "--state-db", str(database)])
     assert json.loads(capsys.readouterr().out) == payload
@@ -540,8 +528,8 @@ def test_cli_claims_run_and_prints_ordered_steps(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     original = coordinator.create("run-1", objective="Claim work")
-    coordinator.add_step("run-1", "step-1", objective="First")
-    coordinator.add_step("run-1", "step-2", objective="Second")
+    coordinator.add_step("run-1", "step-1", objective="First", command=("true",))
+    coordinator.add_step("run-1", "step-2", objective="Second", command=("true",))
 
     main(["run", "claim", "run-1", "--agent-id", "agent-7", "--state-db", str(database)])
 
@@ -602,8 +590,8 @@ def test_cli_releases_run_claim_and_prints_ordered_steps(tmp_path, capsys) -> No
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     original = coordinator.create("run-1", objective="Release work", agent_id="agent-7")
-    coordinator.add_step("run-1", "step-1", objective="First")
-    coordinator.add_step("run-1", "step-2", objective="Second")
+    coordinator.add_step("run-1", "step-1", objective="First", command=("true",))
+    coordinator.add_step("run-1", "step-2", objective="Second", command=("true",))
 
     main(["run", "release", "run-1", "--agent-id", "agent-7", "--state-db", str(database)])
 
@@ -668,8 +656,8 @@ def test_cli_claims_next_eligible_run_and_prints_ordered_steps(tmp_path, capsys)
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-b", objective="Later")
     original = coordinator.create("run-a", objective="Claim next work")
-    coordinator.add_step("run-a", "step-1", objective="First")
-    coordinator.add_step("run-a", "step-2", objective="Second")
+    coordinator.add_step("run-a", "step-1", objective="First", command=("true",))
+    coordinator.add_step("run-a", "step-2", objective="Second", command=("true",))
 
     main(["run", "claim-next", "--agent-id", "agent-7", "--state-db", str(database)])
 
@@ -990,8 +978,12 @@ def test_cli_inspects_run_and_steps_in_position_order(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Inspect durable state", agent_id="agent-1")
-    coordinator.add_step("run-1", "step-b", objective="Second in lexical order")
-    coordinator.add_step("run-1", "step-a", objective="First in lexical order")
+    coordinator.add_step(
+        "run-1", "step-b", objective="Second in lexical order", command=("true",)
+    )
+    coordinator.add_step(
+        "run-1", "step-a", objective="First in lexical order", command=("true",)
+    )
     coordinator.transition("run-1", RunStatus.RUNNING)
     coordinator.transition_step("step-b", StepStatus.RUNNING)
     coordinator.transition_step("step-b", StepStatus.SUCCEEDED, output={"result": "ok"})
@@ -1070,7 +1062,7 @@ def test_cli_inspects_active_step_statuses(tmp_path, capsys, status) -> None:
     database = tmp_path / f"{status.value}.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Inspect active step")
-    coordinator.add_step("run-1", "step-1", objective="Active")
+    coordinator.add_step("run-1", "step-1", objective="Active", command=("true",))
     if status is StepStatus.RUNNING:
         coordinator.transition_step("step-1", status)
 
@@ -1117,8 +1109,12 @@ def test_cli_cancels_run_and_active_steps(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Cancel durable work")
-    coordinator.add_step("run-1", "completed", objective="Already complete")
-    coordinator.add_step("run-1", "active", objective="Still running")
+    coordinator.add_step(
+        "run-1", "completed", objective="Already complete", command=("true",)
+    )
+    coordinator.add_step(
+        "run-1", "active", objective="Still running", command=("true",)
+    )
     coordinator.transition_step("completed", StepStatus.RUNNING)
     coordinator.transition_step(
         "completed", StepStatus.SUCCEEDED, output={"artifact": "result.json"}
@@ -1156,9 +1152,15 @@ def test_cli_cancels_one_queued_step_and_prints_ordered_parent(
     database = tmp_path / f"{parent_status.value}.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     original_run = coordinator.create("run-1", objective="Cancel selected work")
-    first = coordinator.add_step("run-1", "first", objective="First")
-    target = coordinator.add_step("run-1", "target", objective="Skip")
-    last = coordinator.add_step("run-1", "last", objective="Last")
+    first = coordinator.add_step(
+        "run-1", "first", objective="First", command=("true",)
+    )
+    target = coordinator.add_step(
+        "run-1", "target", objective="Skip", command=("true",)
+    )
+    last = coordinator.add_step(
+        "run-1", "last", objective="Last", command=("true",)
+    )
     if parent_status is RunStatus.RUNNING:
         original_run = coordinator.transition("run-1", RunStatus.RUNNING)
 
@@ -1225,7 +1227,9 @@ def test_cli_cancel_step_rejections_do_not_mutate_state(
         )
     else:
         original_run = coordinator.create("run-1", objective="Work")
-        original_step = coordinator.add_step("run-1", "step-1", objective="Target")
+        original_step = coordinator.add_step(
+            "run-1", "step-1", objective="Target", command=("true",)
+        )
         if setup == "terminal-parent":
             coordinator.transition("run-1", RunStatus.RUNNING)
             original_run = coordinator.transition("run-1", RunStatus.SUCCEEDED)
@@ -1570,15 +1574,24 @@ def test_cli_execute_next_help_identifies_network_as_explicit_opt_in(capsys) -> 
     assert "isolated" in output
 
 
-@pytest.mark.parametrize("failure", ["coordination", "exception"])
+@pytest.mark.parametrize("failure", ["message", "exception"])
 def test_cli_execute_next_failure_preserves_recoverable_state(
     tmp_path, monkeypatch, capsys, failure
 ) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     queued_run = coordinator.create("run-1", objective="Execute durable work")
-    command = None if failure == "coordination" else ("sleep", "10")
-    queued_step = coordinator.add_step("run-1", "step-1", objective="Work", command=command)
+    if failure == "message":
+        queued_step = coordinator.add_step(
+            "run-1",
+            "step-1",
+            objective="Work",
+            message=ProviderMessage(provider="local", content="Work"),
+        )
+    else:
+        queued_step = coordinator.add_step(
+            "run-1", "step-1", objective="Work", command=("sleep", "10")
+        )
 
     if failure == "exception":
         def execute(self, argv, *, timeout=None):
@@ -1592,7 +1605,7 @@ def test_cli_execute_next_failure_preserves_recoverable_state(
         ])
 
     reloaded = RunCoordinator(StateStore(database))
-    if failure == "coordination":
+    if failure == "message":
         assert error.value.code == 2
         assert "next step does not have a command" in capsys.readouterr().err
         assert reloaded.get("run-1") == queued_run
@@ -1618,9 +1631,13 @@ def test_cli_prunes_one_terminal_run_and_reports_step_count(
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Finished work")
     for index in range(step_count):
-        coordinator.add_step("run-1", f"step-{index}", objective="Work")
+        coordinator.add_step(
+            "run-1", f"step-{index}", objective="Work", command=("true",)
+        )
     coordinator.create("keep", objective="Unrelated work")
-    kept_step = coordinator.add_step("keep", "kept", objective="Keep")
+    kept_step = coordinator.add_step(
+        "keep", "kept", objective="Keep", command=("true",)
+    )
     if status is RunStatus.CANCELLED:
         coordinator.cancel("run-1")
     else:
@@ -1670,7 +1687,9 @@ def test_cli_prune_rejects_active_runs_without_mutation(tmp_path, capsys, status
     database = tmp_path / f"{status.value}.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     original_run = coordinator.create("run-1", objective="Active work")
-    original_step = coordinator.add_step("run-1", "step-1", objective="Pending")
+    original_step = coordinator.add_step(
+        "run-1", "step-1", objective="Pending", command=("true",)
+    )
     if status is RunStatus.RUNNING:
         original_run = coordinator.transition("run-1", status)
 
