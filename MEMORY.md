@@ -4,9 +4,10 @@
 - Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). Selected its sole unblocked `agent-ready` issue, #56 (record mixed-step lifecycle provenance atomically, priority:2).
 - Completed: extended `run_history` with nullable `step_id` (including writable-store migration); every command/provider step start, success, failure, cancellation, and recovery now appends non-sensitive step/run history inside the same transaction as its state mutation. Coupled run/step operations validate expected status and revision under `BEGIN IMMEDIATE`, preventing stale or competing attempts from producing state changes or phantom entries. Mixed command/provider reconstruction survives a fresh store instance. Added Plan 0061.
 - Verification: focused state/runtime suite 123 passed; full suite 361 passed; index rebuilt/current (20 files, 529 symbols, 2925 relationships); `git diff --check` clean. Direct tests cover mixed execution categories, step identity, restart reconstruction, and a rejected stale batch leaving state/history unchanged.
-- Blocked review: #57 was blocked only on #55/#56; after #56 closes, remove `blocked` and add `agent-ready`. No other blocked issues are open.
+- Implementation commit `027ef7d` pushed to `origin/main`; issue #56 auto-closed by its `Closes #56` trailer, with a follow-up comment recording verification evidence.
+- Blocked review: #57 was blocked only on #55/#56, now both closed, so `blocked` was removed and `agent-ready` added. No other blocked issues are open.
 - Roadmap horizon: 3 open milestones before and after (Sprint 5 active; Sprint 6 and Sprint 7 future); no planning run needed.
-- Final target: `main`; implementation commit/push and issue closure pending this record. Next eligible issue: #57. Worktree contains only this run's focused changes.
+- Final target: `main`; next eligible issue: #57. Worktree dirty only for this final MEMORY update until committed and pushed.
 
 ---
 
