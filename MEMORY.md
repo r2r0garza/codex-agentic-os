@@ -1,5 +1,17 @@
 # Automation Memory
 
+- Run: 2026-07-12T23:00:00Z — implementation run.
+- Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). Selected its sole unblocked `agent-ready` issue, #57 (inspect mixed-run history from the CLI, priority:3).
+- Completed: added a read-only `run history <run_id>` CLI subcommand as a thin wrapper over the existing `RunCoordinator.list_history()`/`StateStore.list_run_history()` read contract from #55/#56. Reused the `run inspect`/`run list` read-only pattern (`read_only=True` StateStore, explicit `coordinator.get(run_id) is None` check raising the standard `ValueError`/exit-2 rather than the coordinator's `KeyError`). Output is stable JSON in sequence order with run/step id, transition, resulting status, agent id when known, and execution kind, excluding credentials, raw environment values, command arguments, provider request bodies, and terminal outputs. Added Plan 0062 and documented the command in DEVELOPMENT.md.
+- Verification: 5 new focused CLI tests (stable order, mixed command/provider reconstruction across separate `main()` process invocations against the same database, missing-run rejection, missing-database rejection, no-mutation); full suite 366 passed (up from 361); index rebuilt/current (20 files, 538 symbols, 2975 relationships); `git diff --check` clean. Live CLI UAT against a real SQLite database confirmed stable output and explicit missing-run/missing-database rejection without writes.
+- Implementation commit `4dd4394` pushed to `origin/main`; issue #57 auto-closed by its `Closes #57` trailer, with a follow-up comment recording verification evidence.
+- Blocked review: no `blocked` issues exist anywhere in the repository; nothing to change.
+- Sprint 5 now has 0 open issues (all three closed); it remains the active milestone awaiting a retrospective run, not yet eligible for implementation.
+- Roadmap horizon: 3 open milestones before and after (Sprint 5 active/awaiting retrospective; Sprint 6 and Sprint 7 future); no planning run needed.
+- Final target: `main`; next eligible action is a Sprint 5 retrospective (no ready implementation issue remains). Worktree dirty only for this final MEMORY update until committed and pushed.
+
+---
+
 - Run: 2026-07-12T22:36:55Z — implementation and unblock run.
 - Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). Selected its sole unblocked `agent-ready` issue, #56 (record mixed-step lifecycle provenance atomically, priority:2).
 - Completed: extended `run_history` with nullable `step_id` (including writable-store migration); every command/provider step start, success, failure, cancellation, and recovery now appends non-sensitive step/run history inside the same transaction as its state mutation. Coupled run/step operations validate expected status and revision under `BEGIN IMMEDIATE`, preventing stale or competing attempts from producing state changes or phantom entries. Mixed command/provider reconstruction survives a fresh store instance. Added Plan 0061.
@@ -41,14 +53,3 @@
 - Blocked review: no `blocked` issues exist anywhere in the repository; nothing to change.
 - Roadmap horizon: closing Sprint 4 left 2 open milestones (Sprint 5, Sprint 6), below the healthy horizon of 3. Ran `codex-agentic-os-plan-sprints` in the same session; evidence showed Sprint 3 durably persists agent heartbeat liveness (`last_seen`) but nothing in the runtime ever acts on it — a run claimed by a crashed/replaced agent has no compare-and-swap-safe reassignment path, directly gapping VISION.md's "worker replacement" and "coordinate multiple agents without conflicting ownership" requirements. Created Sprint 7 "Stale-claim run reassignment" (#7) as a future (non-active) milestone with objective, exit criteria, scope boundary, dependencies, and rationale; no issues created (only the active milestone gets executable issues). Horizon before: 2 open (5, 6). Horizon after: 3 open (5 active, 6, 7 future).
 - Final target: `main`; next eligible issue: none yet — Sprint 5 "Auditable mixed-step run history" (#5) is now active with 0 issues, so the next run should replenish it before any implementation. Worktree dirty only for this MEMORY record until committed and pushed.
-
----
-
-- Run: 2026-07-12T20:37:10Z — implementation and closure run.
-- Active milestone: Sprint 4 "Durable model-backed step execution" (#4). Selected and closed its sole unblocked `agent-ready` issue, #52 (execute durable model steps through provider adapters, priority:2).
-- Completed: `execute_next_step()` now dispatches queued provider-message steps through an injected adapter resolver, preserves provider/model/system/temperature/max-token inputs in provider configuration and the provider-neutral chat request, and durably persists normalized content/model/raw response output. `run execute-next` resolves built-in provider configuration for model steps without requiring `--sandbox`; command steps retain the existing sandbox path. Added Plan 0058 and updated DEVELOPMENT runtime guidance.
-- Verification: focused runtime/CLI suite 217 passed; full suite 349 passed; exactly-once contention test passed; Python compilation passed; index rebuilt/current (20 files, 499 symbols, 2745 relationships); `git diff --check` passed.
-- Implementation commit `bc360b0` pushed to `origin/main`; issue #52 closed with verification evidence.
-- Blocked review: #53's dependencies (#51/#52) are now resolved, so `blocked` was removed and `agent-ready` added. Sprint 4 now has one ready issue: #53.
-- Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed.
-- Final target: `main`; next eligible issue is #53. Worktree dirty only for this MEMORY record until committed and pushed.
