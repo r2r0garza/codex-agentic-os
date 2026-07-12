@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+import posixpath
 import subprocess
 from typing import Callable, Sequence
 
@@ -27,6 +28,7 @@ class SandboxSpec:
     memory_limit: str | None = "4g"
     mounts: tuple[tuple[str, str], ...] = ()
     env: tuple[tuple[str, str], ...] = ()
+    working_dir: str | None = None
 
     def __post_init__(self) -> None:
         """Validate host-to-container bind mount pairs and environment variables."""
@@ -41,6 +43,12 @@ class SandboxSpec:
                 isinstance(part, str) and part for part in pair
             ):
                 raise ValueError("sandbox env vars require non-empty key and value")
+        if self.working_dir is not None and (
+            not isinstance(self.working_dir, str)
+            or not self.working_dir.strip()
+            or not posixpath.isabs(self.working_dir)
+        ):
+            raise ValueError("sandbox working directory must be a non-empty absolute path")
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
@@ -107,6 +115,8 @@ class ContainerSandbox:
             command.extend(("--volume", f"{host_path}:{container_path}"))
         for key, value in self.spec.env:
             command.extend(("--env", f"{key}={value}"))
+        if self.spec.working_dir is not None:
+            command.extend(("--workdir", self.spec.working_dir))
         command.append(self.spec.image)
         command.extend(argv)
         return tuple(command)

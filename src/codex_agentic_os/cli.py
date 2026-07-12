@@ -197,6 +197,10 @@ def _parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="pass an environment variable into the container; repeat for multiple",
     )
+    execute_next.add_argument(
+        "--workdir",
+        help="absolute working directory inside the container",
+    )
 
     agent = commands.add_parser("agent", help="manage durable agent identities")
     agent_commands = agent.add_subparsers(dest="agent_command", required=True)
@@ -505,10 +509,22 @@ def main(argv: Sequence[str] | None = None) -> None:
                     raise ValueError("sandbox image must not be empty")
                 mounts = _parse_mounts(arguments.mount)
                 env = _parse_env(arguments.env)
+                working_dir = arguments.workdir
                 spec = (
-                    SandboxSpec(kind=kind, image=arguments.image, mounts=mounts, env=env)
+                    SandboxSpec(
+                        kind=kind,
+                        image=arguments.image,
+                        mounts=mounts,
+                        env=env,
+                        working_dir=working_dir,
+                    )
                     if arguments.image is not None
-                    else SandboxSpec(kind=kind, mounts=mounts, env=env)
+                    else SandboxSpec(
+                        kind=kind,
+                        mounts=mounts,
+                        env=env,
+                        working_dir=working_dir,
+                    )
                 )
                 result = coordinator.execute_next_step(
                     arguments.run_id,

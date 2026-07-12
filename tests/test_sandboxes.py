@@ -133,6 +133,41 @@ def test_container_sandbox_no_env_is_no_op() -> None:
     assert "--env" not in ContainerSandbox(spec).command(("true",))
 
 
+@pytest.mark.parametrize("kind", [SandboxKind.DOCKER, SandboxKind.PODMAN])
+def test_container_sandbox_renders_workdir_after_env_before_image(
+    kind: SandboxKind,
+) -> None:
+    spec = SandboxSpec(
+        kind=kind,
+        mounts=(("/host/repo", "/workspace"),),
+        env=(("DEBUG", "1"),),
+        working_dir="/workspace/src",
+    )
+
+    assert ContainerSandbox(spec).command(("true",))[-8:] == (
+        "--volume",
+        "/host/repo:/workspace",
+        "--env",
+        "DEBUG=1",
+        "--workdir",
+        "/workspace/src",
+        "python:3.12-slim",
+        "true",
+    )
+
+
+def test_container_sandbox_no_workdir_is_no_op() -> None:
+    command = ContainerSandbox(SandboxSpec(kind=SandboxKind.DOCKER)).command(("true",))
+
+    assert "--workdir" not in command
+
+
+@pytest.mark.parametrize("working_dir", ["", " ", "workspace", "./workspace"])
+def test_sandbox_spec_rejects_invalid_workdir(working_dir: str) -> None:
+    with pytest.raises(ValueError, match="non-empty absolute path"):
+        SandboxSpec(kind=SandboxKind.DOCKER, working_dir=working_dir)
+
+
 @pytest.mark.parametrize(
     "env", [(('', 'value'),), (('KEY', ''),), (('ONLY',),)]
 )

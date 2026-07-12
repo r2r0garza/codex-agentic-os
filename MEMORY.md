@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-12T17:25:41Z — implementation run.
+- Active milestone: Sprint 2 "Reproducible sandbox execution context" (#2). Selected issue #44, the oldest of two unblocked `agent-ready` priority:3 issues assigned to the milestone.
+- Completed: added optional validated `SandboxSpec.working_dir` and `run execute-next --workdir PATH`. Docker and Podman render `--workdir` after mounts and environment variables and before the image; omission preserves the prior command. Empty, whitespace-only, and relative paths fail before a queued step is claimed. Added Plan 0054, DEVELOPMENT guidance, and refreshed the committed index.
+- Verification: focused sandbox/run CLI suite (153 passed); full suite (334 passed); index rebuilt to 20 files, 466 symbols, 2558 relationships and current; `git diff --check` clean.
+- Blocked review: no open `blocked` issues; nothing changed.
+- Resulting queue after closure: Sprint 2 has one remaining unblocked `agent-ready` issue, #47 (explicit sandbox network opt-in, priority:3). It is the next eligible issue; retrospective is not yet eligible because #47 remains open.
+- Final target: `main`; implementation, issue closure, and push pending in this run.
+
+---
+
 - Run: 2026-07-12T17:13:30Z — implementation plus required milestone retrospective.
 - Active milestone at selection: Sprint 1 "Operator-ready provider workflow" (#1). Selected and closed issue #45, the sole unblocked `agent-ready` issue; created and closed retrospective issue #48.
 - Completed: added read-only `provider credentials` output in default registry order with provider kind, `api_key_env`, and `configured`; credential-free defaults are ready, while unset or empty named variables are not. Values are never emitted, and tests prohibit network and state access. Added Plan 0053, DEVELOPMENT guidance, and refreshed the committed index.
@@ -94,28 +104,5 @@
 - Resulting queue: 2 unblocked `agent-ready` issues — #43 and #44 (both priority:3).
   At the ≤2 threshold; next run should be backlog replenishment. Recommended next
   implementation candidate once replenished: #43, the older of the two.
-- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
-  before this durable MEMORY.md update.
-
----
-
-- Run: 2026-07-12T15:37:27Z — implementation run.
-- Selected issue: #41, explicit heartbeat/liveness tracking for registered agents.
-- Completed: `Agent` now exposes a durable ISO-8601 UTC `last_seen`; registration
-  initializes it, and injected-clock `AgentRegistry.heartbeat()` refreshes it while
-  preserving the record and rejecting unknown ids without mutation. Added `agent
-  heartbeat AGENT_ID [--state-db PATH]`, JSON output coverage for register/list/
-  heartbeat, Plan 0051, a DEVELOPMENT.md example, and refreshed the committed index.
-  Legacy agent payloads without `last_seen` remain readable as `None`; automatic
-  heartbeats, expiry, staleness, and liveness-based eligibility remain out of scope.
-- Implementation commit: `9081360`; pushed to `origin/main`; issue #41 auto-closed
-  by the commit's `Closes #41`; verification comment posted separately.
-- Verification: `pytest -q tests/test_runtime.py tests/test_agent_cli.py` (89 passed);
-  `pytest -q` (313 passed); clean index build then `codex-agentic-os index check`
-  (current — 19 files, 448 symbols, 2485 relationships); `git diff --check` clean.
-- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
-- Resulting queue: 3 unblocked `agent-ready` issues — #42, #43, and #44 (all
-  priority:3). Recommended next: #42, the oldest priority:3 issue; the queue is below
-  the 5–10 target band but above the backlog-only threshold.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree clean
   before this durable MEMORY.md update.
