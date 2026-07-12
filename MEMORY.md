@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-12T18:22:04Z — replenishment run.
+- Active milestone: Sprint 4 "Durable model-backed step execution" (#4). It had no issues and its explicit exit criteria had uncovered implementation work, so no code was implemented this run.
+- Created three milestone-scoped issues: #51 (queue and inspect durable provider-message steps, priority:1, `agent-ready`), #52 (execute durable model steps through provider adapters, priority:2, blocked on #51), and #53 (preserve run state across provider failures and mixed steps, priority:3, blocked on #51/#52).
+- Evidence: VISION and milestone contract reviewed; committed code index was current (20 files, 479 symbols, 2635 relationships); relevant runtime, chat-adapter, CLI, persistence, and sandbox boundaries inspected. The queue maps directly to missing-message rejection, successful durable send, provider-failure semantics, and mixed command/model regression criteria.
+- Verification: GitHub confirms exactly three open Sprint 4 issues with one ready issue and two concretely dependency-blocked issues; repository code was not changed; `codex-agentic-os index check` passed before replenishment.
+- Blocked review: #52 and #53 remain correctly blocked by the explicit predecessor contracts; no blocker was resolved and no labels changed.
+- Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6), so no planning run was needed.
+- Final target: `main`; next eligible issue is #51. GitHub issue creation complete; MEMORY commit/push pending; worktree dirty only for this durable record.
+
+---
+
 - Run: 2026-07-12T18:20:00Z — implementation, retrospective, and roadmap-horizon maintenance.
 - Active milestone at selection: Sprint 3 "Observable durable agent identities" (#3). Selected and closed its sole unblocked `agent-ready` issue, #46 (read-only agent inspection CLI, priority:3).
 - Completed: added `AgentRegistry.get()` and `agent inspect AGENT_ID [--state-db PATH]`. Inspection opens the state database read-only, emits the standard agent JSON payload, supports legacy `last_seen: null`, rejects missing databases, unknown agents, and empty identifiers cleanly, and preserves record revision/liveness. Added Plan 0056, DEVELOPMENT guidance, and refreshed the committed index.
@@ -45,15 +56,3 @@
 - Blocked review: no open `blocked` issues; nothing changed.
 - Resulting queue after closure: Sprint 2 has one remaining unblocked `agent-ready` issue, #47 (explicit sandbox network opt-in, priority:3). It is the next eligible issue; retrospective is not yet eligible because #47 remains open.
 - Final target: `main`; implementation, issue closure, and push pending in this run.
-
----
-
-- Run: 2026-07-12T17:13:30Z — implementation plus required milestone retrospective.
-- Active milestone at selection: Sprint 1 "Operator-ready provider workflow" (#1). Selected and closed issue #45, the sole unblocked `agent-ready` issue; created and closed retrospective issue #48.
-- Completed: added read-only `provider credentials` output in default registry order with provider kind, `api_key_env`, and `configured`; credential-free defaults are ready, while unset or empty named variables are not. Values are never emitted, and tests prohibit network and state access. Added Plan 0053, DEVELOPMENT guidance, and refreshed the committed index.
-- Implementation commit `f727845` pushed to `origin/main`; issue #45 auto-closed and received verification evidence.
-- Verification: focused provider tests (5 passed); full suite (323 passed); operator UAT across all 7 defaults with configured/unset/credential-free states and sentinel non-disclosure; provider/chat offline suite (36 passed); index rebuilt to 20 files, 462 symbols, 2536 relationships and current; `git diff --check` clean.
-- Retrospective #48 passed every Sprint 1 exit criterion with direct test, command, documentation, architecture, and operator evidence; no remediation required. Retrospective closed and milestone #1 closed.
-- Blocked review: no open `blocked` issues; nothing changed.
-- New active milestone: Sprint 2 "Reproducible sandbox execution context" (#2), with two ready priority:3 issues: #44 and #47. Recommended next: #44, oldest at equal priority.
-- Final target: `main`; implementation pushed. This MEMORY update is the remaining durable record to commit and push.
