@@ -25,6 +25,7 @@ from .runtime import (
     RunStep,
     RuntimeSpec,
     StepRecoveryReason,
+    StepStatus,
 )
 from .sandboxes import ContainerSandbox, SandboxKind, SandboxSpec, default_sandboxes
 from .state import StateStore
@@ -79,6 +80,9 @@ def _parser() -> argparse.ArgumentParser:
     transition = run_commands.add_parser(
         "transition", help="advance a run through an explicit lifecycle transition"
     )
+    transition_step = run_commands.add_parser(
+        "transition-step", help="advance a step through an explicit lifecycle transition"
+    )
     inspect_step = run_commands.add_parser("inspect-step", help="show one durable step")
     cancel = run_commands.add_parser("cancel", help="cancel a run and its active steps")
     cancel_step = run_commands.add_parser(
@@ -119,6 +123,19 @@ def _parser() -> argparse.ArgumentParser:
         "--output", help="JSON object persisted for a succeeded or failed run"
     )
     transition.add_argument(
+        "--state-db",
+        type=Path,
+        default=Path(".codex-agentic-os/state.sqlite3"),
+        help="path to the runtime state database",
+    )
+    transition_step.add_argument("step_id")
+    transition_step.add_argument(
+        "status", choices=[status.value for status in StepStatus]
+    )
+    transition_step.add_argument(
+        "--output", help="JSON object persisted for a succeeded or failed step"
+    )
+    transition_step.add_argument(
         "--state-db",
         type=Path,
         default=Path(".codex-agentic-os/state.sqlite3"),
@@ -402,6 +419,24 @@ def main(argv: Sequence[str] | None = None) -> None:
                     output=output,
                 )
                 run_id = arguments.run_id
+            elif arguments.run_command == "transition-step":
+                if coordinator.get_step(arguments.step_id) is None:
+                    raise ValueError(f"step does not exist: {arguments.step_id}")
+                output = None
+                if arguments.output is not None:
+                    try:
+                        output = json.loads(arguments.output)
+                    except json.JSONDecodeError as error:
+                        raise ValueError("step output must be valid JSON") from error
+                    if not isinstance(output, dict):
+                        raise ValueError("step output must be a JSON object")
+                step = coordinator.transition_step(
+                    arguments.step_id,
+                    StepStatus(arguments.status),
+                    output=output,
+                )
+                print(json.dumps(_step_payload(step), indent=2, sort_keys=True))
+                return
             elif arguments.run_command == "prune":
                 if coordinator.get(arguments.run_id) is None:
                     raise ValueError(f"run does not exist: {arguments.run_id}")

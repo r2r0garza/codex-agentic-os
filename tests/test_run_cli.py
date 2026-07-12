@@ -221,6 +221,113 @@ def test_cli_transition_rejects_missing_run_and_invalid_edge_without_mutation(
     assert RunCoordinator(StateStore(database)).get("run-1") == original
 
 
+@pytest.mark.parametrize("with_command", [False, True])
+def test_cli_transitions_step_through_terminal_status_with_durable_output(
+    tmp_path, capsys, with_command
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Operate step lifecycle")
+    first = coordinator.add_step(
+        "run-1",
+        "step-1",
+        objective="Selected step",
+        command=("python", "-V") if with_command else None,
+    )
+    sibling = coordinator.add_step("run-1", "step-2", objective="Untouched sibling")
+
+    main(["run", "transition-step", "step-1", "running", "--state-db", str(database)])
+    running = json.loads(capsys.readouterr().out)
+    assert running["status"] == "running"
+    assert running["revision"] == first.revision + 1
+
+    main(
+        [
+            "run", "transition-step", "step-1", "succeeded",
+            "--output", '{"detail": "operator"}', "--state-db", str(database),
+        ]
+    )
+    terminal = json.loads(capsys.readouterr().out)
+    assert terminal["status"] == "succeeded"
+    assert terminal["output"] == {"detail": "operator"}
+    assert terminal["command"] == (["python", "-V"] if with_command else None)
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get_step("step-1").output == {"detail": "operator"}
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("step-2") == sibling
+
+
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        ("{", "step output must be valid JSON"),
+        ("[]", "step output must be a JSON object"),
+        ("null", "step output must be a JSON object"),
+    ],
+)
+def test_cli_transition_step_rejects_invalid_output_without_mutation(
+    tmp_path, capsys, output, message
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Original")
+    original = coordinator.add_step("run-1", "step-1", objective="Original")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "transition-step", "step-1", "succeeded", "--output", output,
+                "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get_step("step-1") == original
+
+
+@pytest.mark.parametrize("setup", ["missing", "invalid-edge", "invalid-output-edge"])
+def test_cli_transition_step_rejections_do_not_mutate_state(
+    tmp_path, capsys, setup
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Original")
+    original = coordinator.add_step("run-1", "step-1", objective="Original")
+    step_id = "missing" if setup == "missing" else "step-1"
+    arguments = ["run", "transition-step", step_id, "succeeded"]
+    if setup == "invalid-output-edge":
+        arguments = ["run", "transition-step", step_id, "running", "--output", "{}"]
+    arguments.extend(["--state-db", str(database)])
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(arguments)
+
+    assert exit_info.value.code == 2
+    error = capsys.readouterr().err
+    expected = {
+        "missing": "step does not exist",
+        "invalid-edge": "invalid step transition",
+        "invalid-output-edge": "step output is only valid",
+    }
+    assert expected[setup] in error
+    assert RunCoordinator(StateStore(database)).get_step("step-1") == original
+
+
+def test_cli_transition_step_rejects_missing_database_without_creating_it(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "transition-step", "step-1", "running", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not database.exists()
+
+
 def test_cli_adds_ordered_command_steps_and_matches_inspection(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

@@ -90,6 +90,14 @@ codex-agentic-os run transition run-001 running
 codex-agentic-os run transition run-001 succeeded --output '{"artifacts": 4}'
 ```
 
+Advance one durable step independently without executing its command. The confirmation
+uses the same machine-readable shape as `run inspect-step`:
+
+```bash
+codex-agentic-os run transition-step step-001 running
+codex-agentic-os run transition-step step-001 succeeded --output '{"artifacts": 4}'
+```
+
 Cancel a queued or running run consistently with its active steps. Succeeded, failed,
 or already-cancelled steps retain their terminal status and output:
 
