@@ -434,9 +434,17 @@ class RunCoordinator:
             payload["timeout"] = current.timeout
         if output is not None:
             payload["output"] = dict(output)
-        return self._step(
-            self.store.put("step", step_id, status=status, payload=payload)
-        )
+        try:
+            record = self.store.transition_step(
+                step_id,
+                expected_status=current.status,
+                expected_revision=current.revision,
+                status=status,
+                payload=payload,
+            )
+        except StateConflictError as error:
+            raise ValueError(f"step transition conflict: {step_id}") from error
+        return self._step(record)
 
     def cancel_step(self, step_id: str) -> RunStep:
         """Cancel one queued step without changing its active parent run."""

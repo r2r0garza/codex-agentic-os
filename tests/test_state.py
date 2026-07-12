@@ -163,6 +163,64 @@ def test_transition_run_rejects_invalid_arguments(
         )
 
 
+def test_transition_step_advances_status_output_and_revision_atomically(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    original = store.insert(
+        "step", "step-1", status="running", payload={"run_id": "run-1", "position": 1}
+    )
+
+    transitioned = store.transition_step(
+        "step-1",
+        expected_status=original.status,
+        expected_revision=original.revision,
+        status="succeeded",
+        payload={"run_id": "run-1", "position": 1, "output": {"ok": True}},
+    )
+
+    assert transitioned.revision == original.revision + 1
+    assert transitioned.payload["output"] == {"ok": True}
+    assert store.get("step", "step-1") == transitioned
+
+
+def test_transition_step_rejects_missing_and_stale_state_without_mutation(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    original = store.insert("step", "step-1", status="queued", payload={})
+
+    with pytest.raises(KeyError, match="state record does not exist: step/missing"):
+        store.transition_step(
+            "missing", expected_status="queued", expected_revision=1,
+            status="running", payload={},
+        )
+    with pytest.raises(StateConflictError, match="state step transition conflict: step-1"):
+        store.transition_step(
+            "step-1", expected_status="queued", expected_revision=2,
+            status="running", payload={},
+        )
+
+    assert store.get("step", "step-1") == original
+
+
+@pytest.mark.parametrize(
+    ("expected_status", "expected_revision", "status", "message"),
+    [
+        (" ", 1, "running", "expected status must not be empty"),
+        ("queued", 0, "running", "expected revision must be positive"),
+        ("queued", 1, " ", "status must not be empty"),
+    ],
+)
+def test_transition_step_rejects_invalid_arguments(
+    tmp_path, expected_status, expected_revision, status, message
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.insert("step", "step-1", status="queued", payload={})
+
+    with pytest.raises(ValueError, match=message):
+        store.transition_step(
+            "step-1", expected_status=expected_status,
+            expected_revision=expected_revision, status=status, payload={},
+        )
+
+
 def test_schema_rejects_unknown_kinds_outside_the_api(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     StateStore(database).initialize()

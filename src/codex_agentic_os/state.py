@@ -301,6 +301,56 @@ class StateStore:
             connection.commit()
         return StateRecord("run", run_id, status, json.loads(encoded), new_revision)
 
+    def transition_step(
+        self,
+        step_id: str,
+        *,
+        expected_status: str,
+        expected_revision: int,
+        status: str,
+        payload: Mapping[str, object],
+    ) -> StateRecord:
+        """Advance one step in a write transaction when it matches an expected state."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        self._validate_identity("step", step_id, status)
+        if not expected_status.strip():
+            raise ValueError("expected status must not be empty")
+        if expected_revision < 1:
+            raise ValueError("expected revision must be positive")
+        encoded = self._encode_payload(payload)
+        self.initialize()
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT status, revision
+                FROM state_records
+                WHERE kind = 'step' AND key = ?
+                """,
+                (step_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"state record does not exist: step/{step_id}")
+
+            current_status, current_revision = str(row[0]), int(row[1])
+            if current_status != expected_status or current_revision != expected_revision:
+                raise StateConflictError(f"state step transition conflict: {step_id}")
+
+            new_revision = current_revision + 1
+            connection.execute(
+                """
+                UPDATE state_records
+                SET status = ?, payload = ?, revision = ?
+                WHERE kind = 'step' AND key = ?
+                """,
+                (status, encoded, new_revision, step_id),
+            )
+            connection.commit()
+        return StateRecord("step", step_id, status, json.loads(encoded), new_revision)
+
     def claim_next_run(self, agent_id: str) -> StateRecord | None:
         """Assign the first queued, unassigned run in stable key order."""
 

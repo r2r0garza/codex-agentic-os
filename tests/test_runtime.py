@@ -311,6 +311,35 @@ def test_ordered_steps_are_durable_and_revisioned(tmp_path) -> None:
     )
 
 
+def test_competing_step_transitions_cannot_both_succeed_or_mutate_family(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    creator = RunCoordinator(StateStore(database))
+    run = creator.create("run-1", objective="Build feature")
+    original = creator.add_step("run-1", "step-1", objective="First")
+    sibling = creator.add_step("run-1", "step-2", objective="Second")
+    coordinators = (
+        RunCoordinator(StateStore(database)),
+        RunCoordinator(StateStore(database)),
+    )
+
+    def attempt(coordinator: RunCoordinator) -> RunStep | ValueError:
+        try:
+            return coordinator.transition_step("step-1", StepStatus.RUNNING)
+        except ValueError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(attempt, coordinators))
+
+    successes = [result for result in results if isinstance(result, RunStep)]
+    failures = [result for result in results if isinstance(result, ValueError)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert successes[0].revision == original.revision + 1
+    assert creator.get("run-1") == run
+    assert creator.get_step("step-2") == sibling
+
+
 def test_step_append_is_atomic_across_coordinators(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     creator = RunCoordinator(StateStore(database))

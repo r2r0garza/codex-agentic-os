@@ -115,10 +115,11 @@ Implemented foundation:
 - Operator-facing `run prune` CLI support with machine-readable removed-run and step-count confirmation.
 - Explicit endpoint and credential policy for OpenAI-compatible, LM Studio, and Ollama providers, with LM Studio and Ollama defaulting to their standard local base URLs and OpenAI-compatible requiring an explicit base URL.
 - Atomic durable run lifecycle transitions using a SQLite compare-and-swap so competing coordinators cannot overwrite a newer run revision.
+- Atomic explicit durable step lifecycle transitions using the same compare-and-swap principle.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0037 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0038 is complete.
 
 ## Development
 
