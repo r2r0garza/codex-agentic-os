@@ -1490,6 +1490,39 @@ def test_cli_executes_provider_message_without_sandbox(
     assert payload["run"]["status"] == "succeeded"
 
 
+def test_cli_execute_next_records_provider_failure_without_orphaned_claim(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable model work")
+    coordinator.add_step(
+        "run-1",
+        "model-1",
+        objective="Ask model",
+        message=ProviderMessage(provider="anthropic", content="Hello"),
+    )
+
+    class Adapter:
+        def complete(self, request):
+            raise RuntimeError("chat request failed: HTTP Error 401: Unauthorized")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"][0]["status"] == "failed"
+    assert payload["steps"][0]["output"] == {
+        "error": "chat request failed: HTTP Error 401: Unauthorized",
+        "error_type": "RuntimeError",
+    }
+    assert payload["run"]["status"] == "failed"
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1").status is RunStatus.FAILED
+    assert reloaded.get_step("model-1").status is StepStatus.FAILED
+
+
 def test_cli_execute_next_rejects_empty_image_without_mutation(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

@@ -238,8 +238,11 @@ prior isolated (`--network none`) command construction exactly.
 
 When no queued work remains, the unchanged run payload includes
 `"execution": {"attempted": false}`. Successful provider responses are persisted as
-normalized step output. Timeouts, interruptions, and provider exceptions leave the
-step running for explicit recovery.
+normalized step output. Sandbox timeouts and interruptions leave the step running for
+explicit recovery, since a subprocess result may be unknown. Adapter resolution and
+transport failures (missing credentials, network errors, malformed responses) instead
+durably fail the step and run with `{"error": ..., "error_type": ...}` output, since
+those failures are definite and carry no uncertain side effect to reconcile.
 
 Command arguments, timeouts, and provider-message inputs survive process restarts.
 Every step requires exactly one command or provider message.

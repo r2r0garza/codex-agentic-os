@@ -1114,6 +1114,101 @@ def test_execute_next_step_leaves_running_state_when_executor_raises(tmp_path) -
     assert coordinator.get_step("command").status is StepStatus.RUNNING
 
 
+def test_execute_next_step_fails_step_on_adapter_transport_error(tmp_path) -> None:
+    class Adapter:
+        def complete(self, request):
+            raise RuntimeError("chat request failed: connection refused")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Coordinate work")
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Review output",
+        message=ProviderMessage(provider="local", content="Review output"),
+    )
+
+    step, run = coordinator.execute_next_step("run-1", adapter_resolver=lambda _: Adapter())
+
+    assert step.status is StepStatus.FAILED
+    assert step.output == {
+        "error": "chat request failed: connection refused",
+        "error_type": "RuntimeError",
+    }
+    assert run.status is RunStatus.FAILED
+    assert run.output == {
+        "failed_step_id": "model",
+        "error": "chat request failed: connection refused",
+    }
+
+
+def test_execute_next_step_fails_step_on_adapter_resolution_error(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Coordinate work")
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Review output",
+        message=ProviderMessage(provider="anthropic", content="Review output"),
+    )
+
+    def resolve(message):
+        raise ValueError("missing credentials for provider: anthropic")
+
+    step, run = coordinator.execute_next_step("run-1", adapter_resolver=resolve)
+
+    assert step.status is StepStatus.FAILED
+    assert step.output == {
+        "error": "missing credentials for provider: anthropic",
+        "error_type": "ValueError",
+    }
+    assert run.status is RunStatus.FAILED
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1").status is RunStatus.FAILED
+    assert reloaded.get_step("model").status is StepStatus.FAILED
+
+
+def test_execute_next_step_runs_mixed_command_and_model_steps_in_order(tmp_path) -> None:
+    command_calls = []
+    model_calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            command_calls.append(tuple(argv))
+            return SandboxResult(("docker", "run", *argv), 0, "ok\n", "")
+
+    class Adapter:
+        def complete(self, request):
+            model_calls.append(request)
+            return ChatResponse("Reviewed", model="served-model")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Mixed durable work")
+    coordinator.add_step("run-1", "step-1", objective="Checkpoint", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "step-2",
+        objective="Review",
+        message=ProviderMessage(provider="local", content="Review output"),
+    )
+    coordinator.add_step("run-1", "step-3", objective="Finish", command=("true",))
+
+    executor = Executor()
+    resolve = lambda _: Adapter()
+
+    first = coordinator.execute_next_step("run-1", executor, adapter_resolver=resolve)
+    second = coordinator.execute_next_step("run-1", executor, adapter_resolver=resolve)
+    third = coordinator.execute_next_step("run-1", executor, adapter_resolver=resolve)
+
+    assert first[0].step_id == "step-1" and first[0].status is StepStatus.SUCCEEDED
+    assert second[0].step_id == "step-2" and second[0].status is StepStatus.SUCCEEDED
+    assert third[0].step_id == "step-3" and third[0].status is StepStatus.SUCCEEDED
+    assert command_calls == [("true",), ("true",)]
+    assert len(model_calls) == 1
+    assert third[1].status is RunStatus.SUCCEEDED
+
+
 @pytest.mark.parametrize(
     "reason", [StepRecoveryReason.INTERRUPTED, StepRecoveryReason.TIMED_OUT]
 )

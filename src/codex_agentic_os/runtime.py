@@ -391,8 +391,6 @@ class RunCoordinator:
         )
         if next_step is None:
             return None
-        adapter: ChatAdapter | None = None
-        request: ChatRequest | None = None
         if next_step.command is not None:
             if executor is None:
                 raise ValueError(
@@ -403,20 +401,6 @@ class RunCoordinator:
                 raise ValueError(
                     f"next provider-message step requires an adapter: {next_step.step_id}"
                 )
-            adapter = adapter_resolver(next_step.message)
-            messages = (
-                (
-                    ChatMessage("system", next_step.message.system),
-                    ChatMessage("user", next_step.message.content),
-                )
-                if next_step.message.system is not None
-                else (ChatMessage("user", next_step.message.content),)
-            )
-            request = ChatRequest(
-                messages,
-                temperature=next_step.message.temperature,
-                max_tokens=next_step.message.max_tokens,
-            )
         else:  # Defensive: durable step validation rejects missing execution input.
             raise ValueError(f"next step has no execution input: {next_step.step_id}")
 
@@ -427,8 +411,26 @@ class RunCoordinator:
             assert executor is not None
             result = executor.execute(running_step.command, timeout=running_step.timeout)
             return self.complete_step_from_result(running_step.step_id, result)
-        assert adapter is not None and request is not None
-        response = adapter.complete(request)
+
+        assert adapter_resolver is not None and running_step.message is not None
+        try:
+            adapter = adapter_resolver(running_step.message)
+            messages = (
+                (
+                    ChatMessage("system", running_step.message.system),
+                    ChatMessage("user", running_step.message.content),
+                )
+                if running_step.message.system is not None
+                else (ChatMessage("user", running_step.message.content),)
+            )
+            request = ChatRequest(
+                messages,
+                temperature=running_step.message.temperature,
+                max_tokens=running_step.message.max_tokens,
+            )
+            response = adapter.complete(request)
+        except (ValueError, RuntimeError, NotImplementedError) as error:
+            return self.fail_step_from_error(running_step.step_id, error)
         return self.complete_step_from_chat_response(running_step.step_id, response)
 
     def add_step(
@@ -663,6 +665,55 @@ class RunCoordinator:
                 RunStatus.SUCCEEDED,
                 output={"completed_steps": len(self.list_steps(run.run_id))},
             )
+        return step, run
+
+    def fail_step_from_error(
+        self, step_id: str, error: Exception
+    ) -> tuple[RunStep, AgentRun]:
+        """Fail a running provider-message step on an adapter error, without orphaning it."""
+
+        current = self.get_step(step_id)
+        if current is None:
+            raise KeyError(f"step does not exist: {step_id}")
+        run = self.get(current.run_id)
+        if run is None:  # Defensive: durable step records must reference an existing run.
+            raise KeyError(f"run does not exist: {current.run_id}")
+        if run.status is not RunStatus.RUNNING:
+            raise ValueError(f"run must be running to fail a step: {run.run_id}")
+        if current.status is not StepStatus.RUNNING:
+            raise ValueError(f"step must be running to record a failure: {step_id}")
+
+        output: dict[str, object] = {
+            "error": str(error),
+            "error_type": type(error).__name__,
+        }
+        step_payload: dict[str, object] = {
+            "run_id": current.run_id,
+            "position": current.position,
+            "objective": current.objective,
+            "output": output,
+        }
+        if current.command is not None:
+            step_payload["command"] = list(current.command)
+        if current.timeout is not None:
+            step_payload["timeout"] = current.timeout
+        if current.message is not None:
+            step_payload["message"] = self._message_payload(current.message)
+
+        run_payload: dict[str, object] = {
+            "objective": run.objective,
+            "output": {"failed_step_id": step_id, "error": str(error)},
+        }
+        if run.agent_id is not None:
+            run_payload["agent_id"] = run.agent_id
+        stored = self.store.put_many(
+            (
+                ("step", step_id, StepStatus.FAILED, step_payload),
+                ("run", run.run_id, RunStatus.FAILED, run_payload),
+            )
+        )
+        step = self._step(stored[0])
+        run = self._run(stored[1])
         return step, run
 
     def recover_running_step(
