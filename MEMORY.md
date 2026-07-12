@@ -5,8 +5,8 @@
 - Retrospective: full suite `366 passed`; the separate mixed command/provider CLI reconstruction acceptance test passed (`1 passed`); `codex-agentic-os index check` reported current (20 files, 538 symbols, 2975 relationships); `git diff --check` passed. Created and closed retrospective issue #58 with all four exit criteria marked pass, architecture/quality evidence, and no remediation. Closed milestone #5.
 - Blocked review: no open `blocked` issues exist anywhere in the repository; nothing changed. Sprint 6 is now active with 0 issues and 0 ready issues, so the next run should replenish it rather than implement.
 - Roadmap horizon: 3 open milestones before retrospective closure (5, 6, 7), then 2 (6, 7). The planning handoff used VISION.md's explicit retry/recovery contract plus indexed `execute_next_step()`/`recover_running_step()` evidence to create future Sprint 8 "Explicit failed-step retry" (#8), with no issues because Sprint 6 is active. Resulting horizon is 3 open milestones (6 active, 7 and 8 future).
-- Durable GitHub state: issue #58 closed; milestone #5 closed; milestone #8 created. Repository record commit/push pending this entry.
-- Final target: `main`; next eligible action is Sprint 6 replenishment against its approval-gated execution exit criteria. Worktree dirty only for this MEMORY update until committed and pushed.
+- Durable GitHub state: issue #58 closed; milestone #5 closed; milestone #8 created. Repository record commit `062e8c2` pushed to `origin/main`.
+- Final target: `main`; next eligible action is Sprint 6 replenishment against its approval-gated execution exit criteria. Final record committed and pushed; branch clean and aligned with `origin/main`.
 
 ---
 
