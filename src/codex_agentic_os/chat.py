@@ -140,7 +140,6 @@ class AnthropicAdapter:
             "model": self.spec.model,
             "messages": messages,
             "max_tokens": request.max_tokens if request.max_tokens is not None else 16_000,
-            "cache_control": {"type": "ephemeral"},
         }
         if system_messages:
             payload["system"] = "\n\n".join(system_messages)

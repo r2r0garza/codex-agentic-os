@@ -261,8 +261,8 @@ def test_anthropic_adapter_posts_native_payload_and_reads_text_blocks(monkeypatc
         "system": "Be concise.",
         "max_tokens": 24,
         "temperature": 0.2,
-        "cache_control": {"type": "ephemeral"},
     }
+    assert "cache_control" not in captured["body"]
     assert response.content == "hello"
     assert response.model == "claude-test"
 
