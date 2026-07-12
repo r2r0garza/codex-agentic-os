@@ -47,6 +47,7 @@ def _parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="inspect and control durable runs")
     run_commands = run.add_subparsers(dest="run_command", required=True)
     create = run_commands.add_parser("create", help="create a queued durable run")
+    claim = run_commands.add_parser("claim", help="claim a queued durable run")
     add_step = run_commands.add_parser(
         "add-step", help="append a queued command step to a durable run"
     )
@@ -62,6 +63,8 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("run_id")
     create.add_argument("--objective", required=True, help="objective for the queued run")
     create.add_argument("--agent-id", help="optional agent assigned to the run")
+    claim.add_argument("run_id")
+    claim.add_argument("--agent-id", required=True, help="agent claiming the queued run")
     add_step.add_argument("run_id")
     add_step.add_argument("step_id")
     add_step.add_argument("--objective", required=True, help="objective for the queued step")
@@ -77,7 +80,7 @@ def _parser() -> argparse.ArgumentParser:
         "--agent-id",
         help="include runs assigned to this exact agent identifier",
     )
-    for command in (create, add_step, list_runs):
+    for command in (create, claim, add_step, list_runs):
         command.add_argument(
             "--state-db",
             type=Path,
@@ -164,6 +167,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                     objective=arguments.objective,
                     agent_id=arguments.agent_id,
                 )
+                run_id = arguments.run_id
+            elif arguments.run_command == "claim":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                coordinator.claim(arguments.run_id, arguments.agent_id)
                 run_id = arguments.run_id
             elif arguments.run_command == "add-step":
                 if coordinator.get(arguments.run_id) is None:
