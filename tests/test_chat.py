@@ -64,6 +64,61 @@ def test_openai_compatible_requires_explicit_base_url_before_transport() -> None
         adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
 
 
+@pytest.mark.parametrize(
+    ("base_url", "credential", "expected_url", "expected_authorization"),
+    [
+        (None, None, "https://openrouter.ai/api/v1/chat/completions", None),
+        (None, "", "https://openrouter.ai/api/v1/chat/completions", None),
+        (None, "secret", "https://openrouter.ai/api/v1/chat/completions", "Bearer secret"),
+        ("https://router.example/v1/", "secret", "https://router.example/v1/chat/completions", "Bearer secret"),
+    ],
+)
+def test_openrouter_endpoint_and_optional_credential_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str | None,
+    credential: str | None,
+    expected_url: str,
+    expected_authorization: str | None,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured.update(url=url, headers=headers)
+        return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    if credential is not None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", credential)
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(
+            ProviderKind.OPENROUTER,
+            model="openrouter/auto",
+            base_url=base_url,
+            api_key_env="OPENROUTER_API_KEY",
+        ),
+        transport=transport,
+    )
+    adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert captured["url"] == expected_url
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers.get("Authorization") == expected_authorization
+
+
+def test_openai_keeps_public_openai_default_endpoint() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["url"] = url
+        return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    OpenAICompatibleAdapter(
+        ProviderSpec(ProviderKind.OPENAI, model="gpt"), transport=transport
+    ).complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert captured["url"] == "https://api.openai.com/v1/chat/completions"
+
+
 def test_lm_studio_defaults_to_standard_local_base_url_without_credentials() -> None:
     captured: dict[str, object] = {}
 

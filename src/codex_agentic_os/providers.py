@@ -23,9 +23,9 @@ class ProviderKind(StrEnum):
     OPENAI_COMPATIBLE = "openai_compatible"
 
 
-# Standard local server endpoints for providers that run without credentials by
-# default. These are used both as the registry defaults below and as the chat
-# adapter's fallback when a spec omits ``base_url`` for these two kinds.
+# Canonical endpoints used both as registry defaults and as chat-adapter
+# fallbacks when a provider spec omits ``base_url``.
+OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 LM_STUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1"
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
 
@@ -41,6 +41,8 @@ class ProviderSpec:
     - ``LM_STUDIO`` and ``OLLAMA`` fall back to their standard local server URLs
       (``LM_STUDIO_DEFAULT_BASE_URL`` / ``OLLAMA_DEFAULT_BASE_URL``) when ``base_url``
       is omitted, and never require ``api_key_env`` for local use.
+    - ``OPENROUTER`` falls back to ``OPENROUTER_DEFAULT_BASE_URL`` when ``base_url``
+      is omitted; an explicit URL still takes precedence.
     - All provider kinds treat ``api_key_env`` as optional: when unset, or when the
       named environment variable has no value, requests omit the Authorization
       header instead of failing.
@@ -65,7 +67,12 @@ DEFAULT_PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
     ProviderSpec(kind=ProviderKind.OPENAI, model="gpt-5.5", api_key_env="OPENAI_API_KEY"),
     ProviderSpec(kind=ProviderKind.ANTHROPIC, model="claude-sonnet-4", api_key_env="ANTHROPIC_API_KEY"),
     ProviderSpec(kind=ProviderKind.GOOGLE, model="gemini-2.5-pro", api_key_env="GOOGLE_API_KEY"),
-    ProviderSpec(kind=ProviderKind.OPENROUTER, model="openrouter/auto", api_key_env="OPENROUTER_API_KEY"),
+    ProviderSpec(
+        kind=ProviderKind.OPENROUTER,
+        model="openrouter/auto",
+        base_url=OPENROUTER_DEFAULT_BASE_URL,
+        api_key_env="OPENROUTER_API_KEY",
+    ),
     ProviderSpec(kind=ProviderKind.LM_STUDIO, model="local-model", base_url=LM_STUDIO_DEFAULT_BASE_URL),
     ProviderSpec(kind=ProviderKind.OLLAMA, model="llama3.1", base_url=OLLAMA_DEFAULT_BASE_URL),
     ProviderSpec(kind=ProviderKind.OPENAI_COMPATIBLE, model="custom-model"),

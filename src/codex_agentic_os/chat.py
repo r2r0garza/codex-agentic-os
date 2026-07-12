@@ -9,9 +9,16 @@ from typing import Callable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .providers import LM_STUDIO_DEFAULT_BASE_URL, OLLAMA_DEFAULT_BASE_URL, ProviderKind, ProviderSpec
+from .providers import (
+    LM_STUDIO_DEFAULT_BASE_URL,
+    OLLAMA_DEFAULT_BASE_URL,
+    OPENROUTER_DEFAULT_BASE_URL,
+    ProviderKind,
+    ProviderSpec,
+)
 
-_LOCAL_DEFAULT_BASE_URLS: Mapping[ProviderKind, str] = {
+_COMPATIBLE_DEFAULT_BASE_URLS: Mapping[ProviderKind, str] = {
+    ProviderKind.OPENROUTER: OPENROUTER_DEFAULT_BASE_URL,
     ProviderKind.LM_STUDIO: LM_STUDIO_DEFAULT_BASE_URL,
     ProviderKind.OLLAMA: OLLAMA_DEFAULT_BASE_URL,
 }
@@ -87,8 +94,8 @@ class OpenAICompatibleAdapter:
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
 
-        local_default = _LOCAL_DEFAULT_BASE_URLS.get(self.spec.kind)
-        base_url = (self.spec.base_url or local_default or "https://api.openai.com/v1").rstrip("/")
+        provider_default = _COMPATIBLE_DEFAULT_BASE_URLS.get(self.spec.kind)
+        base_url = (self.spec.base_url or provider_default or "https://api.openai.com/v1").rstrip("/")
         headers = {"Content-Type": "application/json"}
         if self.spec.api_key_env:
             api_key = os.getenv(self.spec.api_key_env)

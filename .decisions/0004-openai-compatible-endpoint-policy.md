@@ -22,9 +22,10 @@ Split the adapter's base-URL resolution by provider kind instead of one shared f
   (`LM_STUDIO_DEFAULT_BASE_URL` / `OLLAMA_DEFAULT_BASE_URL`, defined once in
   `providers.py` and reused by both the adapter and `DEFAULT_PROVIDER_SPECS`) when
   `base_url` is omitted.
-- `OPENAI` and `OPENROUTER` keep the original unconditional
-  `https://api.openai.com/v1` fallback. Fixing OpenRouter's default endpoint was out of
-  scope for this change and is left for a future issue if it proves necessary.
+- `OPENAI` keeps the original `https://api.openai.com/v1` fallback.
+- Follow-up issue #32 defines `OPENROUTER_DEFAULT_BASE_URL` as
+  `https://openrouter.ai/api/v1` and reuses it in the registry and adapter fallback;
+  explicit OpenRouter `base_url` values still take precedence.
 - `api_key_env` remains optional for every kind: an unset variable, or one with no
   value, omits the Authorization header rather than failing.
 
@@ -33,5 +34,5 @@ Split the adapter's base-URL resolution by provider kind instead of one shared f
   requests to a provider it was never configured for.
 - LM Studio and Ollama remain zero-configuration for local use while still supporting an
   authenticated remote or proxied deployment through the same `api_key_env` mechanism.
-- OpenRouter's fallback to OpenAI's endpoint when unconfigured is unchanged; it is a
-  known rough edge, not a new one, and revisiting it needs its own issue and tests.
+- OpenRouter requests now target OpenRouter by default while retaining explicit endpoint
+  overrides and the shared optional-credential behavior.
