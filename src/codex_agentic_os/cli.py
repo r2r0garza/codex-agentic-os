@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Sequence
 
+from .chat import ChatMessage, ChatRequest, adapter_for
 from .index import (
     build_clean_index,
     build_incremental_index,
@@ -15,7 +16,7 @@ from .index import (
     explain_symbol,
     unstaged_index_paths,
 )
-from .providers import DEFAULT_PROVIDER_SPECS
+from .providers import DEFAULT_PROVIDER_SPECS, ProviderKind, ProviderSpec
 from .runtime import (
     Agent,
     AgentRegistry,
@@ -189,6 +190,24 @@ def _parser() -> argparse.ArgumentParser:
             default=Path(".codex-agentic-os/state.sqlite3"),
             help="path to the runtime state database",
         )
+
+    chat = commands.add_parser("chat", help="send ad hoc requests through provider adapters")
+    chat_commands = chat.add_subparsers(dest="chat_command", required=True)
+    chat_send = chat_commands.add_parser(
+        "send", help="send a single message through a configured provider adapter"
+    )
+    chat_send.add_argument("message")
+    chat_send.add_argument(
+        "--provider", required=True, choices=[kind.value for kind in ProviderKind]
+    )
+    chat_send.add_argument("--model", help="override the provider's default model")
+    chat_send.add_argument("--base-url", help="override the provider's default base URL")
+    chat_send.add_argument(
+        "--api-key-env",
+        help="override the provider's default credential environment variable",
+    )
+    chat_send.add_argument("--temperature", type=float, help="sampling temperature")
+    chat_send.add_argument("--max-tokens", type=int, help="maximum response tokens")
     return parser
 
 
@@ -253,6 +272,21 @@ def _agent_payload(agent: Agent) -> dict[str, object]:
     """Return the standard JSON-compatible view of one registered agent."""
 
     return asdict(agent)
+
+
+def _chat_provider_spec(
+    provider: str, model: str | None, base_url: str | None, api_key_env: str | None
+) -> ProviderSpec:
+    """Build a provider spec from CLI flags, defaulting unset fields per provider kind."""
+
+    kind = ProviderKind(provider)
+    default_spec = next(spec for spec in DEFAULT_PROVIDER_SPECS if spec.kind is kind)
+    return ProviderSpec(
+        kind=kind,
+        model=model or default_spec.model,
+        base_url=base_url or default_spec.base_url,
+        api_key_env=api_key_env or default_spec.api_key_env,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -445,6 +479,23 @@ def main(argv: Sequence[str] | None = None) -> None:
                         sort_keys=True,
                     )
                 )
+        elif arguments.command == "chat":
+            if not arguments.message.strip():
+                raise ValueError("chat message must not be empty")
+            spec = _chat_provider_spec(
+                arguments.provider, arguments.model, arguments.base_url, arguments.api_key_env
+            )
+            response = adapter_for(spec).complete(
+                ChatRequest(
+                    (ChatMessage("user", arguments.message),),
+                    temperature=arguments.temperature,
+                    max_tokens=arguments.max_tokens,
+                )
+            )
+            payload: dict[str, object] = {"content": response.content, "model": response.model}
+            if response.raw is not None:
+                payload["raw"] = response.raw
+            print(json.dumps(payload, indent=2, sort_keys=True))
         elif arguments.index_command == "build":
             builder = build_incremental_index if arguments.incremental else build_clean_index
             manifest = builder(repository)
@@ -471,7 +522,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             print("Repository index is staged and current.")
         else:
             print(json.dumps(explain_symbol(repository, arguments.qualified_name), indent=2, sort_keys=True))
-    except ValueError as error:
+    except (ValueError, RuntimeError) as error:
         parser.exit(2, f"error: {error}\n")
 
 
