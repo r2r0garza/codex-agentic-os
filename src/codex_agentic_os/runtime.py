@@ -311,26 +311,23 @@ class RunCoordinator:
         if not objective.strip():
             raise ValueError("step objective must not be empty")
         normalized_command = self._validate_command(command, timeout)
-        if self.store.get("step", step_id) is not None:
-            raise ValueError(f"step already exists: {step_id}")
-        position = len(self.list_steps(run_id)) + 1
         payload: dict[str, object] = {
-            "run_id": run_id,
-            "position": position,
             "objective": objective,
         }
         if normalized_command is not None:
             payload["command"] = list(normalized_command)
         if timeout is not None:
             payload["timeout"] = timeout
-        return self._step(
-            self.store.put(
-                "step",
+        try:
+            record = self.store.append_step(
                 step_id,
+                run_id,
                 status=StepStatus.QUEUED,
                 payload=payload,
             )
-        )
+        except StateConflictError as error:
+            raise ValueError(f"step already exists: {step_id}") from error
+        return self._step(record)
 
     def get_step(self, step_id: str) -> RunStep | None:
         """Return a step when it exists."""

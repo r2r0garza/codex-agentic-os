@@ -1,6 +1,6 @@
-import pytest
+from concurrent.futures import ThreadPoolExecutor
 
-from codex_agentic_os.sandboxes import SandboxResult
+import pytest
 
 from codex_agentic_os.runtime import (
     AgentRun,
@@ -10,6 +10,7 @@ from codex_agentic_os.runtime import (
     StepRecoveryReason,
     StepStatus,
 )
+from codex_agentic_os.sandboxes import SandboxResult
 from codex_agentic_os.state import StateStore
 
 
@@ -113,6 +114,47 @@ def test_ordered_steps_are_durable_and_revisioned(tmp_path) -> None:
     )
 
 
+def test_step_append_is_atomic_across_coordinators(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    creator = RunCoordinator(StateStore(database))
+    creator.create("run-1", objective="Build feature")
+    coordinators = (
+        RunCoordinator(StateStore(database)),
+        RunCoordinator(StateStore(database)),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                coordinator.add_step,
+                "run-1",
+                f"step-{index}",
+                objective=f"Work {index}",
+            )
+            for index, coordinator in enumerate(coordinators, start=1)
+        ]
+        created = tuple(future.result() for future in futures)
+
+    assert sorted(step.position for step in created) == [1, 2]
+    assert [step.position for step in creator.list_steps("run-1")] == [1, 2]
+
+
+def test_duplicate_step_append_preserves_original_across_coordinators(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    first = RunCoordinator(StateStore(database))
+    competing = RunCoordinator(StateStore(database))
+    first.create("run-1", objective="Build feature")
+    original = first.add_step(
+        "run-1", "step-1", objective="Original", command=("python", "-V"), timeout=5
+    )
+
+    with pytest.raises(ValueError, match="step already exists: step-1"):
+        competing.add_step("run-1", "step-1", objective="Replacement")
+
+    assert first.get_step("step-1") == original
+    assert original.revision == 1
+
+
 def test_step_command_and_timeout_are_durable(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
@@ -156,6 +198,7 @@ def test_step_command_validation(tmp_path, command, timeout, message) -> None:
             command=command,
             timeout=timeout,
         )
+    assert coordinator.list_steps("run-1") == ()
 
 
 def test_step_validation_and_terminal_run_rules(tmp_path) -> None:

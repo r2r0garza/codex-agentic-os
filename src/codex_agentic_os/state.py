@@ -167,6 +167,58 @@ class StateStore:
             connection.commit()
         return tuple(stored)
 
+    def append_step(
+        self,
+        step_id: str,
+        run_id: str,
+        *,
+        status: str,
+        payload: Mapping[str, object],
+    ) -> StateRecord:
+        """Insert one step at its run's next position in a write transaction."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        self._validate_identity("step", step_id, status)
+        self._validate_identity("run", run_id)
+        base_payload = dict(payload)
+        base_payload.pop("run_id", None)
+        base_payload.pop("position", None)
+        self._encode_payload(base_payload)
+        self.initialize()
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM state_records WHERE kind = 'step' AND key = ?",
+                (step_id,),
+            ).fetchone() is not None:
+                raise StateConflictError(f"state record already exists: step/{step_id}")
+
+            rows = connection.execute(
+                "SELECT payload FROM state_records WHERE kind = 'step'"
+            ).fetchall()
+            positions = [
+                int(document["position"])
+                for (encoded,) in rows
+                if (document := json.loads(str(encoded))).get("run_id") == run_id
+            ]
+            stored_payload = {
+                **base_payload,
+                "run_id": run_id,
+                "position": max(positions, default=0) + 1,
+            }
+            encoded = self._encode_payload(stored_payload)
+            connection.execute(
+                """
+                INSERT INTO state_records (kind, key, status, payload, revision)
+                VALUES ('step', ?, ?, ?, 1)
+                """,
+                (step_id, status, encoded),
+            )
+            connection.commit()
+        return StateRecord("step", step_id, status, stored_payload, 1)
+
     def get(self, kind: str, key: str) -> StateRecord | None:
         """Return a stored document, or ``None`` when it is absent."""
 
