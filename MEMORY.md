@@ -1,5 +1,33 @@
 # Automation Memory
 
+- Run: 2026-07-12T11:38:00Z — implementation run.
+- Selected issue: #36, durable agent registry (register/list) CLI.
+- Completed: added `Agent`/`AgentRegistry` to `runtime.py` (`register`/`list_agents`)
+  over the already-declared `"agent"` `StateStore` kind, wired
+  `codex-agentic-os agent register AGENT_ID [--label TEXT]` and
+  `codex-agentic-os agent list` following the existing `run` subcommand
+  conventions (`--state-db`, JSON output), exported `Agent`/`AgentRegistry` from
+  the package `__init__`, added Plan 0045, a DEVELOPMENT.md example, and
+  refreshed the index. `run claim`/`add-step --agent-id` remain unchecked
+  identifiers, per issue scope (no heartbeat/liveness or agent-reference
+  validation added).
+- Implementation commit: `d661244`; pushed to `origin/main`; issue #36
+  auto-closed by the commit's `Closes #36`; verification comment posted
+  separately.
+- Verification: `pytest -q tests/test_runtime.py tests/test_agent_cli.py
+  tests/test_run_cli.py` (179 passed); `pytest -q` (265 passed); incremental
+  index build (18 files, 403 symbols, 2220 relationships); `index check`
+  current; `git diff --check` clean.
+- Blocked review: no open issues labeled `blocked`.
+- Resulting queue: 3 unblocked `agent-ready` issues — #25, #26, #35 (all
+  priority:3). Below the 5-10 target band; recommend backlog replenishment
+  next run to add priority:1/2 work before implementing further priority:3
+  issues.
+- Final target state: `main`, pushed to `origin/main`; worktree clean after
+  the durable MEMORY.md commit.
+
+---
+
 - Run: 2026-07-12T10:33:45Z — implementation run.
 - Selected issue: #34, container bind-mount support.
 - Completed: added validated host/container mount pairs to `SandboxSpec`, rendered
@@ -100,25 +128,3 @@
   priority — real correctness bug, small bounded fix).
 - Final target state: `main`, matches `origin/main`; worktree clean (no
   changes made other than this MEMORY.md update, which will be committed).
-
----
-
-- Run: 2026-07-12T08:32:29Z — implementation run.
-- Selected issue: #32, OpenRouter default API endpoint.
-- Completed: added canonical `OPENROUTER_DEFAULT_BASE_URL`, reused it in the
-  default provider registry and compatible-adapter fallback, preserved explicit
-  overrides and optional credentials, added Plan 0041, updated Decision 0004,
-  and refreshed the index. Pre-existing README.md and untracked DEVELOPMENT.md
-  changes were preserved and excluded from the commit.
-- Implementation commit: `67d895d73d209112b64e0ff98ff551ea0cd68ff0`;
-  pushed to `origin/main`; issue #32 closed.
-- Verification: `pytest -q tests/test_chat.py tests/test_foundation.py` (22
-  passed); `pytest -q` (236 passed); incremental index build (17 files, 374
-  symbols, 2084 relationships); `index check` current; `git diff --check` clean.
-- Blocked review: no open issues labeled `blocked`.
-- Resulting queue: 2 unblocked `agent-ready` issues — #25 and #26 (both
-  priority:3; #25 older). Recommended next run: backlog replenishment because
-  the queue is at the ≤2 threshold; analyze current state and create/prioritize
-  focused issues without implementing one.
-- Final target state: `main`, pushed to `origin/main`; worktree retains unrelated
-  user changes (`README.md` modified, `DEVELOPMENT.md` untracked).
