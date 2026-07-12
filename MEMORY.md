@@ -1,5 +1,36 @@
 # Automation Memory
 
+- Run: 2026-07-12T13:35:50Z — implementation run.
+- Selected issue: #39, chat CLI command wiring `chat.py` provider adapters.
+- Completed: added `codex-agentic-os chat send --provider KIND [--model]
+  [--base-url] [--api-key-env] [--temperature] [--max-tokens] MESSAGE`, building a
+  `ProviderSpec` that falls back to the matching `DEFAULT_PROVIDER_SPECS` entry for
+  `model`/`base_url`/`api_key_env` when a flag is omitted, then prints
+  `adapter_for(spec).complete(...)` as JSON. Empty message and unknown `--provider`
+  are rejected via argparse/`parser.error` before any network call. Extended
+  `main()`'s exception handling to also catch `RuntimeError` so adapter/transport
+  failures surface as a clean CLI error (also fixes the previously-uncaught
+  `ContainerSandbox` "backend is not installed" path on `run execute-next`). Added
+  Plan 0047, `tests/test_chat_cli.py` (compatible/Anthropic/Google success paths,
+  malformed-input rejection, adapter-error surfacing — all via an injected fake
+  `codex_agentic_os.chat.urlopen`, no live network calls), a DEVELOPMENT.md example,
+  and refreshed the index. No live API key was available, so only the
+  offline/injected-transport path was verified, per DEVELOPMENT.md's
+  provider-credential policy.
+- Implementation commit: `4f8ea3b`; pushed to `origin/main`; issue #39 auto-closed
+  by the commit's `Closes #39`; verification comment posted separately.
+- Verification: `pytest -q` (288 passed); clean index build (18 files, 414 symbols,
+  2334 relationships); `codex-agentic-os index check` current; `git diff --check`
+  clean.
+- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
+- Resulting queue: 4 unblocked `agent-ready` issues — #26, #35, #40, and #41 (all
+  priority:3). Below the 5-10 target band; recommend backlog replenishment soon.
+  Recommended next: #26, the oldest priority:3 issue.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
+  before this durable MEMORY.md update.
+
+---
+
 - Run: 2026-07-12T12:35:50Z — implementation run.
 - Selected issue: #38, validate run agent references against the durable agent registry.
 - Completed: `RunCoordinator.create()`, `claim()`, and `claim_next()` now reject
@@ -103,23 +134,3 @@
   issues.
 - Final target state: `main`, pushed to `origin/main`; worktree clean after
   the durable MEMORY.md commit.
-
----
-
-- Run: 2026-07-12T10:33:45Z — implementation run.
-- Selected issue: #34, container bind-mount support.
-- Completed: added validated host/container mount pairs to `SandboxSpec`, rendered
-  repeatable `--volume` arguments after resource limits and before the image, and
-  wired strict repeatable `run execute-next --mount HOST:CONTAINER` parsing before
-  step execution can mutate state. Added zero/one/multiple and malformed-input
-  coverage, Plan 0044, a DEVELOPMENT example, and refreshed the index.
-- Implementation commit: `bd72155`; pushed to `origin/main`; issue #34 closed
-  with verification results.
-- Verification: `pytest -q tests/test_sandboxes.py tests/test_run_cli.py` (107
-  passed); `pytest -q` (248 passed); clean index build (17 files, 383 symbols,
-  2121 relationships); `index check` current; `git diff --check` clean.
-- Blocked review: no open issues labeled `blocked`.
-- Resulting queue: 4 unblocked `agent-ready` issues — #36 (priority:2), #25,
-  #26, and #35 (priority:3). Recommended next: #36, the only priority:2 issue.
-- Final target state: `main`, implementation pushed to `origin/main`; worktree
-  clean after the durable MEMORY.md commit.
