@@ -21,6 +21,10 @@ class StateRecord:
     revision: int
 
 
+class StateConflictError(ValueError):
+    """Raised when insert-only persistence finds an existing identity."""
+
+
 class StateStore:
     """Persist runtime state in a repository-local SQLite database."""
 
@@ -106,6 +110,38 @@ class StateStore:
             )
             connection.commit()
         return StateRecord(kind, key, status, json.loads(encoded), revision)
+
+    def insert(
+        self,
+        kind: str,
+        key: str,
+        *,
+        status: str,
+        payload: Mapping[str, object],
+    ) -> StateRecord:
+        """Insert a new document at revision one, rejecting an existing identity."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        self._validate_identity(kind, key, status)
+        encoded = self._encode_payload(payload)
+        self.initialize()
+        try:
+            with closing(self._connect()) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """
+                    INSERT INTO state_records (kind, key, status, payload, revision)
+                    VALUES (?, ?, ?, ?, 1)
+                    """,
+                    (kind, key, status, encoded),
+                )
+                connection.commit()
+        except sqlite3.IntegrityError as error:
+            raise StateConflictError(
+                f"state record already exists: {kind}/{key}"
+            ) from error
+        return StateRecord(kind, key, status, json.loads(encoded), 1)
 
     def put_many(
         self,

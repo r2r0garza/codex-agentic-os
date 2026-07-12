@@ -78,6 +78,19 @@ def test_run_creation_and_transition_validation(tmp_path) -> None:
         coordinator.transition("run-1", RunStatus.RUNNING, output={"early": True})
 
 
+def test_run_creation_is_atomic_across_coordinators(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    first = RunCoordinator(StateStore(database))
+    competing = RunCoordinator(StateStore(database))
+
+    original = first.create("run-1", objective="Original", agent_id="agent-1")
+    with pytest.raises(ValueError, match="run already exists: run-1"):
+        competing.create("run-1", objective="Replacement")
+
+    assert original.revision == 1
+    assert first.get("run-1") == original
+
+
 def test_ordered_steps_are_durable_and_revisioned(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

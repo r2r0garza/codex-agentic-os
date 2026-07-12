@@ -94,10 +94,11 @@ Implemented foundation:
 - Operator-facing `run recover` CLI support with typed reasons and optional detail.
 - Read-only deterministic listing of durable runs through `run list`.
 - Operator-facing queued run creation through `run create`.
+- Atomic queued run creation that rejects competing duplicate identifiers without overwrite.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0016 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0018 is complete.
 
 ## Development
 

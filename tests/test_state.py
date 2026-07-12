@@ -36,6 +36,21 @@ def test_put_updates_a_record_and_increments_revision(tmp_path) -> None:
     assert updated.revision == 2
 
 
+def test_insert_rejects_an_existing_record_without_modifying_it(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    original = StateStore(database).insert(
+        "run", "run-1", status="queued", payload={"objective": "Original"}
+    )
+
+    with pytest.raises(ValueError, match="state record already exists: run/run-1"):
+        StateStore(database).insert(
+            "run", "run-1", status="queued", payload={"objective": "Replacement"}
+        )
+
+    assert original.revision == 1
+    assert StateStore(database).get("run", "run-1") == original
+
+
 def test_list_is_stable_and_delete_reports_presence(tmp_path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     store.put("plan", "z-last", status="queued", payload={})

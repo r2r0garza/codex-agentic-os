@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Mapping, Protocol, Sequence
 
-from .state import StateRecord, StateStore
+from .state import StateConflictError, StateRecord, StateStore
 
 
 class RuntimeKind(StrEnum):
@@ -136,14 +136,16 @@ class RunCoordinator:
             raise ValueError("run objective must not be empty")
         if agent_id is not None and not agent_id.strip():
             raise ValueError("agent id must not be empty")
-        if self.store.get("run", run_id) is not None:
-            raise ValueError(f"run already exists: {run_id}")
         payload: dict[str, object] = {"objective": objective}
         if agent_id is not None:
             payload["agent_id"] = agent_id
-        return self._run(
-            self.store.put("run", run_id, status=RunStatus.QUEUED, payload=payload)
-        )
+        try:
+            record = self.store.insert(
+                "run", run_id, status=RunStatus.QUEUED, payload=payload
+            )
+        except StateConflictError as error:
+            raise ValueError(f"run already exists: {run_id}") from error
+        return self._run(record)
 
     def get(self, run_id: str) -> AgentRun | None:
         """Return a run when it exists."""
