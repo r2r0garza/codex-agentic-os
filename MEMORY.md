@@ -1,5 +1,30 @@
 # Automation Memory
 
+- Run: 2026-07-12T16:04:43Z — implementation run.
+- Selected issue: #42, read-only provider defaults listing for the CLI.
+- Completed: added `codex-agentic-os provider list`, printing every
+  `DEFAULT_PROVIDER_SPECS` entry via `ProviderSpec.to_dict()` in existing registry
+  order, with no network or state-database access. Credential output stays limited to
+  `api_key_env` variable names; secret values are never read or printed. Added Plan
+  0052, a DEVELOPMENT.md usage example, and focused CLI coverage for ordering, field
+  serialization, credential-value absence (with live env vars set), and no-network
+  access. Refreshed the committed index.
+- Implementation commit: `eaf37bf`; pushed to `origin/main`; issue #42 auto-closed by
+  the commit's `Closes #42`; verification comment posted separately.
+- Verification: `pytest -q` (316 passed); `codex-agentic-os index build` then
+  `codex-agentic-os index check` (current — 19 files, 448 symbols, 2489
+  relationships); `git diff --check` clean; manual `provider list`/`--help`
+  invocation checked by hand.
+- Blocked review: `gh issue list --label blocked` returned no results; nothing to
+  re-evaluate.
+- Resulting queue: 2 unblocked `agent-ready` issues — #43 and #44 (both priority:3).
+  At the ≤2 threshold; next run should be backlog replenishment. Recommended next
+  implementation candidate once replenished: #43, the older of the two.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
+  before this durable MEMORY.md update.
+
+---
+
 - Run: 2026-07-12T15:37:27Z — implementation run.
 - Selected issue: #41, explicit heartbeat/liveness tracking for registered agents.
 - Completed: `Agent` now exposes a durable ISO-8601 UTC `last_seen`; registration
@@ -99,27 +124,5 @@
 - Resulting queue: 2 unblocked `agent-ready` issues — #40 and #41 (both priority:3).
   At the ≤2 threshold; next run should be backlog replenishment. Recommended next
   implementation candidate once replenished: #40, the older of the two.
-- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
-  before this durable MEMORY.md update.
-
----
-
-- Run: 2026-07-12T13:34:58Z — implementation run.
-- Selected issue: #26, operator step transition CLI.
-- Completed: added `run transition-step STEP_ID STATUS [--output JSON]`, delegating
-  lifecycle/output validation and atomic persistence to
-  `RunCoordinator.transition_step()`. The command prints the standard step payload,
-  never executes command-bearing records, and rejects malformed/non-object JSON before
-  mutation. Added Plan 0048, DEVELOPMENT.md examples, focused coordination-only and
-  command-bearing coverage, family-preservation/rejection tests, and refreshed the
-  committed index.
-- Implementation commit: `c3c7147`; pushed to `origin/main`; issue #26 auto-closed by
-  the commit's `Closes #26`; verification comment posted separately.
-- Verification: `pytest -q tests/test_run_cli.py` (120 passed); `pytest -q` (297
-  passed); incremental index build (19 files, 436 symbols, 2415 relationships);
-  `codex-agentic-os index check` current; `git diff --check` clean.
-- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
-- Resulting queue: 3 unblocked `agent-ready` issues — #35, #40, and #41 (all
-  priority:3). Recommended next: #35, the oldest priority:3 issue.
 - Final target state: `main`, implementation pushed to `origin/main`; worktree clean
   before this durable MEMORY.md update.
