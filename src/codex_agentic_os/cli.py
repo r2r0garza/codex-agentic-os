@@ -221,7 +221,11 @@ def _parser() -> argparse.ArgumentParser:
         "heartbeat", help="refresh a registered agent's liveness timestamp"
     )
     agent_heartbeat.add_argument("agent_id")
-    for command in (agent_register, agent_list, agent_heartbeat):
+    agent_inspect = agent_commands.add_parser(
+        "inspect", help="show one registered agent identity"
+    )
+    agent_inspect.add_argument("agent_id")
+    for command in (agent_register, agent_list, agent_heartbeat, agent_inspect):
         command.add_argument(
             "--state-db",
             type=Path,
@@ -560,13 +564,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif arguments.command == "agent":
             if arguments.agent_command != "register" and not arguments.state_db.is_file():
                 raise ValueError(f"state database does not exist: {arguments.state_db}")
-            read_only = arguments.agent_command == "list"
+            read_only = arguments.agent_command in {"inspect", "list"}
             registry = AgentRegistry(StateStore(arguments.state_db, read_only=read_only))
             if arguments.agent_command == "register":
                 registered = registry.register(arguments.agent_id, label=arguments.label)
                 print(json.dumps(_agent_payload(registered), indent=2, sort_keys=True))
             elif arguments.agent_command == "heartbeat":
                 agent = registry.heartbeat(arguments.agent_id)
+                print(json.dumps(_agent_payload(agent), indent=2, sort_keys=True))
+            elif arguments.agent_command == "inspect":
+                agent = registry.get(arguments.agent_id)
+                if agent is None:
+                    raise ValueError(f"agent does not exist: {arguments.agent_id}")
                 print(json.dumps(_agent_payload(agent), indent=2, sort_keys=True))
             else:
                 print(

@@ -704,7 +704,7 @@ class RunCoordinator:
 
 
 class AgentRegistry:
-    """Register, heartbeat, and list durable identities backed by ``StateStore``."""
+    """Register, inspect, heartbeat, and list identities backed by ``StateStore``."""
 
     def __init__(
         self,
@@ -745,6 +745,14 @@ class AgentRegistry:
         return self._agent(
             self.store.put("agent", agent_id, status=record.status, payload=payload)
         )
+
+    def get(self, agent_id: str) -> Agent | None:
+        """Return one registered agent without mutating its durable record."""
+
+        if not agent_id.strip():
+            raise ValueError("agent id must not be empty")
+        record = self.store.get("agent", agent_id)
+        return None if record is None else self._agent(record)
 
     def list_agents(self) -> tuple[Agent, ...]:
         """Return all registered agents in stable identifier order."""

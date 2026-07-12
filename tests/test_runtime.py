@@ -1159,6 +1159,46 @@ def test_agent_heartbeat_rejects_unregistered_id_without_mutation(tmp_path) -> N
     assert AgentRegistry(StateStore(database)).list_agents() == (original,)
 
 
+def test_agent_get_returns_existing_record_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = AgentRegistry(StateStore(database))
+    original = registry.register("agent-1", label="Worker")
+
+    assert AgentRegistry(StateStore(database, read_only=True)).get("agent-1") == original
+    assert AgentRegistry(StateStore(database)).get("agent-1") == original
+
+
+def test_agent_get_returns_none_for_missing_record_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = AgentRegistry(StateStore(database))
+    original = registry.register("agent-1")
+
+    assert AgentRegistry(StateStore(database, read_only=True)).get("missing") is None
+    assert AgentRegistry(StateStore(database)).list_agents() == (original,)
+
+
+def test_agent_get_reads_legacy_record_without_last_seen(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("agent", "legacy", status="registered", payload={"label": "Legacy"})
+
+    assert AgentRegistry(StateStore(database, read_only=True)).get("legacy") == Agent(
+        "legacy", "Legacy", 1, None
+    )
+
+
+@pytest.mark.parametrize("agent_id", ["", " "])
+def test_agent_get_rejects_empty_identity_without_mutation(tmp_path, agent_id) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = AgentRegistry(StateStore(database))
+    original = registry.register("agent-1")
+
+    with pytest.raises(ValueError, match="agent id must not be empty"):
+        registry.get(agent_id)
+
+    assert registry.list_agents() == (original,)
+
+
 def test_agents_are_listed_in_stable_identifier_order(tmp_path) -> None:
     registry = AgentRegistry(StateStore(tmp_path / "state.sqlite3"))
     second = registry.register("agent-b")

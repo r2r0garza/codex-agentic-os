@@ -315,6 +315,7 @@ empty/whitespace-only values without mutation:
 
 ```bash
 codex-agentic-os agent register agent-1 --label "Build worker"
+codex-agentic-os agent inspect agent-1
 codex-agentic-os agent list
 codex-agentic-os agent list --state-db /path/to/state.sqlite3
 ```

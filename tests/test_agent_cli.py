@@ -67,6 +67,71 @@ def test_cli_heartbeats_registered_agent(tmp_path, capsys) -> None:
     assert refreshed["last_seen"] >= original.last_seen
 
 
+def test_cli_inspects_registered_agent_without_changing_revision(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    original = AgentRegistry(StateStore(database)).register("agent-1", label="Worker")
+
+    main(["agent", "inspect", "agent-1", "--state-db", str(database)])
+
+    assert json.loads(capsys.readouterr().out) == {
+        "agent_id": original.agent_id,
+        "label": original.label,
+        "last_seen": original.last_seen,
+        "revision": original.revision,
+    }
+    assert AgentRegistry(StateStore(database)).get("agent-1") == original
+
+
+def test_cli_inspects_legacy_agent_with_null_last_seen(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).insert(
+        "agent", "legacy", status="registered", payload={"label": "Legacy"}
+    )
+
+    main(["agent", "inspect", "legacy", "--state-db", str(database)])
+
+    assert json.loads(capsys.readouterr().out) == {
+        "agent_id": "legacy",
+        "label": "Legacy",
+        "last_seen": None,
+        "revision": 1,
+    }
+
+
+@pytest.mark.parametrize("create_database", [False, True])
+def test_cli_inspect_rejects_missing_database_or_agent_without_mutation(
+    tmp_path, capsys, create_database
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    if create_database:
+        StateStore(database).initialize()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["agent", "inspect", "missing", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    message = (
+        "agent does not exist: missing"
+        if create_database
+        else f"state database does not exist: {database}"
+    )
+    assert message in capsys.readouterr().err
+    if create_database:
+        assert AgentRegistry(StateStore(database)).list_agents() == ()
+
+
+def test_cli_inspect_rejects_empty_identifier_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    original = AgentRegistry(StateStore(database)).register("agent-1")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["agent", "inspect", " ", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "agent id must not be empty" in capsys.readouterr().err
+    assert AgentRegistry(StateStore(database)).list_agents() == (original,)
+
+
 @pytest.mark.parametrize("create_database", [False, True])
 def test_cli_heartbeat_rejects_missing_database_or_agent(
     tmp_path, capsys, create_database
