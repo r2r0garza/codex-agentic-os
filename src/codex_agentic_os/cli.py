@@ -23,6 +23,7 @@ from .runtime import (
     AgentRegistry,
     ProviderMessage,
     RunCoordinator,
+    RunHistoryEntry,
     RunStatus,
     RunStep,
     RuntimeSpec,
@@ -79,6 +80,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     list_runs = run_commands.add_parser("list", help="list durable runs")
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
+    history = run_commands.add_parser(
+        "history", help="show one run's durable lifecycle history in order"
+    )
     transition = run_commands.add_parser(
         "transition", help="advance a run through an explicit lifecycle transition"
     )
@@ -167,6 +171,7 @@ def _parser() -> argparse.ArgumentParser:
         )
     for command in (
         inspect,
+        history,
         inspect_step,
         cancel,
         cancel_step,
@@ -308,6 +313,12 @@ def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
     return {"run": run_data, "steps": steps}
 
 
+def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, object]]:
+    """Return one run's durable history entries in stable sequence order."""
+
+    return [asdict(entry) for entry in entries]
+
+
 def _step_payload(step: RunStep) -> dict[str, object]:
     """Return the standard JSON-compatible view of one durable step."""
 
@@ -382,7 +393,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         if arguments.command == "run":
             if arguments.run_command != "create" and not arguments.state_db.is_file():
                 raise ValueError(f"state database does not exist: {arguments.state_db}")
-            read_only = arguments.run_command in {"inspect", "inspect-step", "list"}
+            read_only = arguments.run_command in {
+                "inspect",
+                "inspect-step",
+                "list",
+                "history",
+            }
             coordinator = RunCoordinator(
                 StateStore(arguments.state_db, read_only=read_only)
             )
@@ -478,6 +494,17 @@ def main(argv: Sequence[str] | None = None) -> None:
                 if step is None:
                     raise ValueError(f"step does not exist: {arguments.step_id}")
                 print(json.dumps(_step_payload(step), indent=2, sort_keys=True))
+                return
+            elif arguments.run_command == "history":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                print(
+                    json.dumps(
+                        _history_payload(coordinator.list_history(arguments.run_id)),
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
                 return
             elif arguments.run_command == "transition":
                 if coordinator.get(arguments.run_id) is None:

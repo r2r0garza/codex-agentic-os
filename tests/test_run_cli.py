@@ -1770,3 +1770,140 @@ def test_cli_prune_rejects_active_runs_without_mutation(tmp_path, capsys, status
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get("run-1") == original_run
     assert reloaded.get_step("step-1") == original_step
+
+
+def test_cli_history_reports_creation_claim_and_transition_in_order(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Track lifecycle")
+    coordinator.claim("run-1", "agent-1")
+    coordinator.transition("run-1", RunStatus.RUNNING)
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [
+        (entry["transition"], entry["status"], entry["agent_id"]) for entry in payload
+    ] == [
+        ("created", "queued", None),
+        ("claimed", "queued", "agent-1"),
+        ("transitioned", "running", "agent-1"),
+    ]
+    assert [entry["sequence"] for entry in payload] == [1, 2, 3]
+
+
+def test_cli_history_reconstructs_mixed_command_and_provider_run_across_processes(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Mixed durable work")
+    coordinator.add_step("run-1", "step-1", objective="Checkpoint", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "step-2",
+        objective="Summarize",
+        message=ProviderMessage(provider="ollama", content="Summarize"),
+    )
+
+    def execute(self, argv, *, timeout=None):
+        return SandboxResult(("docker", *argv), 0, "ok", "")
+
+    monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
+    main([
+        "run", "execute-next", "run-1", "--sandbox", "docker",
+        "--state-db", str(database),
+    ])
+    capsys.readouterr()
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("Summary", model="served-model")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    capsys.readouterr()
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert [entry["transition"] for entry in payload] == [
+        "created",
+        "run_started",
+        "step_started",
+        "step_succeeded",
+        "step_started",
+        "step_succeeded",
+        "run_succeeded",
+    ]
+    step_scoped = [
+        (entry["step_id"], entry["execution_kind"])
+        for entry in payload
+        if entry["step_id"] is not None
+    ]
+    assert step_scoped == [
+        ("step-1", "command"),
+        ("step-1", "command"),
+        ("step-2", "provider"),
+        ("step-2", "provider"),
+    ]
+    for entry in payload:
+        assert set(entry) == {
+            "run_id",
+            "sequence",
+            "transition",
+            "status",
+            "agent_id",
+            "execution_kind",
+            "step_id",
+        }
+
+    reconstructed = RunCoordinator(StateStore(database)).list_history("run-1")
+    assert [entry["transition"] for entry in payload] == [
+        entry.transition for entry in reconstructed
+    ]
+
+
+def test_cli_history_rejects_missing_run_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).initialize()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "history", "missing", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "run does not exist: missing" in capsys.readouterr().err
+
+
+def test_cli_history_rejects_missing_database_without_creating_it(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "history", "run-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not database.exists()
+
+
+def test_cli_history_does_not_mutate_run_or_step_state(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Inspect history")
+    original_step = coordinator.add_step(
+        "run-1", "step-1", objective="Work", command=("true",)
+    )
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    capsys.readouterr()
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("step-1") == original_step

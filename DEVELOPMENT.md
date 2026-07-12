@@ -293,6 +293,21 @@ codex-agentic-os run list --state-db /path/to/state.sqlite3
 
 Listing prints JSON summaries and fails without creating a missing database.
 
+Inspect one run's durable lifecycle history in stable sequence order without
+modifying runtime state. Each entry identifies the run, sequence, transition,
+resulting status, responsible agent when known, execution kind (`command` or
+`provider`), and step id when the entry is step-scoped; entries never include
+credentials, raw environment values, command arguments, provider request bodies,
+or terminal outputs:
+
+```bash
+codex-agentic-os run history run-002
+codex-agentic-os run history run-002 --state-db /path/to/state.sqlite3
+```
+
+History inspection requires an existing database and run; it fails without
+creating a database and without mutating state.
+
 Cancel a queued or running run from the CLI. The command preserves completed steps,
 cancels queued or running steps, and prints the resulting durable state as JSON:
 
