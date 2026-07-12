@@ -99,10 +99,11 @@ Implemented foundation:
 - Operator-facing durable command-step creation through `run add-step`.
 - Atomic queued-run claiming that preserves the first committed agent assignment.
 - Targeted queued-step cancellation that leaves the active parent run, siblings, and durable positions unchanged.
+- Operator-facing execution of one queued durable command through an explicitly selected Docker or Podman sandbox.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0022 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0023 is complete.
 
 ## Development
 
@@ -241,6 +242,18 @@ codex-agentic-os run recover step-001 interrupted \
 
 Recovery requires an existing database and a running step. It never retries the
 command.
+
+Execute at most one queued command step through an explicitly selected container
+backend. The optional image override otherwise retains conservative sandbox defaults:
+
+```bash
+codex-agentic-os run execute-next run-002 --sandbox docker
+codex-agentic-os run execute-next run-002 --sandbox podman --image python:3.12-slim
+```
+
+When no queued work remains, the unchanged run payload includes
+`"execution": {"attempted": false}`. Coordination-only steps fail before mutation;
+timeouts and interruptions leave the step running for explicit recovery.
 
 Command arguments and timeouts are stored with the step and survive process restarts.
 Steps may omit a command when they represent coordination-only work.

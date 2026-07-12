@@ -17,7 +17,7 @@ from .index import (
 )
 from .providers import DEFAULT_PROVIDER_SPECS
 from .runtime import RunCoordinator, RuntimeSpec, StepRecoveryReason
-from .sandboxes import default_sandboxes
+from .sandboxes import ContainerSandbox, SandboxKind, SandboxSpec, default_sandboxes
 from .state import StateStore
 
 
@@ -53,6 +53,9 @@ def _parser() -> argparse.ArgumentParser:
     list_runs = run_commands.add_parser("list", help="list durable runs")
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
     cancel = run_commands.add_parser("cancel", help="cancel a run and its active steps")
+    execute_next = run_commands.add_parser(
+        "execute-next", help="execute the next queued command step in a container"
+    )
     recover = run_commands.add_parser(
         "recover", help="fail an interrupted or timed-out running step"
     )
@@ -71,7 +74,7 @@ def _parser() -> argparse.ArgumentParser:
             default=Path(".codex-agentic-os/state.sqlite3"),
             help="path to the runtime state database",
         )
-    for command in (inspect, cancel, recover):
+    for command in (inspect, cancel, execute_next, recover):
         identifier = "step_id" if command is recover else "run_id"
         command.add_argument(identifier)
         command.add_argument(
@@ -84,6 +87,10 @@ def _parser() -> argparse.ArgumentParser:
         "reason", choices=[reason.value for reason in StepRecoveryReason]
     )
     recover.add_argument("--detail", help="operator context for the recovery")
+    execute_next.add_argument(
+        "--sandbox", required=True, choices=[kind.value for kind in SandboxKind]
+    )
+    execute_next.add_argument("--image", help="container image override")
     return parser
 
 
@@ -156,6 +163,25 @@ def main(argv: Sequence[str] | None = None) -> None:
             if arguments.run_command == "cancel":
                 coordinator.cancel(arguments.run_id)
                 run_id = arguments.run_id
+            elif arguments.run_command == "execute-next":
+                kind = SandboxKind(arguments.sandbox)
+                if arguments.image is not None and not arguments.image.strip():
+                    raise ValueError("sandbox image must not be empty")
+                spec = (
+                    SandboxSpec(kind=kind, image=arguments.image)
+                    if arguments.image is not None
+                    else SandboxSpec(kind=kind)
+                )
+                result = coordinator.execute_next_step(
+                    arguments.run_id,
+                    ContainerSandbox(spec),
+                )
+                run_id = arguments.run_id
+                if result is None:
+                    payload = _run_payload(coordinator, run_id)
+                    payload["execution"] = {"attempted": False}
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                    return
             elif arguments.run_command == "recover":
                 step = coordinator.get_step(arguments.step_id)
                 if step is None:

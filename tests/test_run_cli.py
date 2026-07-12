@@ -6,6 +6,7 @@ import pytest
 
 from codex_agentic_os.cli import main
 from codex_agentic_os.runtime import RunCoordinator, RunStatus, StepStatus
+from codex_agentic_os.sandboxes import SandboxResult
 from codex_agentic_os.state import StateStore
 
 
@@ -382,3 +383,114 @@ def test_cli_recovery_rejections_do_not_mutate_state(tmp_path, capsys) -> None:
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get("run-1") == queued_run
     assert reloaded.get_step("command") == queued_step
+
+
+@pytest.mark.parametrize(("sandbox", "image"), [("docker", None), ("podman", "custom:1")])
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_cli_executes_exactly_one_next_step(
+    tmp_path, monkeypatch, capsys, sandbox, image, returncode
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+    coordinator.add_step(
+        "run-1", "step-1", objective="First", command=("printf", "hello"), timeout=4
+    )
+    coordinator.add_step("run-1", "step-2", objective="Second", command=("true",))
+    calls = []
+
+    def execute(self, argv, *, timeout=None):
+        calls.append((self.spec, tuple(argv), timeout))
+        return SandboxResult((sandbox, *argv), returncode, "hello", "problem")
+
+    monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
+    arguments = [
+        "run", "execute-next", "run-1", "--sandbox", sandbox,
+        "--state-db", str(database),
+    ]
+    if image is not None:
+        arguments.extend(["--image", image])
+    main(arguments)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert len(calls) == 1
+    spec, command, timeout = calls[0]
+    assert spec.kind.value == sandbox
+    assert spec.image == (image or "python:3.12-slim")
+    assert spec.network_enabled is False
+    assert spec.read_only_root is True
+    assert command == ("printf", "hello")
+    assert timeout == 4
+    assert payload["steps"][0]["status"] == ("succeeded" if returncode == 0 else "failed")
+    assert payload["steps"][1]["status"] == "queued"
+    assert payload["run"]["status"] == ("running" if returncode == 0 else "failed")
+    assert "execution" not in payload
+
+
+def test_cli_execute_next_reports_empty_queue_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="No queued work")
+
+    main([
+        "run", "execute-next", "run-1", "--sandbox", "docker",
+        "--state-db", str(database),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["execution"] == {"attempted": False}
+    assert payload["run"]["revision"] == original.revision
+    assert payload["steps"] == []
+
+
+def test_cli_execute_next_rejects_empty_image_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    queued_run = coordinator.create("run-1", objective="Execute durable work")
+    queued_step = coordinator.add_step(
+        "run-1", "step-1", objective="Work", command=("true",)
+    )
+
+    with pytest.raises(SystemExit) as error:
+        main([
+            "run", "execute-next", "run-1", "--sandbox", "docker", "--image", " ",
+            "--state-db", str(database),
+        ])
+
+    assert error.value.code == 2
+    assert "sandbox image must not be empty" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == queued_run
+    assert reloaded.get_step("step-1") == queued_step
+
+
+@pytest.mark.parametrize("failure", ["coordination", "exception"])
+def test_cli_execute_next_failure_preserves_recoverable_state(
+    tmp_path, monkeypatch, capsys, failure
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    queued_run = coordinator.create("run-1", objective="Execute durable work")
+    command = None if failure == "coordination" else ("sleep", "10")
+    queued_step = coordinator.add_step("run-1", "step-1", objective="Work", command=command)
+
+    if failure == "exception":
+        def execute(self, argv, *, timeout=None):
+            raise TimeoutError("sandbox command timed out")
+        monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
+
+    with pytest.raises((SystemExit, TimeoutError)) as error:
+        main([
+            "run", "execute-next", "run-1", "--sandbox", "podman",
+            "--state-db", str(database),
+        ])
+
+    reloaded = RunCoordinator(StateStore(database))
+    if failure == "coordination":
+        assert error.value.code == 2
+        assert "next step does not have a command" in capsys.readouterr().err
+        assert reloaded.get("run-1") == queued_run
+        assert reloaded.get_step("step-1") == queued_step
+    else:
+        assert reloaded.get("run-1").status is RunStatus.RUNNING
+        assert reloaded.get_step("step-1").status is StepStatus.RUNNING
