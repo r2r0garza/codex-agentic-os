@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-12T20:37:10Z — implementation and closure run.
+- Active milestone: Sprint 4 "Durable model-backed step execution" (#4). Selected and closed its sole unblocked `agent-ready` issue, #52 (execute durable model steps through provider adapters, priority:2).
+- Completed: `execute_next_step()` now dispatches queued provider-message steps through an injected adapter resolver, preserves provider/model/system/temperature/max-token inputs in provider configuration and the provider-neutral chat request, and durably persists normalized content/model/raw response output. `run execute-next` resolves built-in provider configuration for model steps without requiring `--sandbox`; command steps retain the existing sandbox path. Added Plan 0058 and updated DEVELOPMENT runtime guidance.
+- Verification: focused runtime/CLI suite 217 passed; full suite 349 passed; exactly-once contention test passed; Python compilation passed; index rebuilt/current (20 files, 499 symbols, 2745 relationships); `git diff --check` passed.
+- Implementation commit `bc360b0` pushed to `origin/main`; issue #52 closed with verification evidence.
+- Blocked review: #53's dependencies (#51/#52) are now resolved, so `blocked` was removed and `agent-ready` added. Sprint 4 now has one ready issue: #53.
+- Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed.
+- Final target: `main`; next eligible issue is #53. Worktree dirty only for this MEMORY record until committed and pushed.
+
+---
+
 - Run: 2026-07-12T20:07:00Z — implementation verification and closure run.
 - Active milestone: Sprint 4 "Durable model-backed step execution" (#4). Re-selected its sole unblocked `agent-ready` issue, #51 (queue and inspect durable provider-message steps, priority:1); implementation commit `b44bbb0` was already on `main`, so this run finished verification.
 - Root cause of the prior blocker: the activated `.venv` genuinely had no pytest and no project entry point; earlier `pip3` retries had been cancelled too early. Network to PyPI is slow (~40s/request) but functional. Both `pip3 install 'pytest>=8.0'` and `pip3 install -e '.[dev]'` succeeded when given several minutes.
@@ -38,16 +49,3 @@
 - Blocked review: #52 and #53 remain correctly blocked by the explicit predecessor contracts; no blocker was resolved and no labels changed.
 - Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6), so no planning run was needed.
 - Final target: `main`; next eligible issue is #51. GitHub issue creation complete; MEMORY commit/push pending; worktree dirty only for this durable record.
-
----
-
-- Run: 2026-07-12T18:20:00Z — implementation, retrospective, and roadmap-horizon maintenance.
-- Active milestone at selection: Sprint 3 "Observable durable agent identities" (#3). Selected and closed its sole unblocked `agent-ready` issue, #46 (read-only agent inspection CLI, priority:3).
-- Completed: added `AgentRegistry.get()` and `agent inspect AGENT_ID [--state-db PATH]`. Inspection opens the state database read-only, emits the standard agent JSON payload, supports legacy `last_seen: null`, rejects missing databases, unknown agents, and empty identifiers cleanly, and preserves record revision/liveness. Added Plan 0056, DEVELOPMENT guidance, and refreshed the committed index.
-- Implementation commit `34e77ed` pushed to `origin/main`; issue #46 closed with verification evidence.
-- Verification: focused agent suite (36 passed); full suite (346 passed); index rebuilt/current (20 files, 479 symbols, 2635 relationships); `git diff --check` clean. Direct operator UAT passed for registration, heartbeat, stable listing, repeated byte-identical read-only inspection, legacy inspection, unknown identity rejection, and creation/inspection of a run owned by the registered identity.
-- Retrospective: created and closed issue #50 after every Sprint 3 exit criterion passed. No architecture decision changed and no remediation was required; Sprint 3 was closed.
-- Blocked review: no open `blocked` issues; nothing changed.
-- Roadmap horizon: 3 open milestones (Sprint 3, Sprint 4, Sprint 5) before closure, then 2. Invoked `codex-agentic-os-plan-sprints` and created Sprint 6 "Operator approval-gated execution" (#6, future, no issues), restoring exactly 3 open milestones: Sprint 4, Sprint 5, Sprint 6. No issue was created outside the active milestone.
-- Resulting active queue: Sprint 4 has no issues yet and requires a replenishment run derived from its durable model-backed step execution exit criteria; there is no eligible implementation issue until replenishment.
-- Final target: `main`; issue #46 and retrospective #50 closed; Sprint 3 closed; Sprint 6 created; implementation pushed. This MEMORY update is the remaining durable record to commit and push.
