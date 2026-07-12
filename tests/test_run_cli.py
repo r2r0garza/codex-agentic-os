@@ -208,6 +208,45 @@ def test_cli_status_filter_can_return_no_matches(tmp_path, capsys) -> None:
     assert json.loads(capsys.readouterr().out) == []
 
 
+def test_cli_filters_runs_by_exact_agent_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    second = coordinator.create("run-c", objective="Second", agent_id="agent-1")
+    coordinator.create("run-b", objective="Unassigned")
+    first = coordinator.create("run-a", objective="First", agent_id="agent-1")
+    coordinator.create("run-d", objective="Different", agent_id="agent-10")
+
+    main(["run", "list", "--agent-id", "agent-1", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [run["run_id"] for run in payload] == ["run-a", "run-c"]
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-a") == first
+    assert reloaded.get("run-c") == second
+
+
+def test_cli_agent_filter_can_return_no_matches(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    RunCoordinator(StateStore(database)).create("run-1", objective="Unassigned")
+
+    main(["run", "list", "--agent-id", "missing", "--state-db", str(database)])
+
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_cli_agent_filter_rejects_empty_value_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="Assigned", agent_id="agent-1")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "list", "--agent-id", " ", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "agent id must not be empty" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
 def test_cli_list_rejects_invalid_status_choice(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     StateStore(database).initialize()
@@ -250,6 +289,17 @@ def test_cli_filtered_list_reports_invalid_unmatched_run_records(tmp_path, capsy
 
     with pytest.raises(SystemExit) as exit_info:
         main(["run", "list", "--status", "failed", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "run record has invalid objective: broken" in capsys.readouterr().err
+
+
+def test_cli_agent_filtered_list_reports_invalid_unmatched_run_records(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).put("run", "broken", status="queued", payload={})
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "list", "--agent-id", "agent-1", "--state-db", str(database)])
 
     assert exit_info.value.code == 2
     assert "run record has invalid objective: broken" in capsys.readouterr().err

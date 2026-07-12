@@ -73,6 +73,10 @@ def _parser() -> argparse.ArgumentParser:
         choices=[status.value for status in RunStatus],
         help="include runs with this lifecycle status; repeat to include multiple statuses",
     )
+    list_runs.add_argument(
+        "--agent-id",
+        help="include runs assigned to this exact agent identifier",
+    )
     for command in (create, add_step, list_runs):
         command.add_argument(
             "--state-db",
@@ -119,6 +123,7 @@ def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
 def _run_list_payload(
     coordinator: RunCoordinator,
     statuses: Sequence[RunStatus] | None = None,
+    agent_id: str | None = None,
 ) -> list[dict[str, object]]:
     """Return JSON-compatible run summaries in stable identifier order."""
 
@@ -126,6 +131,8 @@ def _run_list_payload(
     summaries = []
     for run in coordinator.list_runs():
         if included_statuses is not None and run.status not in included_statuses:
+            continue
+        if agent_id is not None and run.agent_id != agent_id:
             continue
         summary = asdict(run)
         summary["status"] = run.status.value
@@ -170,6 +177,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
                 run_id = arguments.run_id
             elif arguments.run_command == "list":
+                if arguments.agent_id is not None and not arguments.agent_id.strip():
+                    raise ValueError("agent id must not be empty")
                 statuses = (
                     None
                     if arguments.status is None
@@ -177,7 +186,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
                 print(
                     json.dumps(
-                        _run_list_payload(coordinator, statuses),
+                        _run_list_payload(coordinator, statuses, arguments.agent_id),
                         indent=2,
                         sort_keys=True,
                     )

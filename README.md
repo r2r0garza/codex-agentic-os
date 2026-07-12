@@ -94,6 +94,7 @@ Implemented foundation:
 - Operator-facing `run recover` CLI support with typed reasons and optional detail.
 - Read-only deterministic listing of durable runs through `run list`.
 - Repeatable lifecycle-status filtering for read-only durable run listings.
+- Exact assigned-agent filtering for read-only durable run listings.
 - Operator-facing queued run creation through `run create`.
 - Atomic queued run creation that rejects competing duplicate identifiers without overwrite.
 - Atomic durable step append with globally unique identifiers and contiguous per-run positions.
@@ -104,7 +105,7 @@ Implemented foundation:
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0024 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0025 is complete.
 
 ## Development
 
@@ -244,12 +245,13 @@ codex-agentic-os run recover step-001 interrupted \
 Recovery requires an existing database and a running step. It never retries the
 command.
 
-List all durable runs in stable identifier order, or repeat `--status` to include the
-union of selected lifecycle states:
+List all durable runs in stable identifier order, repeat `--status` to include the
+union of selected lifecycle states, or select one exact assigned agent:
 
 ```bash
 codex-agentic-os run list
 codex-agentic-os run list --status queued --status running
+codex-agentic-os run list --agent-id agent-1
 ```
 
 Execute at most one queued command step through an explicitly selected container
