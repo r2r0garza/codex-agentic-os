@@ -106,10 +106,11 @@ Implemented foundation:
 - Read-only inspection of one durable step by its globally unique identifier.
 - Targeted queued-step cancellation that leaves the active parent run, siblings, and durable positions unchanged.
 - Operator-facing execution of one queued durable command through an explicitly selected Docker or Podman sandbox.
+- Operator-facing worker CLI that atomically claims the next eligible queued run without a known identifier.
 
 Verification note: the full local pytest suite passes.
 
-Planned next: choose the next prioritized `agent-ready` issue; Plan 0030 is complete.
+Planned next: choose the next prioritized `agent-ready` issue; Plan 0031 is complete.
 
 ## Development
 
@@ -257,6 +258,18 @@ codex-agentic-os run list
 codex-agentic-os run list --status queued --status running
 codex-agentic-os run list --agent-id agent-1
 ```
+
+Let a worker atomically claim the next eligible queued, unassigned run without knowing
+its identifier in advance. The command prints the standard ordered run payload when a
+run is claimed, or `{"claim": {"attempted": false}}` when no eligible run exists:
+
+```bash
+codex-agentic-os run claim-next --agent-id agent-1
+codex-agentic-os run claim-next --agent-id agent-1 --state-db /path/to/state.sqlite3
+```
+
+Claiming requires an existing database and a non-empty agent identifier. No mutation
+occurs when no eligible run exists or validation fails.
 
 Execute at most one queued command step through an explicitly selected container
 backend. The optional image override otherwise retains conservative sandbox defaults:

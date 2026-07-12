@@ -169,6 +169,63 @@ def test_cli_claim_rejects_missing_database(tmp_path, capsys) -> None:
     assert not database.exists()
 
 
+def test_cli_claims_next_eligible_run_and_prints_ordered_steps(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-b", objective="Later")
+    original = coordinator.create("run-a", objective="Claim next work")
+    coordinator.add_step("run-a", "step-1", objective="First")
+    coordinator.add_step("run-a", "step-2", objective="Second")
+
+    main(["run", "claim-next", "--agent-id", "agent-7", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["run_id"] == "run-a"
+    assert payload["run"]["agent_id"] == "agent-7"
+    assert payload["run"]["revision"] == original.revision + 1
+    assert [step["step_id"] for step in payload["steps"]] == ["step-1", "step-2"]
+    reloaded = RunCoordinator(StateStore(database))
+    claimed = reloaded.get("run-a")
+    assert claimed is not None
+    assert claimed.agent_id == "agent-7"
+    assert reloaded.get("run-b").agent_id is None
+
+
+def test_cli_claim_next_reports_no_eligible_work_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    assigned = coordinator.create("run-1", objective="Assigned", agent_id="agent-1")
+
+    main(["run", "claim-next", "--agent-id", "agent-2", "--state-db", str(database)])
+
+    assert json.loads(capsys.readouterr().out) == {"claim": {"attempted": False}}
+    assert RunCoordinator(StateStore(database)).get("run-1") == assigned
+
+
+def test_cli_claim_next_rejects_empty_agent_id_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="Queued work")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "claim-next", "--agent-id", " ", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "agent id must not be empty" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
+def test_cli_claim_next_rejects_missing_database(tmp_path, capsys) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "claim-next", "--agent-id", "agent-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not database.exists()
+
+
 @pytest.mark.parametrize(
     ("setup", "arguments", "message"),
     [
