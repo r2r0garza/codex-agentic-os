@@ -1,5 +1,26 @@
 # Automation Memory
 
+- Run: 2026-07-12T16:20:26Z — backlog-replenishment run.
+- Trigger: exactly 2 unblocked `agent-ready` issues remained (#43 and #44, both
+  priority:3), at the ≤2 threshold — no issue was implemented.
+- Reviewed: active `.venv`; current queue specifications; provider, agent-registry,
+  sandbox, and CLI surfaces; recent relevant plans and deferred-scope notes. The
+  stale committed index was rebuilt and verified (20 files, 453 symbols, 2503
+  relationships).
+- Created 3 bounded priority:3 issues with acceptance criteria, tests, dependencies,
+  and appropriate area labels: #45 provider credential readiness (providers/cli),
+  #46 read-only agent inspection (runtime/cli), and #47 explicit sandbox network
+  opt-in (sandbox/cli).
+- Verification: `.venv` activated (Python 3.12.13); `codex-agentic-os index build`
+  and `codex-agentic-os index check` succeeded. Queue-only run; tests not run.
+- Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
+- Resulting queue: 5 unblocked `agent-ready` issues — #43, #44, #45, #46, and #47
+  (all priority:3). Recommended next: #43, oldest at the highest available priority.
+- Final target state: `main`; source unchanged; refreshed `.code-index/` artifacts
+  and this MEMORY.md update are the durable changes to commit and push.
+
+---
+
 - Run: 2026-07-12T16:04:43Z — implementation run.
 - Selected issue: #42, read-only provider defaults listing for the CLI.
 - Completed: added `codex-agentic-os provider list`, printing every
@@ -98,31 +119,3 @@
   priority.
 - Final target state: `main`; source worktree unchanged; this MEMORY.md update is the
   only repository change and will be committed/pushed as the durable run record.
-
----
-
-- Run: 2026-07-12T14:03:36Z — implementation run.
-- Selected issue: #35, replace dead plan-checklist scan in hourly heartbeat workflow.
-- Completed: `.github/workflows/hourly-agentic-os.yml`'s heartbeat job no longer greps
-  `.plan/*.md` for `- [ ]` checkboxes (a format none of the 41 plan files use anymore).
-  It now runs `gh issue list --repo "$GITHUB_REPOSITORY" --state open --label
-  agent-ready --json number,title,labels` through a `--jq` filter that drops issues
-  also labeled `blocked` and prints a count plus `#number title` lines (or a
-  "none found" message). Added the `issues: read` permission the new `gh` call needs;
-  `ci.yml` and both workflows' triggers are unchanged. Added Plan 0049 and updated the
-  README's heartbeat-workflow description. No `codex_agentic_os` source changed, so
-  the committed index was unaffected.
-- Implementation commit: `c0c7a7d`; pushed to `origin/main`; issue #35 auto-closed by
-  the commit's `Closes #35`; verification comment posted separately.
-- Verification: workflow YAML parses via `python3 -c "import yaml; yaml.safe_load(...)"`;
-  dry-ran the new step's `gh issue list`/`--jq` command locally against live repo state
-  (correctly printed 3 unblocked agent-ready issues at the time); `pytest -q` (297
-  passed); `codex-agentic-os index check` (current, no source changed); `git diff
-  --check` clean.
-- Blocked review: `gh issue list --label blocked` returned no results; nothing to
-  re-evaluate.
-- Resulting queue: 2 unblocked `agent-ready` issues — #40 and #41 (both priority:3).
-  At the ≤2 threshold; next run should be backlog replenishment. Recommended next
-  implementation candidate once replenished: #40, the older of the two.
-- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
-  before this durable MEMORY.md update.
