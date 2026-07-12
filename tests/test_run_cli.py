@@ -1366,6 +1366,7 @@ def test_cli_executes_exactly_one_next_step(
     arguments.extend(
         ["--mount", "/host/repo:/workspace", "--mount", "/host/cache:/cache"]
     )
+    arguments.extend(["--env", "API_KEY=secret", "--env", "DEBUG=1"])
     main(arguments)
 
     payload = json.loads(capsys.readouterr().out)
@@ -1379,6 +1380,7 @@ def test_cli_executes_exactly_one_next_step(
     assert spec.network_enabled is False
     assert spec.read_only_root is True
     assert spec.mounts == (("/host/repo", "/workspace"), ("/host/cache", "/cache"))
+    assert spec.env == (("API_KEY", "secret"), ("DEBUG", "1"))
     assert command == ("printf", "hello")
     assert timeout == 4
     assert payload["steps"][0]["status"] == ("succeeded" if returncode == 0 else "failed")
@@ -1443,6 +1445,30 @@ def test_cli_execute_next_rejects_malformed_mount_without_mutation(
 
     assert error.value.code == 2
     assert "mount must be HOST:CONTAINER" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == queued_run
+    assert reloaded.get_step("step-1") == queued_step
+
+
+@pytest.mark.parametrize("env", ["KEY", "=value", "KEY=", "=", ""])
+def test_cli_execute_next_rejects_malformed_env_without_mutation(
+    tmp_path, capsys, env
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    queued_run = coordinator.create("run-1", objective="Execute durable work")
+    queued_step = coordinator.add_step(
+        "run-1", "step-1", objective="Work", command=("true",)
+    )
+
+    with pytest.raises(SystemExit) as error:
+        main([
+            "run", "execute-next", "run-1", "--sandbox", "docker",
+            "--env", env, "--state-db", str(database),
+        ])
+
+    assert error.value.code == 2
+    assert "env var must be KEY=VALUE" in capsys.readouterr().err
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get("run-1") == queued_run
     assert reloaded.get_step("step-1") == queued_step

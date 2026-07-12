@@ -97,6 +97,50 @@ def test_sandbox_spec_rejects_malformed_mount_pairs(mounts) -> None:
         SandboxSpec(kind=SandboxKind.DOCKER, mounts=mounts)
 
 
+def test_container_sandbox_renders_env_after_mounts() -> None:
+    spec = SandboxSpec(
+        kind=SandboxKind.DOCKER,
+        mounts=(("/host/repo", "/workspace"),),
+        env=(("API_KEY", "secret"), ("DEBUG", "1")),
+    )
+
+    command = ContainerSandbox(spec).command(("true",))
+
+    assert command[-6:] == (
+        "--env",
+        "API_KEY=secret",
+        "--env",
+        "DEBUG=1",
+        "python:3.12-slim",
+        "true",
+    )
+
+
+def test_container_sandbox_renders_one_env_var() -> None:
+    spec = SandboxSpec(kind=SandboxKind.PODMAN, env=(("KEY", "value"),))
+
+    assert ContainerSandbox(spec).command(("true",))[-4:] == (
+        "--env",
+        "KEY=value",
+        "python:3.12-slim",
+        "true",
+    )
+
+
+def test_container_sandbox_no_env_is_no_op() -> None:
+    spec = SandboxSpec(kind=SandboxKind.DOCKER)
+
+    assert "--env" not in ContainerSandbox(spec).command(("true",))
+
+
+@pytest.mark.parametrize(
+    "env", [(('', 'value'),), (('KEY', ''),), (('ONLY',),)]
+)
+def test_sandbox_spec_rejects_malformed_env_pairs(env) -> None:
+    with pytest.raises(ValueError, match="non-empty key and value"):
+        SandboxSpec(kind=SandboxKind.DOCKER, env=env)
+
+
 @pytest.mark.parametrize(
     ("argv", "timeout", "message"),
     [

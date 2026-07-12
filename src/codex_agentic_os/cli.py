@@ -189,6 +189,13 @@ def _parser() -> argparse.ArgumentParser:
         metavar="HOST:CONTAINER",
         help="bind mount a host path in the container; repeat for multiple mounts",
     )
+    execute_next.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="pass an environment variable into the container; repeat for multiple",
+    )
 
     agent = commands.add_parser("agent", help="manage durable agent identities")
     agent_commands = agent.add_subparsers(dest="agent_command", required=True)
@@ -238,6 +245,18 @@ def _parse_mounts(values: Sequence[str]) -> tuple[tuple[str, str], ...]:
             raise ValueError("mount must be HOST:CONTAINER with non-empty paths")
         mounts.append((parts[0], parts[1]))
     return tuple(mounts)
+
+
+def _parse_env(values: Sequence[str]) -> tuple[tuple[str, str], ...]:
+    """Parse strict KEY=VALUE environment variable arguments."""
+
+    pairs = []
+    for value in values:
+        key, sep, val = value.partition("=")
+        if not sep or not key or not val:
+            raise ValueError("env var must be KEY=VALUE with non-empty key and value")
+        pairs.append((key, val))
+    return tuple(pairs)
 
 
 def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
@@ -470,10 +489,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                 if arguments.image is not None and not arguments.image.strip():
                     raise ValueError("sandbox image must not be empty")
                 mounts = _parse_mounts(arguments.mount)
+                env = _parse_env(arguments.env)
                 spec = (
-                    SandboxSpec(kind=kind, image=arguments.image, mounts=mounts)
+                    SandboxSpec(kind=kind, image=arguments.image, mounts=mounts, env=env)
                     if arguments.image is not None
-                    else SandboxSpec(kind=kind, mounts=mounts)
+                    else SandboxSpec(kind=kind, mounts=mounts, env=env)
                 )
                 result = coordinator.execute_next_step(
                     arguments.run_id,

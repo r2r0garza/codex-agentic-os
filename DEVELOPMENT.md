@@ -194,6 +194,8 @@ codex-agentic-os run execute-next run-002 --sandbox docker
 codex-agentic-os run execute-next run-002 --sandbox podman --image python:3.12-slim
 codex-agentic-os run execute-next run-002 --sandbox docker \
   --mount /path/to/repository:/workspace
+codex-agentic-os run execute-next run-002 --sandbox docker \
+  --env API_KEY=secret --env DEBUG=1
 ```
 
 When no queued work remains, the unchanged run payload includes

@@ -26,15 +26,21 @@ class SandboxSpec:
     cpu_limit: str | None = "2"
     memory_limit: str | None = "4g"
     mounts: tuple[tuple[str, str], ...] = ()
+    env: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
-        """Validate host-to-container bind mount pairs."""
+        """Validate host-to-container bind mount pairs and environment variables."""
 
         for mount in self.mounts:
             if len(mount) != 2 or not all(
                 isinstance(path, str) and path for path in mount
             ):
                 raise ValueError("sandbox mounts require non-empty host and container paths")
+        for pair in self.env:
+            if len(pair) != 2 or not all(
+                isinstance(part, str) and part for part in pair
+            ):
+                raise ValueError("sandbox env vars require non-empty key and value")
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
@@ -99,6 +105,8 @@ class ContainerSandbox:
             command.extend(("--memory", self.spec.memory_limit))
         for host_path, container_path in self.spec.mounts:
             command.extend(("--volume", f"{host_path}:{container_path}"))
+        for key, value in self.spec.env:
+            command.extend(("--env", f"{key}={value}"))
         command.append(self.spec.image)
         command.extend(argv)
         return tuple(command)
