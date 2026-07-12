@@ -13,6 +13,7 @@
   opt-in (sandbox/cli).
 - Verification: `.venv` activated (Python 3.12.13); `codex-agentic-os index build`
   and `codex-agentic-os index check` succeeded. Queue-only run; tests not run.
+- Durable index/backlog commit: `e82a465`; pushed to `origin/main`.
 - Blocked review: no open issues labeled `blocked`; nothing to re-evaluate.
 - Resulting queue: 5 unblocked `agent-ready` issues — #43, #44, #45, #46, and #47
   (all priority:3). Recommended next: #43, oldest at the highest available priority.
