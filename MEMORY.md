@@ -1,5 +1,32 @@
 # Automation Memory
 
+- Run: 2026-07-12T10:14:00Z — implementation run.
+- Selected issue: #37, `run add-step` parsing incompatible with Python 3.11.
+- Completed: removed the trailing `step_command` `nargs="*"` positional
+  (interleaved with `--objective`/`--timeout`/`--state-db`, argparse resolves
+  it inconsistently across 3.11 vs 3.12 regardless of `add_argument()` order);
+  now parse `add-step` with `parser.parse_known_args()` and manually assemble
+  the trailing command from leftover tokens (stripping one leading `--`).
+  Every other subcommand still hard-rejects leftover tokens. Added Plan 0043,
+  Decision 0007, 3 new regression tests, and refreshed the index.
+- Implementation commit: `594003d`; pushed to `origin/main`; issue #37
+  auto-closed by the commit's `Closes #37`; verification comment posted
+  separately.
+- Verification: `pytest -q tests/test_run_cli.py` — 92 passed (Python
+  3.11.15), 89 passed (Python 3.12.13); `pytest -q` full suite — 239 passed
+  under both versions; incremental index build (17 files, 377 symbols, 2098
+  relationships); `index check` current; `git diff --check` clean; pushed CI
+  run succeeded (https://github.com/r2r0garza/codex-agentic-os/actions/runs/29188821906),
+  same workflow/job that failed pre-fix.
+- Blocked review: no open issues labeled `blocked`.
+- Resulting queue: 5 unblocked `agent-ready` issues — #34 and #36
+  (priority:2), #25, #26, and #35 (priority:3). Recommended next: #34 or #36
+  (oldest priority:2 issues; #34 created first).
+- Final target state: `main`, pushed to `origin/main`; worktree clean after
+  the durable MEMORY.md commit.
+
+---
+
 - Run: 2026-07-12T09:31:59Z — implementation run.
 - Selected issue: #33, invalid Anthropic top-level `cache_control` payload.
 - Completed: removed the unsupported field from `AnthropicAdapter.complete()`,
@@ -109,19 +136,3 @@
   pushed `README.md` plus new `DEVELOPMENT.md` in
   `528fe34c0d3783851a1641569200e3677b35d32d`.
 - Final repository state: `main` matches `origin/main`; worktree clean.
-
----
-
-- Run: 2026-07-12T01:38:29-06:00 — implementation run.
-- Selected issue: #30, operator run claim release CLI.
-- Completed: added `run release RUN_ID --agent-id AGENT_ID`, standard ordered payload,
-  rejection/non-mutation coverage, Plan 0039, README status, and refreshed index.
-- Implementation commit: `6b79a85fa904d5b9931e89ae788ae75c6238557f`; pushed to
-  `origin/main`; issue #30 closed.
-- Verification: `pytest -q tests/test_run_cli.py` (86 passed); `pytest -q` (227 passed);
-  incremental index build (17 files, 366 symbols, 2042 relationships); `index check`
-  current; `git diff --check` clean.
-- Blocked review: no open issues labeled `blocked`.
-- Resulting queue after closing #30: 4 unblocked `agent-ready` issues — #31, #32,
-  #25, #26. Recommended next: #31 (priority:2, oldest at that priority).
-- Final target state: `main`, pushed to `origin/main`, clean worktree; issue #30 closed.
