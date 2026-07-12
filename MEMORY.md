@@ -47,6 +47,13 @@
   priority).
 - Final target state: `main`, pushed to `origin/main`, clean worktree.
 
+## Follow-up
+- Run time (UTC): 2026-07-12T08:39:00Z
+- User authorized the preserved documentation changes. Reviewed, committed, and
+  pushed `README.md` plus new `DEVELOPMENT.md` in
+  `528fe34c0d3783851a1641569200e3677b35d32d`.
+- Final repository state: `main` matches `origin/main`; worktree clean.
+
 ---
 
 - Run: 2026-07-12T01:38:29-06:00 — implementation run.
