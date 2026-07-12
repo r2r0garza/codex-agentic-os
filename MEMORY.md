@@ -1,5 +1,33 @@
 # Automation Memory
 
+- Run: 2026-07-12T14:03:36Z — implementation run.
+- Selected issue: #35, replace dead plan-checklist scan in hourly heartbeat workflow.
+- Completed: `.github/workflows/hourly-agentic-os.yml`'s heartbeat job no longer greps
+  `.plan/*.md` for `- [ ]` checkboxes (a format none of the 41 plan files use anymore).
+  It now runs `gh issue list --repo "$GITHUB_REPOSITORY" --state open --label
+  agent-ready --json number,title,labels` through a `--jq` filter that drops issues
+  also labeled `blocked` and prints a count plus `#number title` lines (or a
+  "none found" message). Added the `issues: read` permission the new `gh` call needs;
+  `ci.yml` and both workflows' triggers are unchanged. Added Plan 0049 and updated the
+  README's heartbeat-workflow description. No `codex_agentic_os` source changed, so
+  the committed index was unaffected.
+- Implementation commit: `c0c7a7d`; pushed to `origin/main`; issue #35 auto-closed by
+  the commit's `Closes #35`; verification comment posted separately.
+- Verification: workflow YAML parses via `python3 -c "import yaml; yaml.safe_load(...)"`;
+  dry-ran the new step's `gh issue list`/`--jq` command locally against live repo state
+  (correctly printed 3 unblocked agent-ready issues at the time); `pytest -q` (297
+  passed); `codex-agentic-os index check` (current, no source changed); `git diff
+  --check` clean.
+- Blocked review: `gh issue list --label blocked` returned no results; nothing to
+  re-evaluate.
+- Resulting queue: 2 unblocked `agent-ready` issues — #40 and #41 (both priority:3).
+  At the ≤2 threshold; next run should be backlog replenishment. Recommended next
+  implementation candidate once replenished: #40, the older of the two.
+- Final target state: `main`, implementation pushed to `origin/main`; worktree clean
+  before this durable MEMORY.md update.
+
+---
+
 - Run: 2026-07-12T13:34:58Z — implementation run.
 - Selected issue: #26, operator step transition CLI.
 - Completed: added `run transition-step STEP_ID STATUS [--output JSON]`, delegating
@@ -106,25 +134,3 @@
   band. Recommended next: #38 (oldest priority:2 issue; created before #39).
 - Final target state: `main`, worktree clean; no code changes this run, only
   this MEMORY.md commit.
-
----
-
-- Run: 2026-07-12T11:35:18Z — implementation run.
-- Selected issue: #25, operator run transition CLI.
-- Completed: added `run transition RUN_ID STATUS [--output JSON]`, delegating
-  lifecycle/output validation and atomic persistence to `RunCoordinator.transition()`;
-  malformed or non-object JSON is rejected before mutation, and successful commands
-  print the standard ordered run payload. Added Plan 0046, DEVELOPMENT.md usage,
-  regression coverage for all terminal states and rejection paths, and refreshed the
-  index.
-- Implementation commit: `241f505`; pushed to `origin/main`; issue #25 auto-closed
-  by the commit's `Closes #25`; verification comment posted separately.
-- Verification: `pytest -q tests/test_run_cli.py` (105 passed); `pytest -q` (274
-  passed); incremental index build (18 files, 407 symbols, 2262 relationships);
-  `index check` current; `git diff --check` clean.
-- Blocked review: no open issues labeled `blocked`.
-- Resulting queue: 2 unblocked `agent-ready` issues — #26 and #35 (both
-  priority:3). Next run must be backlog replenishment under the ≤2 threshold;
-  current oldest implementation candidate is #26.
-- Final target state: `main`, implementation pushed to `origin/main`; worktree
-  clean before this durable MEMORY.md update.
