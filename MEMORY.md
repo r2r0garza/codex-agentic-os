@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-12T21:32:24Z — replenishment run.
+- Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). It had no issues, so no implementation was permitted; repository evidence showed uncovered work across atomic history persistence, mixed-step lifecycle provenance, and read-only operator inspection.
+- Created three milestone-scoped issues: #55 (persist atomic run transition history, priority:1, `agent-ready`), #56 (record mixed-step lifecycle provenance atomically, priority:2, blocked on #55), and #57 (inspect mixed-run history from the CLI, priority:3, blocked on #55/#56). Each maps directly to named Sprint 5 exit criteria and excludes cross-run analytics, logging infrastructure, retention, and future approval work.
+- Verification: activated `.venv`; `codex-agentic-os index check` reported current; inspected the committed index plus relevant runtime/state source and Plans 0037, 0038, 0057, and 0058; validated GitHub milestone assignment, priority/area labels, dependency labels, and `git diff --check` before commit. No project code changed, so pytest was not run.
+- Blocked review: #56 and #57 are the repository's only blocked issues and their dependencies remain unresolved; labels are correct and no blocker state changed. Sprint 5 now has one ready issue: #55.
+- Roadmap horizon: 3 open milestones before and after (Sprint 5 active; Sprint 6 and Sprint 7 future), so no planning handoff was needed. No milestones were created or closed.
+- Final target: `main`; durable record commit/push pending this entry. Next eligible issue: #55. Worktree dirty only for this MEMORY update before commit.
+
+---
+
 - Run: 2026-07-12T21:00:00Z — implementation, retrospective, and roadmap-maintenance run.
 - Active milestone at start: Sprint 4 "Durable model-backed step execution" (#4). Selected and closed its sole unblocked `agent-ready` issue, #53 (preserve run state across provider failures and mixed steps, priority:3).
 - Completed: `execute_next_step()` now starts a provider-message step running before resolving its adapter and sending the request, and catches `ValueError`/`RuntimeError`/`NotImplementedError` from either into a new `RunCoordinator.fail_step_from_error()`, which durably fails the step (`{"error": ..., "error_type": ...}`) and cascades the run to failed — mirroring the existing nonzero command-result path (`complete_step_from_result`). Command-step executor exceptions are untouched: they still leave the step/run running for explicit `recover_running_step()`, since a sandbox subprocess's side effects may be unknown. Added Plan 0059 and corrected stale `DEVELOPMENT.md` guidance that said all exceptions leave a step running.
@@ -40,13 +50,3 @@
 - Verification blocker persists: the activated repository `.venv` is valid but contains neither pytest nor the project entry point. A bounded `pip3 install -e '.[dev]'` retry stalled while installing build dependencies, and a bounded binary-only `pip3 install 'pytest>=8.0'` retry also stalled without a package response; both were cancelled. No system Python or alternate installer was used.
 - Issue state: #51 remains open and `agent-ready` because focused and full pytest verification is still required. #52 remains correctly blocked on #51; #53 remains correctly blocked on #51/#52. No labels changed.
 - Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed. Final target is `main`; next eligible issue remains #51. Worktree should be dirty only for this durable record until committed and pushed.
-
----
-
-- Run: 2026-07-12T18:52:41Z — incomplete implementation run.
-- Active milestone: Sprint 4 "Durable model-backed step execution" (#4). Selected its sole unblocked `agent-ready` issue, #51 (queue and inspect durable provider-message steps, priority:1).
-- Implemented but not closed: added validated `ProviderMessage` persistence and reconstruction, `run add-step` provider-message flags, stable inspection JSON, exact-one-of command/message validation, focused tests, Plan 0057, and refreshed the committed index. Existing command-step JSON remains unchanged.
-- Verification: direct CLI add/inspect across process restart passed; direct library missing-input and command-plus-message rejection preserved the run revision and empty step list; Python compilation passed; index rebuilt/current (20 files, 485 symbols, 2691 relationships); `git diff --check` passed. Focused and full pytest runs are blocked because the activated `.venv` has no pytest and dependency retrieval stalled until cancelled.
-- Blocked review: #52 and #53 remain correctly blocked on predecessor contracts; #51 remains open and `agent-ready` pending test verification. No labels changed.
-- Roadmap horizon: 3 open milestones before and after (Sprint 4, Sprint 5, Sprint 6); no planning run needed.
-- Final target: `main`; implementation commit `b44bbb0` pushed and issue progress recorded. Next eligible issue remains #51 until verification succeeds.
