@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-13T06:37:25Z — implementation run with post-implementation retrospective and milestone closure.
+- Active milestone at start: Sprint 8 "Explicit failed-step retry" (#8). Selected its sole unblocked `agent-ready` issue, #69 (retry a failed step from the CLI, priority:3); implementation issue #69 and retrospective issue #70 are now closed, and milestone #8 is closed without remediation. Sprint 9 "Persisted per-step sandbox policy" (#9) is active with 0 issues.
+- Completed: added explicit `run retry-step STEP_ID NEW_STEP_ID --expected-step-revision --expected-run-revision`, delegating only to the atomic CAS runtime path. `run inspect`/`inspect-step` derive bidirectional `retried_into_step_id` / `retried_from_step_id` lineage from durable `step_retried` history. Command/provider terminal completion now excludes only failed attempts proven superseded by that history, so the successful retry can finish the run; approval-required retries still reset to pending and use the existing approval path. Added Plan 0071 and DEVELOPMENT guidance.
+- Verification: activated `.venv`; focused runtime/CLI retry suites passed; full suite `433 passed`; committed index rebuilt/current (20 files, 617 symbols, 3694 relationships); `git diff --check` clean. Fresh-process Docker UAT failed an initial marker-check command, created the retry with explicit inspected revisions, changed only external marker state, executed the identical persisted command successfully, and reconstructed failed→retry→succeeded lineage plus ordered history from SQLite alone. The retrospective recorded all four Sprint 8 exit criteria passing with no known defect or remediation need.
+- Durable state: implementation commit `4878a4c` pushed to `origin/main`; issue #69 auto-closed and received verification evidence; retrospective #70 created, completed, and closed; milestone #8 closed. This MEMORY entry's durable commit/push is pending.
+- Blocked review: no open `blocked` issues exist repository-wide. Sprint 9 has 0 ready issues, so the next eligible run is replenishment against its exit criteria; do not implement during that run.
+- Roadmap horizon: 21 open milestones before Sprint 8 closure and 20 after (Sprint 9 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones were added.
+- Final target: `main`; worktree dirty only for this MEMORY update before commit.
+
+---
+
 - Run: 2026-07-13T06:10:00Z — implementation run.
 - Active milestone: Sprint 8 "Explicit failed-step retry" (#8). Selected its sole unblocked `agent-ready` issue, #68 (atomically create a new attempt for an eligible failed step, priority:2).
 - Completed: added `StateStore.retry_failed_step`, a single `BEGIN IMMEDIATE` transaction that CAS-validates the failed step (status/revision) and failed run (status/revision), inserts a new `QUEUED` step at the next position carrying the same command/message/timeout/objective/approval requirement (approval, when required, resets to `pending`), reopens the run to `queued` with its `output` cleared without touching the original step, and appends exactly one `step_retried` history entry via a new `retried_step_id` history column linking the prior and new attempt. Added `RunCoordinator.retry_step`, which rejects a non-`FAILED` step or an `uncertain` recovered outcome (via #67's `failure_kind`/`retry_eligible`) before any mutation. Since `FAILED` is terminal and the original step's revision never changes again, exactly-one-winner safety comes from the run's CAS revision, not the step's. Added Plan 0070 and DEVELOPMENT guidance; no CLI command was added (reserved for #69).
@@ -39,14 +50,3 @@
 - Blocked review: no open `blocked` issues exist repository-wide; no labels or comments changed. Sprint 8 has 0 ready issues.
 - Roadmap horizon: 22 open milestones before closure and 21 after (Sprint 8 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones were added.
 - Final target: `main`; durable MEMORY commit/push pending this entry. Worktree dirty only for this MEMORY update before commit.
-
----
-
-- Run: 2026-07-13T04:04:00Z — implementation run.
-- Active milestone: Sprint 7 "Stale-claim run reassignment" (#7). Selected its sole unblocked `agent-ready` issue, #65 (reassign stale claims from the CLI, priority:3).
-- Completed: added mutating CLI `run reassign-claim RUN_ID REPLACEMENT_AGENT_ID --expected-agent-id --expected-revision --threshold-seconds`, calling the existing atomic `RunCoordinator.reassign_stale_claim` (from #64). No changes were needed to `run history`/`run inspect` presentation — they already expose the `claim_reassigned` transition and replacement owner from #64's work. Added Plan 0068 and DEVELOPMENT guidance.
-- Verification: focused CLI suite 6 new reassign-claim tests passed (154 total in `test_run_cli.py`, up from 148), covering success, fresh-owner rejection, stale-expected-revision contention, missing run, running-step byte-for-byte preservation, and exactly-one-winner under concurrent CLI attempts; full suite 408 passed (up from 402); index rebuilt/current (20 files, 596 symbols, 3456 relationships); `git diff --check` clean; live CLI UAT confirmed fresh-owner rejection with no mutation, successful reassignment, and durable reconstruction of the updated owner and history from fresh CLI processes.
-- Implementation commit `ec3de5f` pushed to `origin/main`; issue #65 auto-closed from its `Closes #65` trailer and received a verification comment.
-- Blocked review: no open `blocked` issues exist repository-wide. Sprint 7 now has all three delivery issues (#63, #64, #65) closed and no ready issue; its next eligible run is retrospective-only under the one-mode-per-run rule.
-- Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
-- Final target: `main`; next eligible action is the Sprint 7 retrospective and close-or-remediate procedure. Worktree dirty only for this final MEMORY update until committed and pushed.
