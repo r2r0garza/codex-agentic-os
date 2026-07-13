@@ -1,5 +1,6 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 import pytest
 
@@ -380,6 +381,61 @@ def test_claim_next_run_appends_a_claimed_history_entry(tmp_path) -> None:
         RunHistoryEntry("run-1", 1, "created", "queued", None, None),
         RunHistoryEntry("run-1", 2, "claimed", "queued", "agent-1", None),
     )
+
+
+def test_reassign_stale_run_claim_preserves_running_step_and_history(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert(
+        "agent", "old", status="registered",
+        payload={"last_seen": "2026-07-12T12:00:00+00:00"},
+    )
+    store.insert(
+        "agent", "new", status="registered",
+        payload={"last_seen": "2026-07-12T13:00:00+00:00"},
+    )
+    run = store.insert(
+        "run", "run-1", status="running",
+        payload={"objective": "Build", "agent_id": "old"},
+    )
+    step = store.insert(
+        "step", "step-1", status="running",
+        payload={"run_id": "run-1", "position": 1, "objective": "Execute", "output": None},
+    )
+
+    reassigned = store.reassign_stale_run_claim(
+        "run-1", expected_agent_id="old", expected_revision=run.revision,
+        replacement_agent_id="new", threshold_seconds=300,
+        evaluated_at=datetime(2026, 7, 12, 12, 5, 1, tzinfo=timezone.utc),
+    )
+
+    assert reassigned.payload["agent_id"] == "new"
+    assert reassigned.revision == run.revision + 1
+    assert StateStore(database).get("step", "step-1") == step
+    assert StateStore(database).list_run_history("run-1")[-1] == RunHistoryEntry(
+        "run-1", 2, "claim_reassigned", "running", "new", None
+    )
+
+
+def test_reassign_stale_run_claim_rejects_fresh_heartbeat_without_mutation(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.insert(
+        "agent", "old", status="registered",
+        payload={"last_seen": "2026-07-12T12:05:00+00:00"},
+    )
+    store.insert("agent", "new", status="registered", payload={"last_seen": "2026-07-12T12:05:00+00:00"})
+    run = store.insert("run", "run-1", status="queued", payload={"objective": "Build", "agent_id": "old"})
+    before = store.list_run_history("run-1")
+
+    with pytest.raises(StateConflictError, match="owner is not stale"):
+        store.reassign_stale_run_claim(
+            "run-1", expected_agent_id="old", expected_revision=run.revision,
+            replacement_agent_id="new", threshold_seconds=300,
+            evaluated_at=datetime(2026, 7, 12, 12, 10, tzinfo=timezone.utc),
+        )
+
+    assert store.get("run", "run-1") == run
+    assert store.list_run_history("run-1") == before
 
 
 def test_existing_database_schema_is_upgraded_for_steps(tmp_path) -> None:

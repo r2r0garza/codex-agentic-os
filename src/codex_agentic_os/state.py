@@ -6,6 +6,7 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -327,6 +328,115 @@ class StateStore:
             )
             connection.commit()
         return StateRecord("run", run_id, status, released_payload, released_revision)
+
+    def reassign_stale_run_claim(
+        self,
+        run_id: str,
+        *,
+        expected_agent_id: str,
+        expected_revision: int,
+        replacement_agent_id: str,
+        threshold_seconds: float,
+        evaluated_at: datetime,
+    ) -> StateRecord:
+        """Transfer a stale run claim through one heartbeat-aware transaction."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        self._validate_identity("run", run_id)
+        for label, agent_id in (
+            ("expected agent id", expected_agent_id),
+            ("replacement agent id", replacement_agent_id),
+        ):
+            if not agent_id.strip():
+                raise ValueError(f"{label} must not be empty")
+        if expected_agent_id == replacement_agent_id:
+            raise ValueError("replacement agent must differ from the current owner")
+        if expected_revision < 1:
+            raise ValueError("expected revision must be positive")
+        if threshold_seconds <= 0:
+            raise ValueError("staleness threshold must be a positive number of seconds")
+        if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
+            raise ValueError("evaluation time must include an unambiguous timezone")
+        evaluated_at = evaluated_at.astimezone(timezone.utc)
+        self.initialize()
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT status, payload, revision
+                FROM state_records
+                WHERE kind = 'run' AND key = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"state record does not exist: run/{run_id}")
+            status, encoded, revision = str(row[0]), str(row[1]), int(row[2])
+            payload = json.loads(encoded)
+            if (
+                status not in {"queued", "running"}
+                or payload.get("agent_id") != expected_agent_id
+                or revision != expected_revision
+            ):
+                raise StateConflictError(f"state run reassignment conflict: {run_id}")
+
+            owner = connection.execute(
+                "SELECT payload FROM state_records WHERE kind = 'agent' AND key = ?",
+                (expected_agent_id,),
+            ).fetchone()
+            if owner is None:
+                raise StateConflictError(f"state run owner is not registered: {expected_agent_id}")
+            replacement = connection.execute(
+                "SELECT 1 FROM state_records WHERE kind = 'agent' AND key = ?",
+                (replacement_agent_id,),
+            ).fetchone()
+            if replacement is None:
+                raise StateConflictError(
+                    f"state replacement agent is not registered: {replacement_agent_id}"
+                )
+
+            last_seen_value = json.loads(str(owner[0])).get("last_seen")
+            if not isinstance(last_seen_value, str) or not last_seen_value.strip():
+                raise StateConflictError(
+                    f"state run owner has no recorded heartbeat: {expected_agent_id}"
+                )
+            try:
+                last_seen = datetime.fromisoformat(last_seen_value)
+            except ValueError as error:
+                raise StateConflictError(
+                    f"state run owner has invalid last_seen: {expected_agent_id}"
+                ) from error
+            if last_seen.tzinfo is None or last_seen.utcoffset() is None:
+                raise StateConflictError(
+                    f"state run owner has ambiguous last_seen: {expected_agent_id}"
+                )
+            elapsed = (evaluated_at - last_seen.astimezone(timezone.utc)).total_seconds()
+            if elapsed <= threshold_seconds:
+                raise StateConflictError(f"state run owner is not stale: {run_id}")
+
+            reassigned_payload = {**payload, "agent_id": replacement_agent_id}
+            reassigned_revision = revision + 1
+            connection.execute(
+                """
+                UPDATE state_records SET payload = ?, revision = ?
+                WHERE kind = 'run' AND key = ?
+                """,
+                (self._encode_payload(reassigned_payload), reassigned_revision, run_id),
+            )
+            self._append_run_history(
+                connection,
+                run_id,
+                transition="claim_reassigned",
+                status=status,
+                agent_id=replacement_agent_id,
+                execution_kind=None,
+            )
+            connection.commit()
+        return StateRecord(
+            "run", run_id, status, reassigned_payload, reassigned_revision
+        )
 
     def transition_run(
         self,

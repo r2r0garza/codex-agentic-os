@@ -299,6 +299,33 @@ class RunCoordinator:
             stale=elapsed_seconds > threshold_seconds,
         )
 
+    def reassign_stale_claim(
+        self,
+        run_id: str,
+        replacement_agent_id: str,
+        *,
+        expected_agent_id: str,
+        expected_revision: int,
+        threshold_seconds: float,
+    ) -> AgentRun:
+        """Atomically transfer a demonstrably stale claim to a replacement agent."""
+
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("coordinator clock must include an unambiguous timezone")
+        try:
+            stored = self.store.reassign_stale_run_claim(
+                run_id,
+                expected_agent_id=expected_agent_id,
+                expected_revision=expected_revision,
+                replacement_agent_id=replacement_agent_id,
+                threshold_seconds=threshold_seconds,
+                evaluated_at=now,
+            )
+        except StateConflictError as error:
+            raise ValueError(f"run claim cannot be reassigned: {run_id}") from error
+        return self._run(stored)
+
     @staticmethod
     def _parse_last_seen(value: str) -> datetime:
         try:

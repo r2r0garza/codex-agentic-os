@@ -355,6 +355,68 @@ def test_evaluate_claim_staleness_rejects_malformed_last_seen_without_mutation(
     assert coordinator.get("run-1") == created
 
 
+def test_reassign_stale_claim_is_durable_and_compare_and_swap_safe(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    heartbeat = datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
+    registry = AgentRegistry(store, clock=lambda: heartbeat)
+    for agent_id in ("old", "replacement-1", "replacement-2"):
+        registry.register(agent_id)
+    setup = _RunCoordinator(store)
+    run = setup.create("run-1", objective="Build", agent_id="old")
+    coordinators = tuple(
+        _RunCoordinator(
+            StateStore(database),
+            clock=lambda: datetime(2026, 7, 12, 12, 5, 1, tzinfo=timezone.utc),
+        )
+        for _ in range(2)
+    )
+
+    def attempt(coordinator, replacement):
+        try:
+            return coordinator.reassign_stale_claim(
+                "run-1", replacement, expected_agent_id="old",
+                expected_revision=run.revision, threshold_seconds=300,
+            )
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(attempt, coordinators, ("replacement-1", "replacement-2")))
+
+    winners = [result for result in results if result is not None]
+    assert len(winners) == 1
+    assert _RunCoordinator(StateStore(database)).get("run-1") == winners[0]
+    assert len([entry for entry in setup.list_history("run-1") if entry.transition == "claim_reassigned"]) == 1
+
+
+def test_reassign_stale_claim_rejects_heartbeat_refresh_and_unregistered_replacement(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    registry = AgentRegistry(
+        store, clock=lambda: datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
+    )
+    registry.register("old")
+    coordinator = _RunCoordinator(
+        store, clock=lambda: datetime(2026, 7, 12, 12, 10, tzinfo=timezone.utc)
+    )
+    run = coordinator.create("run-1", objective="Build", agent_id="old")
+    registry = AgentRegistry(
+        store, clock=lambda: datetime(2026, 7, 12, 12, 9, tzinfo=timezone.utc)
+    )
+    registry.heartbeat("old")
+
+    for replacement in ("missing", "old"):
+        with pytest.raises(ValueError):
+            coordinator.reassign_stale_claim(
+                "run-1", replacement, expected_agent_id="old",
+                expected_revision=run.revision, threshold_seconds=300,
+            )
+
+    assert coordinator.get("run-1").agent_id == "old"
+    assert all(entry.transition != "claim_reassigned" for entry in coordinator.list_history("run-1"))
+
+
 def test_release_claim_clears_exact_queued_assignment(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
