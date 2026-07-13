@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-13T02:33:14Z — replenishment run.
+- Active milestone: Sprint 7 "Stale-claim run reassignment" (#7). It had 0 issues, so no implementation was permitted; compared its five exit criteria against the current heartbeat, run-claim, state transaction/history, and CLI evidence and confirmed there is no explicit-threshold stale-owner evaluation, atomic stale-owner transfer, or operator reassignment command.
+- Created three milestone-scoped issues: #63 (inspect claimed-run owner staleness, priority:1, `agent-ready`), #64 (atomically transfer a stale run claim, priority:2, blocked on #63), and #65 (reassign stale claims from the CLI, priority:3, blocked on #63/#64). Each maps directly to Sprint 7 exit criteria and excludes automatic reassignment, recovery/retry of uncertain work, leader election, load balancing, and notifications.
+- Verification: activated `.venv`; `codex-agentic-os index check` reported current (20 files, 563 symbols, 3156 relationships); inspected `AgentRegistry.heartbeat`, `RunCoordinator.claim`/`release_claim`, `StateStore.claim_run`/`release_run_claim`, history transactions, and current CLI claim/inspection surfaces; validated milestone assignments, priority/area labels, dependencies, and `git diff --check`. No project code changed, so pytest was not run.
+- Blocked review: repo-wide `blocked` search found only newly created #64 and #65; both have unresolved explicit dependencies, so no labels changed. Sprint 7 has one ready issue: #63.
+- Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
+- Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #63. Worktree dirty only for this MEMORY update before commit.
+
+---
+
 - Run: 2026-07-13T02:04:00Z — retrospective and milestone-close run.
 - Active milestone at start: Sprint 6 "Operator approval-gated execution" (#6). All three delivery issues (#59, #60, #61) were already closed and no `blocked` issues existed anywhere, so this run used retrospective mode; no issue was implemented.
 - Retrospective: full suite `380 passed`; `codex-agentic-os index check` reported current (20 files, 563 symbols, 3156 relationships); `git diff --check` clean. Ran a live CLI UAT in a scratch SQLite DB covering both paths: (a) an approval-required command step whose `execute-next --sandbox docker` was rejected pre-dispatch with no container spawned, then approved via a registered agent and executed for real (`docker run ... exit_code: 0`), with full `created → step_approved → run_started → step_started → step_succeeded → run_succeeded` history; (b) a second approval-required step rejected outright, producing `run.status = failed` with a `step_rejected → run_failed` history pair and no execution, plus a CAS double-decision guard (re-approving the rejected step errored without mutation). All four exit criteria marked pass with this evidence. Created and closed retrospective issue #62; closed milestone #6.
@@ -40,13 +50,3 @@
 - Blocked review: #60 depended only on #59, now resolved, so `blocked` was removed and `agent-ready` added with evidence. #61 remains correctly blocked on open #60. Sprint 6 now has one ready issue: #60.
 - Roadmap horizon: 3 open milestones before and after (Sprint 6 active; Sprint 7 and Sprint 8 future), so no planning handoff was needed. No milestone retrospective or close/remediate action is eligible while #60/#61 remain open.
 - Final target: `main`; next eligible issue: #60. Worktree dirty only for this final MEMORY update until committed and pushed.
-
----
-
-- Run: 2026-07-12T23:45:00Z — replenishment run.
-- Active milestone: Sprint 6 "Operator approval-gated execution" (#6). It had 0 issues, so no implementation was permitted; compared its four exit criteria against the runtime/state source (`RunStep`/`StepStatus` have no approval concept yet) and found uncovered work across the durable approval gate, the compare-and-swap approve/reject decision, and CLI inspection/decision surfaces.
-- Created three milestone-scoped issues: #59 (persist durable step approval gate, priority:1, `agent-ready`), #60 (approve and reject pending step decisions, priority:2, blocked on #59), and #61 (CLI approval inspection and decision commands, priority:3, blocked on #59/#60). Each maps directly to a named Sprint 6 exit criterion and excludes policy language, RBAC, notification delivery, expiry, delegation, and automatic risk classification.
-- Verification: activated `.venv`; `codex-agentic-os index check` reported current (20 files, 538 symbols, 2975 relationships); read runtime.py's `RunStep`/`StepStatus`/`start_next_step`/`execute_next_step` and state.py's CAS/history primitives plus cli.py's `run` subcommand surface to confirm no approval mechanism exists; validated GitHub milestone assignment, priority/area labels, dependency labels, and `git diff --check` before commit. No project code changed, so pytest was not run.
-- Blocked review: repo-wide `blocked` search found only #60 and #61, both created this run with genuinely unresolved dependencies; no label changes needed. Sprint 6 now has one ready issue: #59.
-- Roadmap horizon: 3 open milestones before and after (Sprint 6 active; Sprint 7 and Sprint 8 future), so no planning handoff was needed. No milestones were created or closed.
-- Final target: `main`; durable record commit/push pending this entry. Next eligible issue: #59. Worktree dirty only for this MEMORY update before commit.
