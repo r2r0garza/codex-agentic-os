@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-13T00:34:31Z — implementation and unblock run.
+- Active milestone: Sprint 6 "Operator approval-gated execution" (#6). Selected its sole unblocked `agent-ready` issue, #59 (persist durable step approval gate, priority:1).
+- Completed: added typed `ApprovalStatus` and `ApprovalRequiredError` contracts; `RunCoordinator.add_step(..., approval_required=True)` now persists an explicit pending status for command or provider steps, reconstructs it across process restart, and preserves the metadata through every existing step lifecycle rewrite. `start_next_step`/`execute_next_step` reject the pending step before any run/step revision, history entry, sandbox call, or provider dispatch. Existing steps default to no gate, and CLI presentation remains reserved for #61. Added Plan 0063.
+- Verification: focused runtime suite 95 passed; full suite 370 passed; index rebuilt/current (20 files, 547 symbols, 3021 relationships); `git diff --check` clean.
+- Implementation commit `3c9f1f7` pushed to `origin/main`; issue #59 auto-closed by its `Closes #59` trailer and received a verification comment.
+- Blocked review: #60 depended only on #59, now resolved, so `blocked` was removed and `agent-ready` added with evidence. #61 remains correctly blocked on open #60. Sprint 6 now has one ready issue: #60.
+- Roadmap horizon: 3 open milestones before and after (Sprint 6 active; Sprint 7 and Sprint 8 future), so no planning handoff was needed. No milestone retrospective or close/remediate action is eligible while #60/#61 remain open.
+- Final target: `main`; next eligible issue: #60. Worktree dirty only for this final MEMORY update until committed and pushed.
+
+---
+
 - Run: 2026-07-12T23:45:00Z — replenishment run.
 - Active milestone: Sprint 6 "Operator approval-gated execution" (#6). It had 0 issues, so no implementation was permitted; compared its four exit criteria against the runtime/state source (`RunStep`/`StepStatus` have no approval concept yet) and found uncovered work across the durable approval gate, the compare-and-swap approve/reject decision, and CLI inspection/decision surfaces.
 - Created three milestone-scoped issues: #59 (persist durable step approval gate, priority:1, `agent-ready`), #60 (approve and reject pending step decisions, priority:2, blocked on #59), and #61 (CLI approval inspection and decision commands, priority:3, blocked on #59/#60). Each maps directly to a named Sprint 6 exit criterion and excludes policy language, RBAC, notification delivery, expiry, delegation, and automatic risk classification.
@@ -40,14 +51,3 @@
 - Blocked review: #57 was blocked only on #55/#56, now both closed, so `blocked` was removed and `agent-ready` added. No other blocked issues are open.
 - Roadmap horizon: 3 open milestones before and after (Sprint 5 active; Sprint 6 and Sprint 7 future); no planning run needed.
 - Final target: `main`; next eligible issue: #57. Worktree dirty only for this final MEMORY update until committed and pushed.
-
----
-
-- Run: 2026-07-12T22:00:00Z — implementation and unblock run.
-- Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). Selected and closed its sole unblocked `agent-ready` issue, #55 (persist atomic run transition history, priority:1).
-- Completed: added a `run_history` SQLite table and `RunHistoryEntry`/`StateStore.list_run_history()`; `StateStore.insert()` (kind="run"), `claim_run()`, `release_run_claim()`, `claim_next_run()`, and `transition_run()` each append one ordered history row (transition, resulting status, agent_id when known, nullable execution_kind) inside the same `BEGIN IMMEDIATE` transaction as their mutation, after all compare-and-swap checks pass and before commit, so losing/rejected attempts append nothing. Threaded an optional `execution_kind` through `RunCoordinator.transition()` and `list_history()`; `complete_step_from_chat_response()` now passes `execution_kind="provider_message"`. Implicit multi-record mutations (`cancel()`, `complete_step_from_result()`, `fail_step_from_error()`, `recover_running_step()`, `start_next_step()`) were left untouched, matching the issue's excluded scope. Added Plan 0060.
-- Verification: focused StateStore/RunCoordinator history tests (ordering, per-run isolation, restart reconstruction, no-phantom-entry on a losing claim and a stale transition, concurrent-claim contention, execution_kind threading) all pass; full suite 360 passed (up from 353); incremental index rebuild current (20 files, 527 symbols, 2887 relationships); `git diff --check` clean. Live CLI UAT (`run create` → `agent register` → `run claim` → `run transition` against a real SQLite database, then `StateStore.list_run_history()` from a fresh process) confirmed durable ordered reconstruction.
-- Implementation commit `7c86a06` pushed to `origin/main`; issue #55 auto-closed by the commit's `Closes #55` trailer, with a follow-up comment adding full verification evidence.
-- Blocked review: #56 was blocked only on #55, now resolved, so `blocked` was removed and `agent-ready` added. #57 remains correctly blocked on #55 and #56 (#56 still open). Sprint 5 now has one ready issue: #56.
-- Roadmap horizon: 3 open milestones before and after (Sprint 5 active; Sprint 6 and Sprint 7 future); no planning run needed.
-- Final target: `main`; next eligible issue: #56. Worktree dirty only for this MEMORY record until committed and pushed.
