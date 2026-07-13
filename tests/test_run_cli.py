@@ -526,6 +526,118 @@ def test_cli_add_step_rejects_timeout_without_command_without_mutation(
     assert reloaded.list_steps("run-1") == ()
 
 
+def test_cli_adds_command_step_with_sandbox_policy_and_matches_inspection(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Sandboxed command",
+            "--sandbox", "docker", "--image", "python:3.12-slim",
+            "--mount", "/host/data:/data", "--env-passthrough", "API_TOKEN",
+            "--env-passthrough", "HOME", "--workdir", "/data", "--network",
+            "--state-db", str(database), "--", "python", "-c", "print('hello')",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"][0]["sandbox_policy"] == {
+        "kind": "docker",
+        "image": "python:3.12-slim",
+        "mounts": [["/host/data", "/data"]],
+        "working_dir": "/data",
+        "env_passthrough": ["API_TOKEN", "HOME"],
+        "network_enabled": True,
+    }
+
+    main(["run", "inspect-step", "step-1", "--state-db", str(database)])
+    assert json.loads(capsys.readouterr().out) == payload["steps"][0]
+
+
+def test_cli_add_step_without_sandbox_flags_has_no_sandbox_policy(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Plain command",
+            "--state-db", str(database), "--", "printf", "hi",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "sandbox_policy" not in payload["steps"][0]
+
+
+@pytest.mark.parametrize(
+    ("extra_arguments", "message"),
+    [
+        (["--image", "python:3.12-slim"], "sandbox policy requires --sandbox"),
+        (
+            ["--sandbox", "docker", "--mount", "onlyhost"],
+            "mount must be HOST:CONTAINER with non-empty paths",
+        ),
+        (
+            ["--sandbox", "docker", "--workdir", "relative"],
+            "working directory must be a non-empty absolute path",
+        ),
+        (
+            ["--sandbox", "docker", "--env-passthrough", "NOT VALID"],
+            "env passthrough names must be valid identifiers",
+        ),
+    ],
+)
+def test_cli_add_step_rejects_invalid_sandbox_policy_without_mutation(
+    tmp_path, capsys, extra_arguments, message
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Original")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "add-step", "run-1", "step-1", "--objective", "Work",
+                *extra_arguments, "--state-db", str(database), "--", "printf", "hi",
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.list_steps("run-1") == ()
+
+
+def test_cli_add_step_rejects_sandbox_policy_for_provider_message_step(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Original")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "add-step", "run-1", "step-1", "--objective", "Ask a model",
+                "--provider", "openrouter", "--message", "Summarize",
+                "--sandbox", "docker", "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "sandbox policy is only valid for command steps" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.list_steps("run-1") == ()
+
+
 def test_cli_claims_run_and_prints_ordered_steps(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

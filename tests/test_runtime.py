@@ -15,11 +15,12 @@ from codex_agentic_os.runtime import (
     RunCoordinator as _RunCoordinator,
     RunStatus,
     RunStep,
+    SandboxPolicy,
     StepFailureKind,
     StepRecoveryReason,
     StepStatus,
 )
-from codex_agentic_os.sandboxes import SandboxResult
+from codex_agentic_os.sandboxes import SandboxKind, SandboxResult
 from codex_agentic_os.state import StateStore
 
 
@@ -687,6 +688,112 @@ def test_step_command_and_timeout_are_durable(tmp_path) -> None:
     assert reloaded.timeout == created.timeout
 
 
+def test_command_step_sandbox_policy_round_trips_across_restart(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute commands")
+    policy = SandboxPolicy(
+        kind=SandboxKind.DOCKER,
+        image="python:3.12-slim",
+        mounts=(("/host/data", "/data"),),
+        working_dir="/data",
+        env_passthrough=("API_TOKEN", "HOME"),
+        network_enabled=True,
+    )
+
+    created = coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Print a greeting",
+        command=("python", "-c", "print('hello')"),
+        sandbox_policy=policy,
+    )
+
+    assert created.sandbox_policy == policy
+    reloaded = RunCoordinator(StateStore(database)).get_step("command")
+    assert reloaded is not None
+    assert reloaded.sandbox_policy == policy
+
+
+def test_command_step_without_sandbox_policy_has_none(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Execute commands")
+
+    created = coordinator.add_step(
+        "run-1", "command", objective="Print", command=("printf", "hi")
+    )
+
+    assert created.sandbox_policy is None
+
+
+def test_sandbox_policy_is_rejected_for_provider_message_steps_without_mutation(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    run = coordinator.create("run-1", objective="Ask a model")
+
+    with pytest.raises(ValueError, match="only valid for command steps"):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize",
+            message=ProviderMessage(provider="local", content="Hello"),
+            sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+        )
+
+    assert coordinator.get("run-1") == run
+    assert coordinator.list_steps("run-1") == ()
+
+
+@pytest.mark.parametrize(
+    ("policy", "message"),
+    [
+        ({"kind": "not-a-kind"}, "kind is invalid"),
+        ({"kind": "docker", "image": " "}, "image must be a non-empty string"),
+        (
+            {"kind": "docker", "mounts": [["/host"]]},
+            "mounts require non-empty host and container paths",
+        ),
+        (
+            {"kind": "docker", "working_dir": "relative/path"},
+            "working directory must be a non-empty absolute path",
+        ),
+        (
+            {"kind": "docker", "working_dir": " "},
+            "working directory must be a non-empty absolute path",
+        ),
+        (
+            {"kind": "docker", "env_passthrough": ["NOT VALID"]},
+            "env passthrough names must be valid identifiers",
+        ),
+        (
+            {"kind": "docker", "env_passthrough": ["DUP", "DUP"]},
+            "env passthrough names must be unique",
+        ),
+        (
+            {"kind": "docker", "network_enabled": "yes"},
+            "network option must be a boolean",
+        ),
+    ],
+)
+def test_sandbox_policy_validation_rejects_invalid_input_without_mutation(
+    tmp_path, policy, message
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Execute commands")
+
+    with pytest.raises(ValueError, match=message):
+        coordinator.add_step(
+            "run-1",
+            "command",
+            objective="Invalid policy",
+            command=("printf", "hi"),
+            sandbox_policy=policy,
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
 def test_provider_message_step_round_trips_across_restart(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
@@ -1322,6 +1429,28 @@ def test_start_next_step_validates_run_and_single_active_step(tmp_path) -> None:
     coordinator.cancel("run-1")
     with pytest.raises(ValueError, match="terminal run"):
         coordinator.start_next_step("run-1")
+
+
+def test_sandbox_policy_survives_dispatch_and_completion(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.PODMAN, env_passthrough=("HOME",))
+    coordinator.add_step(
+        "run-1", "first", objective="First command", command=("true",),
+        sandbox_policy=policy,
+    )
+
+    running = coordinator.start_next_step("run-1")
+    assert running is not None
+    assert running.sandbox_policy == policy
+
+    completed, _ = coordinator.complete_step_from_result(
+        "first", SandboxResult(("podman", "run", "true"), 0, "ok\n", "")
+    )
+    assert completed.sandbox_policy == policy
+    reloaded = RunCoordinator(StateStore(coordinator.store.path)).get_step("first")
+    assert reloaded is not None
+    assert reloaded.sandbox_policy == policy
 
 
 def test_sandbox_results_complete_steps_and_run_without_backend_coupling(tmp_path) -> None:

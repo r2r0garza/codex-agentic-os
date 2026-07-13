@@ -255,6 +255,23 @@ codex-agentic-os run add-step run-002 step-001 --objective "Run checks" \
   --timeout 30 --state-db .codex-agentic-os/state.sqlite3 -- pytest -q
 ```
 
+Persist a complete sandbox policy on a command step so it later executes reproducibly
+without re-supplying execution flags. `--env-passthrough` persists variable *names*
+only; raw values are never written to durable state, and `--sandbox` is required
+whenever any other policy flag is present:
+
+```bash
+codex-agentic-os run add-step run-002 step-004 --objective "Run in a fixed sandbox" \
+  --sandbox docker --image python:3.12-slim --mount /path/to/repository:/workspace \
+  --workdir /workspace --env-passthrough API_KEY --env-passthrough DEBUG --network \
+  --state-db .codex-agentic-os/state.sqlite3 -- pytest -q
+```
+
+`run inspect` and `run inspect-step` show the persisted policy without a `sandbox_policy`
+key when a command step has none. Dispatching a step through its persisted policy is
+covered by a follow-up sprint issue; `run execute-next` still requires per-invocation
+sandbox flags today.
+
 Append a provider-message step with no trailing command. The provider and message are
 required together; model, system, temperature, and token limit are optional:
 

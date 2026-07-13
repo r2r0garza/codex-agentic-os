@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
+import posixpath
 from typing import Callable, Mapping, Protocol, Sequence
 
 from .chat import ChatAdapter, ChatMessage, ChatRequest, ChatResponse
+from .sandboxes import SandboxKind
 
 from .state import RunHistoryEntry, StateConflictError, StateRecord, StateStore
 
@@ -93,6 +95,18 @@ class AgentRun:
 
 
 @dataclass(frozen=True, slots=True)
+class SandboxPolicy:
+    """Durable per-step sandbox execution policy without resolved environment values."""
+
+    kind: SandboxKind
+    image: str = "python:3.12-slim"
+    mounts: tuple[tuple[str, str], ...] = ()
+    working_dir: str | None = None
+    env_passthrough: tuple[str, ...] = ()
+    network_enabled: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class RunStep:
     """Typed view of a durable, ordered unit of work within a run."""
 
@@ -108,6 +122,7 @@ class RunStep:
     message: ProviderMessage | None = None
     approval_required: bool = False
     approval_status: ApprovalStatus | None = None
+    sandbox_policy: SandboxPolicy | None = None
 
     @property
     def failure_kind(self) -> StepFailureKind | None:
@@ -506,6 +521,8 @@ class RunCoordinator:
                 payload["timeout"] = step.timeout
             if step.message is not None:
                 payload["message"] = self._message_payload(step.message)
+            if step.sandbox_policy is not None:
+                payload["sandbox_policy"] = self._sandbox_policy_payload(step.sandbox_policy)
             self._add_approval_payload(payload, step)
             records.append(("step", step.step_id, StepStatus.CANCELLED, payload))
 
@@ -573,6 +590,10 @@ class RunCoordinator:
                 step_payload["timeout"] = next_step.timeout
             if next_step.message is not None:
                 step_payload["message"] = self._message_payload(next_step.message)
+            if next_step.sandbox_policy is not None:
+                step_payload["sandbox_policy"] = self._sandbox_policy_payload(
+                    next_step.sandbox_policy
+                )
             self._add_approval_payload(step_payload, next_step)
             stored = self.store.put_many(
                 (
@@ -673,6 +694,7 @@ class RunCoordinator:
         timeout: float | None = None,
         message: ProviderMessage | Mapping[str, object] | None = None,
         approval_required: bool = False,
+        sandbox_policy: SandboxPolicy | Mapping[str, object] | None = None,
     ) -> RunStep:
         """Append a queued step to a non-terminal run."""
 
@@ -689,6 +711,9 @@ class RunCoordinator:
             raise ValueError("step requires exactly one of command or provider message")
         if not isinstance(approval_required, bool):
             raise ValueError("approval_required must be a boolean")
+        normalized_sandbox_policy = self._validate_sandbox_policy(
+            sandbox_policy, has_command=normalized_command is not None
+        )
         payload: dict[str, object] = {
             "objective": objective,
             "approval_required": approval_required,
@@ -701,6 +726,8 @@ class RunCoordinator:
             payload["timeout"] = timeout
         if normalized_message is not None:
             payload["message"] = self._message_payload(normalized_message)
+        if normalized_sandbox_policy is not None:
+            payload["sandbox_policy"] = self._sandbox_policy_payload(normalized_sandbox_policy)
         try:
             record = self.store.append_step(
                 step_id,
@@ -917,6 +944,8 @@ class RunCoordinator:
             step_payload["timeout"] = current.timeout
         if current.message is not None:
             step_payload["message"] = self._message_payload(current.message)
+        if current.sandbox_policy is not None:
+            step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         self._add_approval_payload(step_payload, current)
 
         run_status: RunStatus | None = None
@@ -1065,6 +1094,8 @@ class RunCoordinator:
             step_payload["timeout"] = current.timeout
         if current.message is not None:
             step_payload["message"] = self._message_payload(current.message)
+        if current.sandbox_policy is not None:
+            step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         self._add_approval_payload(step_payload, current)
 
         run_payload: dict[str, object] = {
@@ -1136,6 +1167,8 @@ class RunCoordinator:
             step_payload["timeout"] = current.timeout
         if current.message is not None:
             step_payload["message"] = self._message_payload(current.message)
+        if current.sandbox_policy is not None:
+            step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         self._add_approval_payload(step_payload, current)
 
         run_payload: dict[str, object] = {
@@ -1206,6 +1239,7 @@ class RunCoordinator:
         command = record.payload.get("command")
         timeout = record.payload.get("timeout")
         message = record.payload.get("message")
+        sandbox_policy = record.payload.get("sandbox_policy")
         approval_required = record.payload.get("approval_required", False)
         approval_status_value = record.payload.get("approval_status")
         if not isinstance(run_id, str) or not run_id:
@@ -1220,6 +1254,9 @@ class RunCoordinator:
         normalized_message = RunCoordinator._validate_message(message)
         if normalized_command is not None and normalized_message is not None:
             raise ValueError(f"step record has ambiguous execution input: {record.key}")
+        normalized_sandbox_policy = RunCoordinator._validate_sandbox_policy(
+            sandbox_policy, has_command=normalized_command is not None
+        )
         if not isinstance(approval_required, bool):
             raise ValueError(f"step record has invalid approval requirement: {record.key}")
         if approval_status_value is None:
@@ -1250,6 +1287,7 @@ class RunCoordinator:
             message=normalized_message,
             approval_required=approval_required,
             approval_status=approval_status,
+            sandbox_policy=normalized_sandbox_policy,
         )
 
     @staticmethod
@@ -1277,6 +1315,10 @@ class RunCoordinator:
             payload["timeout"] = step.timeout
         if step.message is not None:
             payload["message"] = RunCoordinator._message_payload(step.message)
+        if step.sandbox_policy is not None:
+            payload["sandbox_policy"] = RunCoordinator._sandbox_policy_payload(
+                step.sandbox_policy
+            )
         payload["approval_required"] = step.approval_required
         payload["approval_status"] = approval_status
         return payload
@@ -1284,6 +1326,17 @@ class RunCoordinator:
     @staticmethod
     def _message_payload(message: ProviderMessage) -> dict[str, object]:
         return {key: value for key, value in asdict(message).items() if value is not None}
+
+    @staticmethod
+    def _sandbox_policy_payload(policy: SandboxPolicy) -> dict[str, object]:
+        return {
+            "kind": policy.kind.value,
+            "image": policy.image,
+            "mounts": [list(mount) for mount in policy.mounts],
+            "working_dir": policy.working_dir,
+            "env_passthrough": list(policy.env_passthrough),
+            "network_enabled": policy.network_enabled,
+        }
 
     @staticmethod
     def _execution_kind(step: RunStep) -> str:
@@ -1370,6 +1423,72 @@ class RunCoordinator:
         ):
             raise ValueError("step timeout must be positive")
         return normalized
+
+    @staticmethod
+    def _validate_sandbox_policy(
+        policy: SandboxPolicy | Mapping[str, object] | object | None,
+        *,
+        has_command: bool,
+    ) -> SandboxPolicy | None:
+        if policy is None:
+            return None
+        if not has_command:
+            raise ValueError("sandbox policy is only valid for command steps")
+        if isinstance(policy, SandboxPolicy):
+            values = asdict(policy)
+        elif isinstance(policy, Mapping):
+            allowed = {
+                "kind", "image", "mounts", "working_dir", "env_passthrough", "network_enabled",
+            }
+            if set(policy) - allowed:
+                raise ValueError("step sandbox policy has unknown fields")
+            values = dict(policy)
+        else:
+            raise ValueError("step sandbox policy must be an object")
+        try:
+            kind = SandboxKind(values.get("kind"))
+        except (TypeError, ValueError) as error:
+            raise ValueError("step sandbox policy kind is invalid") from error
+        image = values.get("image", "python:3.12-slim")
+        if not isinstance(image, str) or not image.strip():
+            raise ValueError("step sandbox policy image must be a non-empty string")
+        mounts = tuple(tuple(mount) for mount in values.get("mounts", ()))
+        for mount in mounts:
+            if len(mount) != 2 or not all(
+                isinstance(part, str) and part for part in mount
+            ):
+                raise ValueError(
+                    "step sandbox policy mounts require non-empty host and container paths"
+                )
+        working_dir = values.get("working_dir")
+        if working_dir is not None and (
+            not isinstance(working_dir, str)
+            or not working_dir.strip()
+            or not posixpath.isabs(working_dir)
+        ):
+            raise ValueError(
+                "step sandbox policy working directory must be a non-empty absolute path"
+            )
+        env_passthrough = tuple(values.get("env_passthrough", ()))
+        if any(
+            not isinstance(name, str) or not name.isidentifier() for name in env_passthrough
+        ):
+            raise ValueError(
+                "step sandbox policy env passthrough names must be valid identifiers"
+            )
+        if len(set(env_passthrough)) != len(env_passthrough):
+            raise ValueError("step sandbox policy env passthrough names must be unique")
+        network_enabled = values.get("network_enabled", False)
+        if not isinstance(network_enabled, bool):
+            raise ValueError("step sandbox policy network option must be a boolean")
+        return SandboxPolicy(
+            kind=kind,
+            image=image,
+            mounts=mounts,
+            working_dir=working_dir,
+            env_passthrough=env_passthrough,
+            network_enabled=network_enabled,
+        )
 
 
 class AgentRegistry:

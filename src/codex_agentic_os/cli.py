@@ -28,6 +28,7 @@ from .runtime import (
     RunStatus,
     RunStep,
     RuntimeSpec,
+    SandboxPolicy,
     StepRecoveryReason,
     StepStatus,
 )
@@ -145,6 +146,37 @@ def _parser() -> argparse.ArgumentParser:
         "--approval-required",
         action="store_true",
         help="require an explicit operator decision before dispatch",
+    )
+    add_step.add_argument(
+        "--sandbox", choices=[kind.value for kind in SandboxKind],
+        help="persist a sandbox kind for a command step",
+    )
+    add_step.add_argument("--image", help="persisted container image override")
+    add_step.add_argument(
+        "--mount",
+        action="append",
+        default=[],
+        metavar="HOST:CONTAINER",
+        help="persist a bind mount for the command step; repeat for multiple mounts",
+    )
+    add_step.add_argument(
+        "--env-passthrough",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "persist an environment variable name to resolve from the worker's "
+            "environment at dispatch time; repeat for multiple names"
+        ),
+    )
+    add_step.add_argument(
+        "--workdir",
+        help="persisted absolute working directory inside the container",
+    )
+    add_step.add_argument(
+        "--network",
+        action="store_true",
+        help="persist explicit opt-in to enable container network access",
     )
     list_runs.add_argument(
         "--status",
@@ -473,6 +505,10 @@ def _step_payload(
     payload.pop("approval_status")
     if step.message is None:
         payload.pop("message")
+    if step.sandbox_policy is None:
+        payload.pop("sandbox_policy")
+    else:
+        payload["sandbox_policy"]["kind"] = step.sandbox_policy.kind.value
     payload["status"] = step.status.value
     if step.status is StepStatus.FAILED:
         payload["failure_kind"] = (
@@ -616,6 +652,39 @@ def main(argv: Sequence[str] | None = None) -> None:
                         temperature=arguments.temperature,
                         max_tokens=arguments.max_tokens,
                     )
+                sandbox_policy = None
+                if any(
+                    value not in (None, False, [])
+                    for value in (
+                        arguments.sandbox,
+                        arguments.image,
+                        arguments.mount,
+                        arguments.env_passthrough,
+                        arguments.workdir,
+                        arguments.network,
+                    )
+                ):
+                    if arguments.sandbox is None:
+                        raise ValueError("sandbox policy requires --sandbox")
+                    mounts = _parse_mounts(arguments.mount)
+                    sandbox_policy = (
+                        SandboxPolicy(
+                            kind=SandboxKind(arguments.sandbox),
+                            image=arguments.image,
+                            mounts=mounts,
+                            working_dir=arguments.workdir,
+                            env_passthrough=tuple(arguments.env_passthrough),
+                            network_enabled=arguments.network,
+                        )
+                        if arguments.image is not None
+                        else SandboxPolicy(
+                            kind=SandboxKind(arguments.sandbox),
+                            mounts=mounts,
+                            working_dir=arguments.workdir,
+                            env_passthrough=tuple(arguments.env_passthrough),
+                            network_enabled=arguments.network,
+                        )
+                    )
                 coordinator.add_step(
                     arguments.run_id,
                     arguments.step_id,
@@ -624,6 +693,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     timeout=arguments.timeout,
                     message=message,
                     approval_required=arguments.approval_required,
+                    sandbox_policy=sandbox_policy,
                 )
                 run_id = arguments.run_id
             elif arguments.run_command == "list":
