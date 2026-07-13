@@ -449,3 +449,86 @@ def test_google_adapter_marks_usage_unavailable_without_usage_metadata() -> None
     assert response.usage.available is False
     assert response.usage.unavailable_reason is not None
     assert response.content == "hello"
+
+
+_RESOLVED_CONTEXT_MESSAGES = (
+    ChatMessage("system", "Be concise."),
+    ChatMessage("user", "Earlier objective"),
+    ChatMessage("assistant", "Earlier result"),
+    ChatMessage("user", "Current objective"),
+)
+
+
+def test_compatible_adapter_orders_resolved_context_before_current_user_message() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["body"] = json.loads(body)
+        return json.dumps({"choices": [{"message": {"content": "final"}}]}).encode()
+
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(ProviderKind.OPENAI_COMPATIBLE, model="test-model", base_url="http://localhost:9000/v1"),
+        transport=transport,
+    )
+    adapter.complete(ChatRequest(_RESOLVED_CONTEXT_MESSAGES))
+
+    assert captured["body"]["messages"] == [
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Earlier objective"},
+        {"role": "assistant", "content": "Earlier result"},
+        {"role": "user", "content": "Current objective"},
+    ]
+
+
+def test_compatible_adapter_without_context_keeps_single_turn_payload() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["body"] = json.loads(body)
+        return json.dumps({"choices": [{"message": {"content": "final"}}]}).encode()
+
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(ProviderKind.OPENAI_COMPATIBLE, model="test-model", base_url="http://localhost:9000/v1"),
+        transport=transport,
+    )
+    adapter.complete(ChatRequest((ChatMessage("user", "Current objective"),)))
+
+    assert captured["body"]["messages"] == [{"role": "user", "content": "Current objective"}]
+
+
+def test_anthropic_adapter_maps_resolved_context_into_alternating_native_messages() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["body"] = json.loads(body)
+        return json.dumps({"content": [{"type": "text", "text": "final"}]}).encode()
+
+    adapter = AnthropicAdapter(ProviderSpec(ProviderKind.ANTHROPIC, model="claude-test"), transport=transport)
+    adapter.complete(ChatRequest(_RESOLVED_CONTEXT_MESSAGES))
+
+    assert captured["body"]["system"] == "Be concise."
+    assert captured["body"]["messages"] == [
+        {"role": "user", "content": "Earlier objective"},
+        {"role": "assistant", "content": "Earlier result"},
+        {"role": "user", "content": "Current objective"},
+    ]
+
+
+def test_google_adapter_maps_resolved_context_into_ordered_native_contents() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["body"] = json.loads(body)
+        return json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": "final"}]}}]}
+        ).encode()
+
+    adapter = GoogleAdapter(ProviderSpec(ProviderKind.GOOGLE, model="gemini-test"), transport=transport)
+    adapter.complete(ChatRequest(_RESOLVED_CONTEXT_MESSAGES))
+
+    assert captured["body"]["systemInstruction"] == {"parts": [{"text": "Be concise."}]}
+    assert captured["body"]["contents"] == [
+        {"role": "user", "parts": [{"text": "Earlier objective"}]},
+        {"role": "model", "parts": [{"text": "Earlier result"}]},
+        {"role": "user", "parts": [{"text": "Current objective"}]},
+    ]

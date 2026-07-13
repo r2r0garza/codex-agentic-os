@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from codex_agentic_os.chat import ChatResponse, ChatUsage
+from codex_agentic_os.chat import ChatMessage, ChatResponse, ChatUsage
 from codex_agentic_os.runtime import (
     Agent,
     AgentRegistry,
@@ -2018,6 +2018,64 @@ def test_execute_next_step_sends_provider_message_and_persists_response(tmp_path
     }
     assert run.status is RunStatus.SUCCEEDED
     assert RunCoordinator(StateStore(database)).get_step("manual") == step
+
+
+def test_execute_next_step_sends_resolved_context_as_ordered_prior_turns(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    requests = []
+
+    class CommandExecutor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "first-stdout", "")
+
+    class SummaryAdapter:
+        def complete(self, request):
+            return ChatResponse("Second output", model="served-model")
+
+    class SynthesisAdapter:
+        def complete(self, request):
+            requests.append(request)
+            return ChatResponse("Synthesized", model="served-model")
+
+    def resolve(message):
+        return SummaryAdapter() if message.content == "Summarize" else SynthesisAdapter()
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="Gather input", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "second",
+        objective="Summarize input",
+        message=ProviderMessage(provider="local", content="Summarize"),
+    )
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage(
+            provider="local", content="Synthesize the results", system="Be concise"
+        ),
+        context_step_ids=("second", "first"),
+    )
+
+    coordinator.execute_next_step("run-1", CommandExecutor(), adapter_resolver=resolve)
+    coordinator.execute_next_step("run-1", CommandExecutor(), adapter_resolver=resolve)
+    step, run = coordinator.execute_next_step(
+        "run-1", CommandExecutor(), adapter_resolver=resolve
+    )
+
+    assert len(requests) == 1
+    assert requests[0].messages == (
+        ChatMessage("system", "Be concise"),
+        ChatMessage("user", "Summarize input"),
+        ChatMessage("assistant", "Second output"),
+        ChatMessage("user", "Gather input"),
+        ChatMessage("assistant", "exit_code=0\nstdout:\nfirst-stdout\nstderr:\n"),
+        ChatMessage("user", "Synthesize the results"),
+    )
+    assert step.status is StepStatus.SUCCEEDED
+    assert run.status is RunStatus.SUCCEEDED
 
 
 def test_execute_next_step_persists_explicit_unavailable_usage(tmp_path) -> None:

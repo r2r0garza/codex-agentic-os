@@ -315,6 +315,17 @@ behavior. Once every reference has succeeded, dispatch proceeds and the
 durable `step_started` history entry records the resolved reference ids
 (no referenced output) as auditable evidence that resolution occurred.
 
+Resolved references are sent to the adapter as explicit prior-context turns,
+not folded into the current step's single message. For each declared
+reference, in order, dispatch replays a `(user, assistant)` pair — the
+referenced step's objective as the user turn and its durable output (a
+provider step's response text, or a command step's rendered
+`exit_code`/`stdout`/`stderr`) as the assistant turn — placed after any
+system instruction and before the step's own current user message. Every
+supported adapter family (OpenAI-compatible, Anthropic, Google) maps this
+same ordered sequence into its native multi-message shape; a provider step
+with no context references keeps today's exact single-turn payload.
+
 Add `--approval-required` to either form to keep the step queued until an operator
 records an explicit decision:
 

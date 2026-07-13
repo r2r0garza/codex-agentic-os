@@ -716,13 +716,16 @@ class RunCoordinator:
         assert adapter_resolver is not None and running_step.message is not None
         try:
             adapter = adapter_resolver(running_step.message)
-            messages = (
-                (
-                    ChatMessage("system", running_step.message.system),
-                    ChatMessage("user", running_step.message.content),
-                )
+            system_messages = (
+                (ChatMessage("system", running_step.message.system),)
                 if running_step.message.system is not None
-                else (ChatMessage("user", running_step.message.content),)
+                else ()
+            )
+            context_messages = self._resolve_context_messages(running_step)
+            messages = (
+                system_messages
+                + context_messages
+                + (ChatMessage("user", running_step.message.content),)
             )
             request = ChatRequest(
                 messages,
@@ -1397,6 +1400,40 @@ class RunCoordinator:
 
         if step.context_step_ids:
             payload["context_step_ids"] = list(step.context_step_ids)
+
+    def _resolve_context_messages(self, step: RunStep) -> tuple[ChatMessage, ...]:
+        """Map a step's resolved context references into provider-neutral turns.
+
+        Each reference replays as one alternating (user, assistant) pair so
+        every supported adapter family, including Anthropic's strict
+        user/assistant alternation, receives a valid ordered sequence ending
+        immediately before the step's own current user message.
+        """
+
+        messages: list[ChatMessage] = []
+        for context_step_id in step.context_step_ids:
+            referenced = self.get_step(context_step_id)
+            if referenced is None:  # Defensive: dispatch-time gate already resolved this.
+                raise ValueError(f"context step does not exist: {context_step_id}")
+            messages.append(ChatMessage("user", referenced.objective))
+            messages.append(
+                ChatMessage("assistant", self._step_output_text(referenced))
+            )
+        return tuple(messages)
+
+    @staticmethod
+    def _step_output_text(step: RunStep) -> str:
+        """Render a succeeded step's durable output as prior-turn text."""
+
+        output = step.output or {}
+        if step.message is not None:
+            content = output.get("content")
+            return content if isinstance(content, str) else ""
+        return (
+            f"exit_code={output.get('exit_code')}\n"
+            f"stdout:\n{output.get('stdout', '')}\n"
+            f"stderr:\n{output.get('stderr', '')}"
+        )
 
     @staticmethod
     def _decision_payload(
