@@ -1913,6 +1913,7 @@ def test_cli_history_reconstructs_mixed_command_and_provider_run_across_processe
             "agent_id",
             "execution_kind",
             "step_id",
+            "retried_step_id",
         }
 
     reconstructed = RunCoordinator(StateStore(database)).list_history("run-1")

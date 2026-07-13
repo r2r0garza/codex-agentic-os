@@ -1820,6 +1820,132 @@ def test_non_failed_steps_have_no_failure_classification(tmp_path, status) -> No
     assert step.retry_eligible is None
 
 
+def test_retry_step_creates_new_queued_attempt_and_reopens_run(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Build feature", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1", "command", objective="Run command", command=("false",), timeout=30
+    )
+    coordinator.start_next_step("run-1")
+    failed_step, failed_run = coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "false"), 17, "", "boom")
+    )
+
+    new_step, run = coordinator.retry_step(
+        "command", "command-retry",
+        expected_step_revision=failed_step.revision,
+        expected_run_revision=failed_run.revision,
+    )
+
+    assert new_step.status is StepStatus.QUEUED
+    assert new_step.command == ("false",)
+    assert new_step.timeout == 30
+    assert new_step.objective == "Run command"
+    assert new_step.position == 2
+    assert run.status is RunStatus.QUEUED
+    assert run.revision == failed_run.revision + 1
+    assert run.output is None
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get_step("command") == failed_step
+    assert reloaded.get_step("command") == coordinator.get_step("command")
+    history = reloaded.list_history("run-1")
+    assert history[-1].transition == "step_retried"
+    assert history[-1].step_id == "command-retry"
+    assert history[-1].retried_step_id == "command"
+
+    running_step = reloaded.start_next_step("run-1")
+    assert running_step.step_id == "command-retry"
+    assert running_step.status is StepStatus.RUNNING
+
+
+def test_retry_step_rejects_uncertain_recovered_step_without_mutation(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Execute command")
+    coordinator.add_step(
+        "run-1", "command", objective="Wait", command=("sleep", "10"), timeout=1
+    )
+    coordinator.start_next_step("run-1")
+    step, run = coordinator.recover_running_step(
+        "command", StepRecoveryReason.TIMED_OUT
+    )
+
+    with pytest.raises(ValueError, match="not retry-eligible"):
+        coordinator.retry_step(
+            "command", "command-retry",
+            expected_step_revision=step.revision,
+            expected_run_revision=run.revision,
+        )
+
+    assert coordinator.get_step("command") == step
+    assert coordinator.get("run-1") == run
+    assert coordinator.get_step("command-retry") is None
+
+
+@pytest.mark.parametrize("status", [StepStatus.QUEUED, StepStatus.RUNNING, StepStatus.SUCCEEDED])
+def test_retry_step_rejects_non_failed_step_without_mutation(tmp_path, status) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / f"{status.value}.sqlite3"))
+    coordinator.create("run-1", objective="Inspect classification")
+    coordinator.add_step(
+        "run-1", "command", objective="Run command", command=("true",)
+    )
+    if status is StepStatus.RUNNING:
+        step = coordinator.start_next_step("run-1")
+    elif status is StepStatus.SUCCEEDED:
+        coordinator.start_next_step("run-1")
+        step, _ = coordinator.complete_step_from_result(
+            "command", SandboxResult(("docker", "run", "true"), 0, "", "")
+        )
+    else:
+        step = coordinator.get_step("command")
+
+    with pytest.raises(ValueError, match="not retry-eligible"):
+        coordinator.retry_step(
+            "command", "command-retry",
+            expected_step_revision=step.revision,
+            expected_run_revision=coordinator.get("run-1").revision,
+        )
+
+    assert coordinator.get_step("command") == step
+
+
+def test_retry_step_is_compare_and_swap_safe(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    setup = RunCoordinator(StateStore(database))
+    setup.create("run-1", objective="Build feature", agent_id="agent-1")
+    setup.add_step("run-1", "command", objective="Run command", command=("false",))
+    setup.start_next_step("run-1")
+    failed_step, failed_run = setup.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "false"), 17, "", "boom")
+    )
+    coordinators = tuple(_RunCoordinator(StateStore(database)) for _ in range(2))
+
+    def attempt(coordinator, new_step_id):
+        try:
+            return coordinator.retry_step(
+                "command", new_step_id,
+                expected_step_revision=failed_step.revision,
+                expected_run_revision=failed_run.revision,
+            )
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(attempt, coordinators, ("retry-a", "retry-b"))
+        )
+
+    winners = [result for result in results if result is not None]
+    assert len(winners) == 1
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == winners[0][1]
+    assert reloaded.get_step("command") == failed_step
+    assert len(
+        [entry for entry in reloaded.list_history("run-1") if entry.transition == "step_retried"]
+    ) == 1
+
+
 def test_recover_running_step_validates_state_and_reason_before_mutation(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
 

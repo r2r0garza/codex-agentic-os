@@ -33,6 +33,7 @@ class RunHistoryEntry:
     agent_id: str | None = None
     execution_kind: str | None = None
     step_id: str | None = None
+    retried_step_id: str | None = None
 
 
 class StateConflictError(ValueError):
@@ -64,6 +65,7 @@ class StateStore:
             step_id TEXT,
             agent_id TEXT,
             execution_kind TEXT,
+            retried_step_id TEXT,
             PRIMARY KEY (run_id, sequence)
         )
     """
@@ -106,6 +108,8 @@ class StateStore:
             }
             if "step_id" not in history_columns:
                 connection.execute("ALTER TABLE run_history ADD COLUMN step_id TEXT")
+            if "retried_step_id" not in history_columns:
+                connection.execute("ALTER TABLE run_history ADD COLUMN retried_step_id TEXT")
             connection.commit()
 
     def put(
@@ -225,6 +229,7 @@ class StateStore:
                     step_id=entry.step_id,
                     agent_id=entry.agent_id,
                     execution_kind=entry.execution_kind,
+                    retried_step_id=entry.retried_step_id,
                 )
             connection.commit()
         return tuple(stored)
@@ -436,6 +441,131 @@ class StateStore:
             connection.commit()
         return StateRecord(
             "run", run_id, status, reassigned_payload, reassigned_revision
+        )
+
+    def retry_failed_step(
+        self,
+        step_id: str,
+        new_step_id: str,
+        *,
+        expected_step_revision: int,
+        expected_run_revision: int,
+    ) -> tuple[StateRecord, StateRecord, StateRecord]:
+        """Atomically requeue one failed step as a new attempt in one transaction."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        self._validate_identity("step", step_id)
+        self._validate_identity("step", new_step_id)
+        if step_id == new_step_id:
+            raise ValueError("new step id must differ from the retried step id")
+        if expected_step_revision < 1:
+            raise ValueError("expected step revision must be positive")
+        if expected_run_revision < 1:
+            raise ValueError("expected run revision must be positive")
+        self.initialize()
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            step_row = connection.execute(
+                """
+                SELECT status, payload, revision
+                FROM state_records WHERE kind = 'step' AND key = ?
+                """,
+                (step_id,),
+            ).fetchone()
+            if step_row is None:
+                raise KeyError(f"state record does not exist: step/{step_id}")
+            step_status, step_encoded, step_revision = (
+                str(step_row[0]), str(step_row[1]), int(step_row[2])
+            )
+            if step_status != "failed" or step_revision != expected_step_revision:
+                raise StateConflictError(f"state step retry conflict: {step_id}")
+            step_payload = json.loads(step_encoded)
+
+            run_id = step_payload.get("run_id")
+            run_row = connection.execute(
+                """
+                SELECT status, payload, revision
+                FROM state_records WHERE kind = 'run' AND key = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if run_row is None:  # Defensive: durable step records must reference an existing run.
+                raise KeyError(f"state record does not exist: run/{run_id}")
+            run_status, run_encoded, run_revision = (
+                str(run_row[0]), str(run_row[1]), int(run_row[2])
+            )
+            if run_status != "failed" or run_revision != expected_run_revision:
+                raise StateConflictError(f"state run retry conflict: {run_id}")
+            run_payload = json.loads(run_encoded)
+
+            if connection.execute(
+                "SELECT 1 FROM state_records WHERE kind = 'step' AND key = ?",
+                (new_step_id,),
+            ).fetchone() is not None:
+                raise StateConflictError(f"state record already exists: step/{new_step_id}")
+
+            position_rows = connection.execute(
+                "SELECT payload FROM state_records WHERE kind = 'step'"
+            ).fetchall()
+            positions = [
+                int(document["position"])
+                for (encoded,) in position_rows
+                if (document := json.loads(str(encoded))).get("run_id") == run_id
+            ]
+            new_step_payload: dict[str, object] = {
+                "run_id": run_id,
+                "position": max(positions, default=0) + 1,
+                "objective": step_payload["objective"],
+                "retried_step_id": step_id,
+            }
+            for key in ("command", "timeout", "message"):
+                if key in step_payload:
+                    new_step_payload[key] = step_payload[key]
+            approval_required = bool(step_payload.get("approval_required", False))
+            new_step_payload["approval_required"] = approval_required
+            if approval_required:
+                new_step_payload["approval_status"] = "pending"
+            new_step_encoded = self._encode_payload(new_step_payload)
+            connection.execute(
+                """
+                INSERT INTO state_records (kind, key, status, payload, revision)
+                VALUES ('step', ?, 'queued', ?, 1)
+                """,
+                (new_step_id, new_step_encoded),
+            )
+
+            reopened_run_payload = {
+                key: value for key, value in run_payload.items() if key != "output"
+            }
+            reopened_run_revision = run_revision + 1
+            connection.execute(
+                """
+                UPDATE state_records SET status = 'queued', payload = ?, revision = ?
+                WHERE kind = 'run' AND key = ?
+                """,
+                (
+                    self._encode_payload(reopened_run_payload),
+                    reopened_run_revision,
+                    run_id,
+                ),
+            )
+            self._append_run_history(
+                connection,
+                run_id,
+                transition="step_retried",
+                status="queued",
+                step_id=new_step_id,
+                agent_id=run_payload.get("agent_id"),
+                execution_kind=None,
+                retried_step_id=step_id,
+            )
+            connection.commit()
+        return (
+            StateRecord("step", step_id, step_status, step_payload, step_revision),
+            StateRecord("step", new_step_id, "queued", new_step_payload, 1),
+            StateRecord("run", run_id, "queued", reopened_run_payload, reopened_run_revision),
         )
 
     def transition_run(
@@ -722,7 +852,8 @@ class StateStore:
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 """
-                SELECT run_id, sequence, transition, status, step_id, agent_id, execution_kind
+                SELECT run_id, sequence, transition, status, step_id, agent_id,
+                       execution_kind, retried_step_id
                 FROM run_history WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
@@ -736,6 +867,7 @@ class StateStore:
                 step_id=row[4],
                 agent_id=row[5],
                 execution_kind=row[6],
+                retried_step_id=row[7],
             )
             for row in rows
         )
@@ -828,6 +960,7 @@ class StateStore:
         agent_id: object,
         execution_kind: str | None,
         step_id: str | None = None,
+        retried_step_id: str | None = None,
     ) -> None:
         """Append one ordered history entry on a caller-owned run mutation transaction."""
 
@@ -838,8 +971,9 @@ class StateStore:
         connection.execute(
             """
             INSERT INTO run_history
-                (run_id, sequence, transition, status, step_id, agent_id, execution_kind)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (run_id, sequence, transition, status, step_id, agent_id,
+                 execution_kind, retried_step_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -849,6 +983,7 @@ class StateStore:
                 step_id,
                 agent_id if isinstance(agent_id, str) else None,
                 execution_kind,
+                retried_step_id,
             ),
         )
 

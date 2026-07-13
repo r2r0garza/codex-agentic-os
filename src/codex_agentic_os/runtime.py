@@ -367,6 +367,32 @@ class RunCoordinator:
             raise ValueError(f"run claim cannot be reassigned: {run_id}") from error
         return self._run(stored)
 
+    def retry_step(
+        self,
+        step_id: str,
+        new_step_id: str,
+        *,
+        expected_step_revision: int,
+        expected_run_revision: int,
+    ) -> tuple[RunStep, AgentRun]:
+        """Atomically requeue one retry-eligible failed step as a new attempt."""
+
+        current = self.get_step(step_id)
+        if current is None:
+            raise KeyError(f"step does not exist: {step_id}")
+        if current.status is not StepStatus.FAILED or current.retry_eligible is not True:
+            raise ValueError(f"step is not retry-eligible: {step_id}")
+        try:
+            _, new_step_record, run_record = self.store.retry_failed_step(
+                step_id,
+                new_step_id,
+                expected_step_revision=expected_step_revision,
+                expected_run_revision=expected_run_revision,
+            )
+        except StateConflictError as error:
+            raise ValueError(f"step retry conflict: {step_id}") from error
+        return self._step(new_step_record), self._run(run_record)
+
     @staticmethod
     def _parse_last_seen(value: str) -> datetime:
         try:

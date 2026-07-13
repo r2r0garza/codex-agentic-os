@@ -295,6 +295,28 @@ command results and provider adapter errors are `definite` and retry-eligible;
 recovered interrupted or timed-out outcomes are `uncertain` and ineligible because
 their prior side effects may be unknown. Non-failed steps omit both fields.
 
+Atomically requeue a `definite`, retry-eligible failed step as a new attempt through
+the runtime's compare-and-swap path:
+
+```python
+new_step, run = runs.retry_step(
+    "command", "command-retry",
+    expected_step_revision=failed_step.revision,
+    expected_run_revision=failed_run.revision,
+)
+```
+
+`retry_step` rejects a non-`FAILED` step or an `uncertain` recovered outcome before
+any mutation. On success it inserts exactly one new `QUEUED` step with the same
+command/message/timeout/objective/approval requirement, returns the run to `queued`,
+and appends one `step_retried` history entry linking the prior and new attempt
+(`step_id` is the new attempt, `retried_step_id` is the retried one). The original
+failed step's status, output, and history stay byte-for-byte unchanged; a stale
+expected step or run revision is rejected without mutation, and concurrent retries
+of the same failed step produce exactly one winner. There is no CLI command yet,
+no automatic or background retry, no backoff or retry budget, and no compensation
+of external side effects.
+
 List durable runs in stable run identifier order without loading their steps or
 modifying runtime state:
 

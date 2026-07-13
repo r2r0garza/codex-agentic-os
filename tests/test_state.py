@@ -438,6 +438,104 @@ def test_reassign_stale_run_claim_rejects_fresh_heartbeat_without_mutation(tmp_p
     assert store.list_run_history("run-1") == before
 
 
+def test_retry_failed_step_creates_queued_attempt_and_reopens_run(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert(
+        "run", "run-1", status="failed",
+        payload={
+            "objective": "Build",
+            "agent_id": "agent-1",
+            "output": {"failed_step_id": "step-1", "exit_code": 17},
+        },
+    )
+    failed_step = store.insert(
+        "step", "step-1", status="failed",
+        payload={
+            "run_id": "run-1", "position": 1, "objective": "Run command",
+            "command": ["true"], "timeout": 30,
+            "output": {"command": ["true"], "exit_code": 17, "stdout": "", "stderr": "boom"},
+        },
+    )
+    run = store.get("run", "run-1")
+
+    original, new_step, reopened_run = store.retry_failed_step(
+        "step-1", "step-1-retry",
+        expected_step_revision=failed_step.revision,
+        expected_run_revision=run.revision,
+    )
+
+    assert original == store.get("step", "step-1")
+    assert new_step.status == "queued"
+    assert new_step.payload == {
+        "run_id": "run-1", "position": 2, "objective": "Run command",
+        "retried_step_id": "step-1", "command": ["true"], "timeout": 30,
+        "approval_required": False,
+    }
+    assert reopened_run.status == "queued"
+    assert reopened_run.revision == run.revision + 1
+    assert reopened_run.payload == {"objective": "Build", "agent_id": "agent-1"}
+    assert store.list_run_history("run-1")[-1] == RunHistoryEntry(
+        run_id="run-1", sequence=2, transition="step_retried", status="queued",
+        agent_id="agent-1", execution_kind=None, step_id="step-1-retry",
+        retried_step_id="step-1",
+    )
+
+
+def test_retry_failed_step_rejects_stale_revisions_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert(
+        "run", "run-1", status="failed",
+        payload={"objective": "Build", "output": {"failed_step_id": "step-1"}},
+    )
+    failed_step = store.insert(
+        "step", "step-1", status="failed",
+        payload={"run_id": "run-1", "position": 1, "objective": "Run", "command": ["true"]},
+    )
+    run = store.get("run", "run-1")
+    before_history = store.list_run_history("run-1")
+
+    with pytest.raises(StateConflictError, match="state step retry conflict"):
+        store.retry_failed_step(
+            "step-1", "step-1-retry",
+            expected_step_revision=failed_step.revision + 1,
+            expected_run_revision=run.revision,
+        )
+    with pytest.raises(StateConflictError, match="state run retry conflict"):
+        store.retry_failed_step(
+            "step-1", "step-1-retry",
+            expected_step_revision=failed_step.revision,
+            expected_run_revision=run.revision + 1,
+        )
+
+    assert store.get("step", "step-1") == failed_step
+    assert store.get("run", "run-1") == run
+    assert store.list_run_history("run-1") == before_history
+    assert store.get("step", "step-1-retry") is None
+
+
+def test_retry_failed_step_rejects_non_failed_step_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("run", "run-1", status="running", payload={"objective": "Build"})
+    step = store.insert(
+        "step", "step-1", status="running",
+        payload={"run_id": "run-1", "position": 1, "objective": "Run", "command": ["true"]},
+    )
+    run = store.get("run", "run-1")
+
+    with pytest.raises(StateConflictError, match="state step retry conflict"):
+        store.retry_failed_step(
+            "step-1", "step-1-retry",
+            expected_step_revision=step.revision,
+            expected_run_revision=run.revision,
+        )
+
+    assert store.get("step", "step-1") == step
+    assert store.get("run", "run-1") == run
+
+
 def test_existing_database_schema_is_upgraded_for_steps(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     with sqlite3.connect(database) as connection:
