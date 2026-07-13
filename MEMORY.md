@@ -4,8 +4,10 @@
 - Active milestone: Sprint 6 "Operator approval-gated execution" (#6). Selected its sole unblocked `agent-ready` issue, #61 (CLI approval inspection and decision commands, priority:3).
 - Completed: added CLI `--approval-required` step creation; a read-only `run approvals <run_id>` view that reports approval/step status, execution kind, and requesting/deciding agent attribution while excluding command arguments, provider request bodies, credentials, raw environment values, and terminal output; and `run approve`/`run reject` commands with optional registered deciding-agent attribution. Added Plan 0065 and DEVELOPMENT guidance.
 - Verification: focused CLI suite 141 passed (up from 136); full suite 380 passed (up from 376); live SQLite CLI UAT reconstructed pending and approved state plus `step_approved` history without exposing the sensitive command; index rebuilt/current (20 files, 563 symbols, 3156 relationships); `git diff --check` clean.
-- Implementation commit/push and issue closure are pending this durable record. Blocked review and roadmap horizon review follow the push.
-- Final target: `main`; issue #61 is expected to close from the implementation commit. Worktree contains only this run's focused changes.
+- Implementation commit `d7377bb` pushed to `origin/main`; issue #61 auto-closed from its `Closes #61` trailer and received a verification comment.
+- Blocked review: no open `blocked` issues exist repository-wide. Sprint 6 now has all three delivery issues closed and no ready issue; its next eligible run is retrospective-only under the one-mode-per-run rule.
+- Roadmap horizon: 3 open milestones before and after (Sprint 6 active; Sprint 7 and Sprint 8 future), so no planning handoff was needed. Sprint 6 was not retrospectively closed in this implementation-mode run.
+- Final target: `main`; next eligible action is the Sprint 6 retrospective and close-or-remediate procedure. Worktree dirty only for this final MEMORY update until committed and pushed.
 
 ---
 
