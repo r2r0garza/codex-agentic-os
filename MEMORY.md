@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-13T04:04:00Z — implementation run.
+- Active milestone: Sprint 7 "Stale-claim run reassignment" (#7). Selected its sole unblocked `agent-ready` issue, #65 (reassign stale claims from the CLI, priority:3).
+- Completed: added mutating CLI `run reassign-claim RUN_ID REPLACEMENT_AGENT_ID --expected-agent-id --expected-revision --threshold-seconds`, calling the existing atomic `RunCoordinator.reassign_stale_claim` (from #64). No changes were needed to `run history`/`run inspect` presentation — they already expose the `claim_reassigned` transition and replacement owner from #64's work. Added Plan 0068 and DEVELOPMENT guidance.
+- Verification: focused CLI suite 6 new reassign-claim tests passed (154 total in `test_run_cli.py`, up from 148), covering success, fresh-owner rejection, stale-expected-revision contention, missing run, running-step byte-for-byte preservation, and exactly-one-winner under concurrent CLI attempts; full suite 408 passed (up from 402); index rebuilt/current (20 files, 596 symbols, 3456 relationships); `git diff --check` clean; live CLI UAT confirmed fresh-owner rejection with no mutation, successful reassignment, and durable reconstruction of the updated owner and history from fresh CLI processes.
+- Implementation commit `ec3de5f` pushed to `origin/main`; issue #65 auto-closed from its `Closes #65` trailer and received a verification comment.
+- Blocked review: no open `blocked` issues exist repository-wide. Sprint 7 now has all three delivery issues (#63, #64, #65) closed and no ready issue; its next eligible run is retrospective-only under the one-mode-per-run rule.
+- Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
+- Final target: `main`; next eligible action is the Sprint 7 retrospective and close-or-remediate procedure. Worktree dirty only for this final MEMORY update until committed and pushed.
+
+---
+
 - Run: 2026-07-13T03:36:00Z — implementation run.
 - Active milestone: Sprint 7 "Stale-claim run reassignment" (#7). Selected its sole unblocked `agent-ready` issue, #64 (atomically transfer a stale run claim, priority:2).
 - Completed: added `StateStore.reassign_stale_run_claim`, which holds `BEGIN IMMEDIATE` while comparing the expected run owner/revision, re-reading and validating the owner's durable heartbeat, validating the registered replacement, evaluating the explicit positive staleness threshold, transferring only `run.agent_id`, advancing the run revision, and appending one `claim_reassigned` history entry. Added clock-driven `RunCoordinator.reassign_stale_claim` and Plan 0067. Queued and running runs are eligible; step records are never mutated.
@@ -39,14 +50,3 @@
 - Roadmap horizon: 22 open milestones before and after this run's implementation/retrospective work (closing #6 moved the count from 23 to 22, both far above the 3-sprint healthy horizon), so no `codex-agentic-os-plan-sprints` handoff was performed or needed. Sprint 7 "Stale-claim run reassignment" (#7) is now active with 0 issues; its next eligible run is replenishment.
 - Durable GitHub state: issue #62 closed; milestone #6 closed. No code changed this run.
 - Final target: `main`; next eligible action is Sprint 7 replenishment against its exit criteria. Worktree dirty only for this final MEMORY update until committed and pushed.
-
----
-
-- Run: 2026-07-13T01:34:21Z — implementation run.
-- Active milestone: Sprint 6 "Operator approval-gated execution" (#6). Selected its sole unblocked `agent-ready` issue, #61 (CLI approval inspection and decision commands, priority:3).
-- Completed: added CLI `--approval-required` step creation; a read-only `run approvals <run_id>` view that reports approval/step status, execution kind, and requesting/deciding agent attribution while excluding command arguments, provider request bodies, credentials, raw environment values, and terminal output; and `run approve`/`run reject` commands with optional registered deciding-agent attribution. Added Plan 0065 and DEVELOPMENT guidance.
-- Verification: focused CLI suite 141 passed (up from 136); full suite 380 passed (up from 376); live SQLite CLI UAT reconstructed pending and approved state plus `step_approved` history without exposing the sensitive command; index rebuilt/current (20 files, 563 symbols, 3156 relationships); `git diff --check` clean.
-- Implementation commit `d7377bb` pushed to `origin/main`; issue #61 auto-closed from its `Closes #61` trailer and received a verification comment.
-- Blocked review: no open `blocked` issues exist repository-wide. Sprint 6 now has all three delivery issues closed and no ready issue; its next eligible run is retrospective-only under the one-mode-per-run rule.
-- Roadmap horizon: 3 open milestones before and after (Sprint 6 active; Sprint 7 and Sprint 8 future), so no planning handoff was needed. Sprint 6 was not retrospectively closed in this implementation-mode run.
-- Final target: `main`; next eligible action is the Sprint 6 retrospective and close-or-remediate procedure. Worktree dirty only for this final MEMORY update until committed and pushed.
