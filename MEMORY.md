@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-12T00:00:00Z — replenishment run.
+- Active milestone: Sprint 8 "Explicit failed-step retry" (#8). It had 0 issues, so no implementation was permitted; compared its four exit criteria against current evidence in `runtime.py` (`execute_next_step`, `complete_step_from_result`, `fail_step_from_error`, `recover_running_step`) and `cli.py` (`run inspect`/`inspect-step`, no retry command) and confirmed FAILED is a terminal run/step state with no read-only distinction between definite failures and uncertain recovered outcomes, and no retry path exists.
+- Created three milestone-scoped issues mapped to the exit criteria: #67 (classify failed-step retry eligibility in read-only inspection, priority:1, `agent-ready`), #68 (atomically create a new attempt for an eligible failed step, priority:2, `blocked` on #67), and #69 (retry a failed step from the CLI, priority:3, `blocked` on #67/#68). Each excludes automatic retry, backoff, retry budgets, workflow branching, and compensation of external side effects.
+- Verification: activated `.venv`; `codex-agentic-os index check` reported current; inspected `RunCoordinator`/`StateStore` failure and recovery paths, the `_TRANSITIONS`/`_STEP_TRANSITIONS` tables confirming FAILED has no outgoing edges, and current CLI inspection surfaces; validated milestone assignment, priority/area labels, dependencies via `gh issue list`, and `git diff --check`. No project code changed, so pytest was not run.
+- Blocked review: repo-wide `blocked` search found only newly created #68 and #69; both have unresolved explicit dependencies (open #67), so no labels changed. Sprint 8 has one ready issue: #67.
+- Roadmap horizon: 21 open milestones before and after (Sprint 8 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
+- Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #67. Worktree dirty only for this MEMORY update before commit.
+
+---
+
 - Run: 2026-07-13T04:33:01Z — retrospective and milestone-close run.
 - Active milestone at start: Sprint 7 "Stale-claim run reassignment" (#7). All three delivery issues (#63, #64, #65) were closed and no open `blocked` issues existed, so this run used retrospective mode; no implementation issue was selected.
 - Retrospective: created and closed #66 after all five exit criteria passed. Full suite `408 passed`; `codex-agentic-os index check` current (20 files, 596 symbols, 3456 relationships); `git diff --check` clean. Live fresh-process CLI UAT in a scratch SQLite DB proved explicit-threshold fresh/stale inspection, premature reassignment rejection with byte-identical run/history state, successful stale-owner transfer from `agent-a` to `agent-b`, byte-identical preservation of a running step, and exactly one durable `claim_reassigned` event reconstructable through later inspection/history commands. Architecture review upheld durable heartbeat evidence, transactional CAS/history, and the existing uncertain-running-step recovery boundary; no remediation was required.
@@ -40,13 +50,3 @@
 - Blocked review: #64 depended only on #63, now closed, so `blocked` was removed and `agent-ready` added with evidence (comment posted explaining the unblock). #65 remains correctly blocked on open #63 and #64 (#65's #63 half is now satisfied, but it still depends on #64). Sprint 7 now has one ready issue: #64.
 - Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
 - Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #64. Worktree dirty only for this MEMORY update before commit.
-
----
-
-- Run: 2026-07-13T02:33:14Z — replenishment run.
-- Active milestone: Sprint 7 "Stale-claim run reassignment" (#7). It had 0 issues, so no implementation was permitted; compared its five exit criteria against the current heartbeat, run-claim, state transaction/history, and CLI evidence and confirmed there is no explicit-threshold stale-owner evaluation, atomic stale-owner transfer, or operator reassignment command.
-- Created three milestone-scoped issues: #63 (inspect claimed-run owner staleness, priority:1, `agent-ready`), #64 (atomically transfer a stale run claim, priority:2, blocked on #63), and #65 (reassign stale claims from the CLI, priority:3, blocked on #63/#64). Each maps directly to Sprint 7 exit criteria and excludes automatic reassignment, recovery/retry of uncertain work, leader election, load balancing, and notifications.
-- Verification: activated `.venv`; `codex-agentic-os index check` reported current (20 files, 563 symbols, 3156 relationships); inspected `AgentRegistry.heartbeat`, `RunCoordinator.claim`/`release_claim`, `StateStore.claim_run`/`release_run_claim`, history transactions, and current CLI claim/inspection surfaces; validated milestone assignments, priority/area labels, dependencies, and `git diff --check`. No project code changed, so pytest was not run.
-- Blocked review: repo-wide `blocked` search found only newly created #64 and #65; both have unresolved explicit dependencies, so no labels changed. Sprint 7 has one ready issue: #63.
-- Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
-- Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #63. Worktree dirty only for this MEMORY update before commit.
