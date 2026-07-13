@@ -2343,12 +2343,42 @@ def test_cli_history_reconstructs_mixed_command_and_provider_run_across_processe
             "execution_kind",
             "step_id",
             "retried_step_id",
+            "context_step_ids",
         }
 
     reconstructed = RunCoordinator(StateStore(database)).list_history("run-1")
     assert [entry["transition"] for entry in payload] == [
         entry.transition for entry in reconstructed
     ]
+
+
+def test_cli_execute_next_reports_unresolved_context_reference_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage(provider="ollama", content="Use the result"),
+        context_step_ids=("first",),
+    )
+    coordinator.cancel_step("first")
+
+    original_run = coordinator.get("run-1")
+    original_model = coordinator.get_step("model")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    assert exit_info.value.code == 2
+    assert "unresolved context references: model" in capsys.readouterr().err
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("model") == original_model
 
 
 def test_cli_history_rejects_missing_run_without_mutation(tmp_path, capsys) -> None:

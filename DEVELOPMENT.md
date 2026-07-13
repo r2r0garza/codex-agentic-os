@@ -306,6 +306,15 @@ codex-agentic-os run add-step run-002 step-003 --objective "Compare results" \
   --state-db .codex-agentic-os/state.sqlite3
 ```
 
+Dispatch resolves every declared context reference against current step state
+immediately before execution. A referencing step whose references have not all
+succeeded stays queued and ineligible: `run execute-next` reports the gate
+deterministically (exit code 2) without starting, failing, or otherwise
+mutating the step, mirroring the approval gate's queued-but-ineligible
+behavior. Once every reference has succeeded, dispatch proceeds and the
+durable `step_started` history entry records the resolved reference ids
+(no referenced output) as auditable evidence that resolution occurred.
+
 Add `--approval-required` to either form to keep the step queued until an operator
 records an explicit decision:
 
@@ -384,9 +393,11 @@ Listing prints JSON summaries and fails without creating a missing database.
 Inspect one run's durable lifecycle history in stable sequence order without
 modifying runtime state. Each entry identifies the run, sequence, transition,
 resulting status, responsible agent when known, execution kind (`command` or
-`provider`), and step id when the entry is step-scoped; entries never include
-credentials, raw environment values, command arguments, provider request bodies,
-or terminal outputs:
+`provider`), and step id when the entry is step-scoped; a `step_started` entry
+for a context-referencing provider step additionally carries the resolved
+`context_step_ids` in declared order as evidence that resolution occurred.
+Entries never include credentials, raw environment values, command arguments,
+provider request bodies, or terminal outputs:
 
 ```bash
 codex-agentic-os run history run-002

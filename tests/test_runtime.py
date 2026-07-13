@@ -11,6 +11,7 @@ from codex_agentic_os.runtime import (
     ApprovalRequiredError,
     ApprovalStatus,
     ClaimStaleness,
+    ContextReferencesUnresolvedError,
     ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
@@ -887,6 +888,172 @@ def test_provider_context_step_ids_survive_lifecycle_payload_rewrites(tmp_path) 
 
     assert running.context_step_ids == ("first",)
     assert failed.context_step_ids == ("first",)
+
+
+def test_provider_step_dispatches_when_context_references_all_succeeded(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.add_step("run-1", "second", objective="Second", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage("local", "Use the results"),
+        context_step_ids=("second", "first"),
+    )
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "ok", "")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("Synthesized", model="served-model")
+
+    executor = Executor()
+    coordinator.execute_next_step("run-1", executor)
+    coordinator.execute_next_step("run-1", executor)
+    step, run = coordinator.execute_next_step(
+        "run-1", adapter_resolver=lambda _: Adapter()
+    )
+
+    assert step.step_id == "model"
+    assert step.status is StepStatus.SUCCEEDED
+    assert run.status is RunStatus.SUCCEEDED
+
+    started = next(
+        entry
+        for entry in coordinator.list_history("run-1")
+        if entry.transition == "step_started" and entry.step_id == "model"
+    )
+    assert started.context_step_ids == ("second", "first")
+
+    reloaded = RunCoordinator(StateStore(database)).list_history("run-1")
+    reloaded_started = next(
+        entry
+        for entry in reloaded
+        if entry.transition == "step_started" and entry.step_id == "model"
+    )
+    assert reloaded_started.context_step_ids == ("second", "first")
+
+
+def test_provider_step_with_cancelled_context_reference_remains_queued_ineligible(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage("local", "Use the result"),
+        context_step_ids=("first",),
+    )
+    coordinator.cancel_step("first")
+
+    run_before = coordinator.get("run-1")
+    step_before = coordinator.get_step("model")
+
+    with pytest.raises(
+        ContextReferencesUnresolvedError,
+        match="unresolved context references: model",
+    ):
+        coordinator.start_next_step("run-1")
+
+    assert coordinator.get("run-1") == run_before
+    assert coordinator.get_step("model") == step_before
+    assert coordinator.get_step("first").status is StepStatus.CANCELLED
+
+
+def test_provider_step_with_failed_context_reference_remains_queued_ineligible(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="First", command=("false",))
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage("local", "Use the result"),
+        context_step_ids=("first",),
+    )
+
+    class FailingExecutor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 1, "", "boom")
+
+    coordinator.execute_next_step("run-1", FailingExecutor())
+    failed_first = coordinator.get_step("first")
+    failed_run = coordinator.get("run-1")
+    assert failed_first.status is StepStatus.FAILED
+    assert failed_run.status is RunStatus.FAILED
+
+    coordinator.retry_step(
+        "first",
+        "first-retry",
+        expected_step_revision=failed_first.revision,
+        expected_run_revision=failed_run.revision,
+    )
+
+    run_before = coordinator.get("run-1")
+    step_before = coordinator.get_step("model")
+
+    with pytest.raises(
+        ContextReferencesUnresolvedError,
+        match="unresolved context references: model",
+    ):
+        coordinator.start_next_step("run-1")
+
+    assert coordinator.get("run-1") == run_before
+    assert coordinator.get_step("model") == step_before
+    assert coordinator.get_step("first").status is StepStatus.FAILED
+
+
+def test_provider_step_context_eligibility_is_resolved_fresh_at_dispatch_time(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage("local", "Use the result"),
+        context_step_ids=("first",),
+    )
+
+    coordinator.transition_step("first", StepStatus.RUNNING)
+    coordinator.transition_step("first", StepStatus.SUCCEEDED, output={"exit_code": 0})
+
+    started_model = coordinator.start_next_step("run-1")
+
+    assert started_model.step_id == "model"
+    assert started_model.status is StepStatus.RUNNING
+
+
+def test_provider_step_context_gate_composes_with_pending_approval(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage("local", "Use the result"),
+        context_step_ids=("first",),
+        approval_required=True,
+    )
+    coordinator.cancel_step("first")
+
+    with pytest.raises(ApprovalRequiredError, match="model"):
+        coordinator.start_next_step("run-1")
 
 
 def test_approval_required_step_round_trips_across_restart(tmp_path) -> None:

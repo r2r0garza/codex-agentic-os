@@ -34,6 +34,7 @@ class RunHistoryEntry:
     execution_kind: str | None = None
     step_id: str | None = None
     retried_step_id: str | None = None
+    context_step_ids: tuple[str, ...] | None = None
 
 
 class StateConflictError(ValueError):
@@ -110,6 +111,10 @@ class StateStore:
                 connection.execute("ALTER TABLE run_history ADD COLUMN step_id TEXT")
             if "retried_step_id" not in history_columns:
                 connection.execute("ALTER TABLE run_history ADD COLUMN retried_step_id TEXT")
+            if "context_step_ids" not in history_columns:
+                connection.execute(
+                    "ALTER TABLE run_history ADD COLUMN context_step_ids TEXT"
+                )
             connection.commit()
 
     def put(
@@ -230,6 +235,7 @@ class StateStore:
                     agent_id=entry.agent_id,
                     execution_kind=entry.execution_kind,
                     retried_step_id=entry.retried_step_id,
+                    context_step_ids=entry.context_step_ids,
                 )
             connection.commit()
         return tuple(stored)
@@ -640,6 +646,7 @@ class StateStore:
         run_id: str | None = None,
         agent_id: str | None = None,
         execution_kind: str | None = None,
+        context_step_ids: Sequence[str] | None = None,
     ) -> StateRecord:
         """Advance one step in a write transaction when it matches an expected state."""
 
@@ -688,6 +695,7 @@ class StateStore:
                     step_id=step_id,
                     agent_id=agent_id,
                     execution_kind=execution_kind,
+                    context_step_ids=context_step_ids,
                 )
             connection.commit()
         return StateRecord("step", step_id, status, json.loads(encoded), new_revision)
@@ -855,7 +863,7 @@ class StateStore:
             rows = connection.execute(
                 """
                 SELECT run_id, sequence, transition, status, step_id, agent_id,
-                       execution_kind, retried_step_id
+                       execution_kind, retried_step_id, context_step_ids
                 FROM run_history WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
@@ -870,6 +878,7 @@ class StateStore:
                 agent_id=row[5],
                 execution_kind=row[6],
                 retried_step_id=row[7],
+                context_step_ids=None if row[8] is None else tuple(json.loads(row[8])),
             )
             for row in rows
         )
@@ -963,6 +972,7 @@ class StateStore:
         execution_kind: str | None,
         step_id: str | None = None,
         retried_step_id: str | None = None,
+        context_step_ids: Sequence[str] | None = None,
     ) -> None:
         """Append one ordered history entry on a caller-owned run mutation transaction."""
 
@@ -974,8 +984,8 @@ class StateStore:
             """
             INSERT INTO run_history
                 (run_id, sequence, transition, status, step_id, agent_id,
-                 execution_kind, retried_step_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 execution_kind, retried_step_id, context_step_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -986,6 +996,7 @@ class StateStore:
                 agent_id if isinstance(agent_id, str) else None,
                 execution_kind,
                 retried_step_id,
+                None if context_step_ids is None else json.dumps(list(context_step_ids)),
             ),
         )
 

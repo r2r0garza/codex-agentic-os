@@ -189,6 +189,62 @@ def test_transition_step_advances_status_output_and_revision_atomically(tmp_path
     assert store.get("step", "step-1") == transitioned
 
 
+def test_transition_step_records_context_step_ids_on_history(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.insert("run", "run-1", status="running", payload={"objective": "Compose"})
+    original = store.insert(
+        "step", "model", status="queued",
+        payload={
+            "run_id": "run-1", "position": 2, "objective": "Synthesize",
+            "context_step_ids": ["second", "first"],
+        },
+    )
+
+    store.transition_step(
+        "model",
+        expected_status=original.status,
+        expected_revision=original.revision,
+        status="running",
+        payload=original.payload,
+        run_id="run-1",
+        execution_kind="provider",
+        context_step_ids=("second", "first"),
+    )
+
+    entry = store.list_run_history("run-1")[-1]
+    assert entry.transition == "step_started"
+    assert entry.step_id == "model"
+    assert entry.context_step_ids == ("second", "first")
+    assert StateStore(store.path).list_run_history("run-1")[-1].context_step_ids == (
+        "second",
+        "first",
+    )
+
+
+def test_transition_step_omits_context_step_ids_from_history_when_not_provided(
+    tmp_path,
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.insert("run", "run-1", status="running", payload={"objective": "Build"})
+    original = store.insert(
+        "step", "step-1", status="running",
+        payload={"run_id": "run-1", "position": 1},
+    )
+
+    store.transition_step(
+        "step-1",
+        expected_status=original.status,
+        expected_revision=original.revision,
+        status="succeeded",
+        payload={"run_id": "run-1", "position": 1, "output": {"ok": True}},
+        run_id="run-1",
+        execution_kind="command",
+    )
+
+    entry = store.list_run_history("run-1")[-1]
+    assert entry.context_step_ids is None
+
+
 def test_batch_transition_conflict_appends_no_step_history(tmp_path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     run = store.insert("run", "run-1", status="running", payload={"agent_id": "a"})

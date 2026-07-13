@@ -68,6 +68,10 @@ class ApprovalRequiredError(ValueError):
     """Raised when dispatch reaches a step awaiting operator approval."""
 
 
+class ContextReferencesUnresolvedError(ValueError):
+    """Raised when dispatch reaches a provider step with unresolved context references."""
+
+
 class StepRecoveryReason(StrEnum):
     """Explicit reasons for failing a running step with an uncertain result."""
 
@@ -583,6 +587,18 @@ class RunCoordinator:
             raise ApprovalRequiredError(
                 f"step requires approval before dispatch: {next_step.step_id}"
             )
+        if next_step.context_step_ids:
+            step_by_id = {step.step_id: step for step in steps}
+            unresolved = tuple(
+                context_step_id
+                for context_step_id in next_step.context_step_ids
+                if step_by_id[context_step_id].status is not StepStatus.SUCCEEDED
+            )
+            if unresolved:
+                raise ContextReferencesUnresolvedError(
+                    "step has unresolved context references: "
+                    f"{next_step.step_id} ({', '.join(unresolved)})"
+                )
         if run.status is RunStatus.QUEUED:
             run_payload: dict[str, object] = {"objective": run.objective}
             if run.agent_id is not None:
@@ -622,11 +638,16 @@ class RunCoordinator:
                         run_id, 0, "step_started", StepStatus.RUNNING,
                         step_id=next_step.step_id, agent_id=run.agent_id,
                         execution_kind=self._execution_kind(next_step),
+                        context_step_ids=next_step.context_step_ids or None,
                     ),
                 ),
             )
             return self._step(stored[1])
-        return self.transition_step(next_step.step_id, StepStatus.RUNNING)
+        return self.transition_step(
+            next_step.step_id,
+            StepStatus.RUNNING,
+            resolved_context_step_ids=next_step.context_step_ids or None,
+        )
 
     def execute_next_step(
         self,
@@ -800,6 +821,7 @@ class RunCoordinator:
         status: StepStatus,
         *,
         output: Mapping[str, object] | None = None,
+        resolved_context_step_ids: Sequence[str] | None = None,
     ) -> RunStep:
         """Advance a step through an allowed lifecycle edge."""
 
@@ -810,6 +832,10 @@ class RunCoordinator:
             raise ValueError(f"invalid step transition: {current.status} -> {status}")
         if output is not None and status not in {StepStatus.SUCCEEDED, StepStatus.FAILED}:
             raise ValueError("step output is only valid for succeeded or failed steps")
+        if resolved_context_step_ids is not None and status is not StepStatus.RUNNING:
+            raise ValueError(
+                "resolved context step ids are only valid when starting a step"
+            )
         payload: dict[str, object] = {
             "run_id": current.run_id,
             "position": current.position,
@@ -838,6 +864,7 @@ class RunCoordinator:
                 run_id=current.run_id,
                 agent_id=run.agent_id,
                 execution_kind=self._execution_kind(current),
+                context_step_ids=resolved_context_step_ids,
             )
         except StateConflictError as error:
             raise ValueError(f"step transition conflict: {step_id}") from error
