@@ -92,6 +92,10 @@ def _parser() -> argparse.ArgumentParser:
         "staleness",
         help="report whether a claimed run's owning agent is stale relative to a threshold",
     )
+    usage_command = run_commands.add_parser(
+        "usage",
+        help="show one run's provider usage evidence and a token aggregate",
+    )
     reassign_claim = run_commands.add_parser(
         "reassign-claim",
         help="atomically transfer a demonstrably stale run claim to a replacement agent",
@@ -271,6 +275,7 @@ def _parser() -> argparse.ArgumentParser:
         history,
         approvals,
         staleness,
+        usage_command,
         inspect_step,
         approve,
         reject,
@@ -485,6 +490,69 @@ def _approval_payload(
     return requests
 
 
+def _usage_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
+    """Return one run's provider usage evidence in order and a token aggregate."""
+
+    steps = []
+    available_count = 0
+    unavailable_count = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+    for step in coordinator.list_steps(run_id):
+        if step.message is None:
+            continue
+        raw_usage = step.output.get("usage") if step.output is not None else None
+        if isinstance(raw_usage, dict):
+            usage = {
+                "available": bool(raw_usage.get("available")),
+                "input_tokens": raw_usage.get("input_tokens"),
+                "output_tokens": raw_usage.get("output_tokens"),
+                "raw": raw_usage.get("raw"),
+                "unavailable_reason": raw_usage.get("unavailable_reason"),
+            }
+        else:
+            usage = {
+                "available": False,
+                "input_tokens": None,
+                "output_tokens": None,
+                "raw": None,
+                "unavailable_reason": f"no usage recorded for step status {step.status.value}",
+            }
+        if usage["available"]:
+            available_count += 1
+            if isinstance(usage["input_tokens"], int):
+                total_input_tokens += usage["input_tokens"]
+            if isinstance(usage["output_tokens"], int):
+                total_output_tokens += usage["output_tokens"]
+        else:
+            unavailable_count += 1
+        model = None
+        if step.output is not None and isinstance(step.output.get("model"), str):
+            model = step.output.get("model")
+        if model is None:
+            model = step.message.model
+        steps.append(
+            {
+                "step_id": step.step_id,
+                "position": step.position,
+                "status": step.status.value,
+                "provider": step.message.provider,
+                "model": model,
+                "usage": usage,
+            }
+        )
+    return {
+        "run_id": run_id,
+        "steps": steps,
+        "aggregate": {
+            "steps_with_usage_available": available_count,
+            "steps_with_usage_unavailable": unavailable_count,
+            "input_tokens": total_input_tokens if available_count else None,
+            "output_tokens": total_output_tokens if available_count else None,
+        },
+    }
+
+
 def _staleness_payload(evaluation: ClaimStaleness) -> dict[str, object]:
     """Return the standard JSON-compatible view of one staleness evaluation."""
 
@@ -593,6 +661,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "history",
                 "approvals",
                 "staleness",
+                "usage",
             }
             coordinator = RunCoordinator(
                 StateStore(arguments.state_db, read_only=read_only)
@@ -771,6 +840,17 @@ def main(argv: Sequence[str] | None = None) -> None:
                 print(
                     json.dumps(
                         _approval_payload(coordinator, arguments.run_id),
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+                return
+            elif arguments.run_command == "usage":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                print(
+                    json.dumps(
+                        _usage_payload(coordinator, arguments.run_id),
                         indent=2,
                         sort_keys=True,
                     )

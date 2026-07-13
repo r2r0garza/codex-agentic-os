@@ -2364,6 +2364,209 @@ def test_cli_history_does_not_mutate_run_or_step_state(tmp_path, capsys) -> None
     assert reloaded.get_step("step-1") == original_step
 
 
+def test_cli_usage_reports_available_and_unavailable_usage_in_order(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse, ChatUsage
+
+    database = tmp_path / "state.sqlite3"
+    monkeypatch.setenv("PROVIDER_SECRET", "never-persist-this-secret")
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Mixed usage work")
+    coordinator.add_step("run-1", "step-1", objective="Checkpoint", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "step-2",
+        objective="Ask model",
+        message=ProviderMessage(provider="ollama", content="Hello", system="Be concise"),
+    )
+    coordinator.add_step(
+        "run-1",
+        "step-3",
+        objective="Ask again",
+        message=ProviderMessage(provider="anthropic", content="Follow up"),
+    )
+
+    def execute(self, argv, *, timeout=None):
+        return SandboxResult(("docker", *argv), 0, "ok", "")
+
+    monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
+    main([
+        "run", "execute-next", "run-1", "--sandbox", "docker",
+        "--state-db", str(database),
+    ])
+    capsys.readouterr()
+
+    responses = iter([
+        ChatResponse(
+            "Hi", model="served-model", raw={"id": "one"},
+            usage=ChatUsage(
+                available=True, input_tokens=11, output_tokens=2,
+                raw={"prompt_tokens": 11, "completion_tokens": 2},
+            ),
+        ),
+        ChatResponse(
+            "Ok", model="served-model-2",
+            usage=ChatUsage(
+                available=False,
+                unavailable_reason="provider omitted usage block",
+            ),
+        ),
+    ])
+
+    class Adapter:
+        def complete(self, request):
+            return next(responses)
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    capsys.readouterr()
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    capsys.readouterr()
+
+    main(["run", "usage", "run-1", "--state-db", str(database)])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["run_id"] == "run-1"
+    assert [step["step_id"] for step in payload["steps"]] == ["step-2", "step-3"]
+    assert payload["steps"][0] == {
+        "step_id": "step-2",
+        "position": 2,
+        "status": "succeeded",
+        "provider": "ollama",
+        "model": "served-model",
+        "usage": {
+            "available": True,
+            "input_tokens": 11,
+            "output_tokens": 2,
+            "raw": {"prompt_tokens": 11, "completion_tokens": 2},
+            "unavailable_reason": None,
+        },
+    }
+    assert payload["steps"][1] == {
+        "step_id": "step-3",
+        "position": 3,
+        "status": "succeeded",
+        "provider": "anthropic",
+        "model": "served-model-2",
+        "usage": {
+            "available": False,
+            "input_tokens": None,
+            "output_tokens": None,
+            "raw": None,
+            "unavailable_reason": "provider omitted usage block",
+        },
+    }
+    assert payload["aggregate"] == {
+        "steps_with_usage_available": 1,
+        "steps_with_usage_unavailable": 1,
+        "input_tokens": 11,
+        "output_tokens": 2,
+    }
+    persisted = json.dumps(payload)
+    assert "never-persist-this-secret" not in persisted
+    assert "Be concise" not in persisted
+    assert "Hello" not in persisted
+    assert "Follow up" not in persisted
+
+
+def test_cli_usage_marks_queued_provider_step_as_unavailable_without_fabrication(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Not yet dispatched")
+    coordinator.add_step(
+        "run-1", "step-1", objective="Ask model",
+        message=ProviderMessage(provider="ollama", content="Hello"),
+    )
+
+    main(["run", "usage", "run-1", "--state-db", str(database)])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["steps"] == [{
+        "step_id": "step-1",
+        "position": 1,
+        "status": "queued",
+        "provider": "ollama",
+        "model": None,
+        "usage": {
+            "available": False,
+            "input_tokens": None,
+            "output_tokens": None,
+            "raw": None,
+            "unavailable_reason": "no usage recorded for step status queued",
+        },
+    }]
+    assert payload["aggregate"] == {
+        "steps_with_usage_available": 0,
+        "steps_with_usage_unavailable": 1,
+        "input_tokens": None,
+        "output_tokens": None,
+    }
+
+
+def test_cli_usage_reports_command_only_run_with_no_provider_steps(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Command only")
+    coordinator.add_step("run-1", "step-1", objective="Checkpoint", command=("true",))
+
+    main(["run", "usage", "run-1", "--state-db", str(database)])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["steps"] == []
+    assert payload["aggregate"] == {
+        "steps_with_usage_available": 0,
+        "steps_with_usage_unavailable": 0,
+        "input_tokens": None,
+        "output_tokens": None,
+    }
+
+
+def test_cli_usage_rejects_missing_run_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).initialize()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "usage", "missing", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "run does not exist: missing" in capsys.readouterr().err
+
+
+def test_cli_usage_rejects_missing_database_without_creating_it(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "usage", "run-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not database.exists()
+
+
+def test_cli_usage_does_not_mutate_run_or_step_state(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Inspect usage")
+    original_step = coordinator.add_step(
+        "run-1", "step-1", objective="Ask model",
+        message=ProviderMessage(provider="ollama", content="Hello"),
+    )
+
+    main(["run", "usage", "run-1", "--state-db", str(database)])
+    capsys.readouterr()
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("step-1") == original_step
+
+
 def test_cli_approval_flow_is_sanitized_and_reconstructible(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     main([

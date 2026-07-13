@@ -383,6 +383,24 @@ codex-agentic-os run history run-002 --state-db /path/to/state.sqlite3
 History inspection requires an existing database and run; it fails without
 creating a database and without mutating state.
 
+Show one run's provider usage evidence in durable step order plus a
+run-level token aggregate. Each provider step reports its status, provider,
+resolved model, and a `usage` block (`available`, `input_tokens`,
+`output_tokens`, `raw`, `unavailable_reason`); command steps are omitted, and
+steps that have not yet completed or whose adapter reported no usage are
+shown with usage explicitly unavailable rather than fabricated zero counts.
+The aggregate reports how many steps have available versus unavailable usage
+and sums tokens only over the available ones:
+
+```bash
+codex-agentic-os run usage run-002
+codex-agentic-os run usage run-002 --state-db /path/to/state.sqlite3
+```
+
+Usage inspection requires an existing database and run; it fails without
+creating a database and without mutating state, and never includes
+credentials, raw environment values, request bodies, or prompt content.
+
 List one run's approval-required steps without exposing command arguments, provider
 request bodies, credentials, raw environment values, or terminal output. The stable
 JSON view includes approval and step status, execution kind, and requesting/deciding
