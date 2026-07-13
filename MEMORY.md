@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-13T04:33:01Z — retrospective and milestone-close run.
+- Active milestone at start: Sprint 7 "Stale-claim run reassignment" (#7). All three delivery issues (#63, #64, #65) were closed and no open `blocked` issues existed, so this run used retrospective mode; no implementation issue was selected.
+- Retrospective: created and closed #66 after all five exit criteria passed. Full suite `408 passed`; `codex-agentic-os index check` current (20 files, 596 symbols, 3456 relationships); `git diff --check` clean. Live fresh-process CLI UAT in a scratch SQLite DB proved explicit-threshold fresh/stale inspection, premature reassignment rejection with byte-identical run/history state, successful stale-owner transfer from `agent-a` to `agent-b`, byte-identical preservation of a running step, and exactly one durable `claim_reassigned` event reconstructable through later inspection/history commands. Architecture review upheld durable heartbeat evidence, transactional CAS/history, and the existing uncertain-running-step recovery boundary; no remediation was required.
+- Durable GitHub state: retrospective issue #66 closed; milestone #7 closed. Sprint 8 "Explicit failed-step retry" (#8) is now active with 0 issues, so its next eligible run is replenishment against its exit criteria.
+- Blocked review: no open `blocked` issues exist repository-wide; no labels or comments changed. Sprint 8 has 0 ready issues.
+- Roadmap horizon: 22 open milestones before closure and 21 after (Sprint 8 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones were added.
+- Final target: `main`; durable MEMORY commit/push pending this entry. Worktree dirty only for this MEMORY update before commit.
+
+---
+
 - Run: 2026-07-13T04:04:00Z — implementation run.
 - Active milestone: Sprint 7 "Stale-claim run reassignment" (#7). Selected its sole unblocked `agent-ready` issue, #65 (reassign stale claims from the CLI, priority:3).
 - Completed: added mutating CLI `run reassign-claim RUN_ID REPLACEMENT_AGENT_ID --expected-agent-id --expected-revision --threshold-seconds`, calling the existing atomic `RunCoordinator.reassign_stale_claim` (from #64). No changes were needed to `run history`/`run inspect` presentation — they already expose the `claim_reassigned` transition and replacement owner from #64's work. Added Plan 0068 and DEVELOPMENT guidance.
@@ -40,13 +50,3 @@
 - Blocked review: repo-wide `blocked` search found only newly created #64 and #65; both have unresolved explicit dependencies, so no labels changed. Sprint 7 has one ready issue: #63.
 - Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
 - Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #63. Worktree dirty only for this MEMORY update before commit.
-
----
-
-- Run: 2026-07-13T02:04:00Z — retrospective and milestone-close run.
-- Active milestone at start: Sprint 6 "Operator approval-gated execution" (#6). All three delivery issues (#59, #60, #61) were already closed and no `blocked` issues existed anywhere, so this run used retrospective mode; no issue was implemented.
-- Retrospective: full suite `380 passed`; `codex-agentic-os index check` reported current (20 files, 563 symbols, 3156 relationships); `git diff --check` clean. Ran a live CLI UAT in a scratch SQLite DB covering both paths: (a) an approval-required command step whose `execute-next --sandbox docker` was rejected pre-dispatch with no container spawned, then approved via a registered agent and executed for real (`docker run ... exit_code: 0`), with full `created → step_approved → run_started → step_started → step_succeeded → run_succeeded` history; (b) a second approval-required step rejected outright, producing `run.status = failed` with a `step_rejected → run_failed` history pair and no execution, plus a CAS double-decision guard (re-approving the rejected step errored without mutation). All four exit criteria marked pass with this evidence. Created and closed retrospective issue #62; closed milestone #6.
-- Blocked review: no open `blocked` issues exist repository-wide; nothing changed.
-- Roadmap horizon: 22 open milestones before and after this run's implementation/retrospective work (closing #6 moved the count from 23 to 22, both far above the 3-sprint healthy horizon), so no `codex-agentic-os-plan-sprints` handoff was performed or needed. Sprint 7 "Stale-claim run reassignment" (#7) is now active with 0 issues; its next eligible run is replenishment.
-- Durable GitHub state: issue #62 closed; milestone #6 closed. No code changed this run.
-- Final target: `main`; next eligible action is Sprint 7 replenishment against its exit criteria. Worktree dirty only for this final MEMORY update until committed and pushed.
