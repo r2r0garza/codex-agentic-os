@@ -3,7 +3,7 @@
 from .providers import ProviderKind, ProviderSpec
 from .sandboxes import ContainerSandbox, SandboxKind, SandboxResult, SandboxSpec
 from .state import StateRecord, StateStore
-from .chat import ChatMessage, ChatRequest, ChatResponse
+from .chat import ChatMessage, ChatRequest, ChatResponse, ChatUsage
 from .runtime import (
     Agent,
     AgentRegistry,
@@ -28,6 +28,7 @@ __all__ = [
     "ChatAdapterResolver",
     "ChatRequest",
     "ChatResponse",
+    "ChatUsage",
     "Agent",
     "AgentRegistry",
     "AgentRun",

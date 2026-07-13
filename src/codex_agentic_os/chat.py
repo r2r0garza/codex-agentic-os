@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -42,12 +42,30 @@ class ChatRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatUsage:
+    """Normalized token-usage evidence for a completed chat request."""
+
+    available: bool
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    raw: Mapping[str, object] | None = None
+    unavailable_reason: str | None = None
+
+
+def _unavailable_usage(
+    reason: str = "provider response did not include a usage block",
+) -> ChatUsage:
+    return ChatUsage(available=False, unavailable_reason=reason)
+
+
+@dataclass(frozen=True, slots=True)
 class ChatResponse:
     """Normalized response returned by an adapter."""
 
     content: str
     model: str | None = None
     raw: Mapping[str, object] | None = None
+    usage: ChatUsage = field(default_factory=_unavailable_usage)
 
 
 class ChatAdapter(Protocol):
@@ -67,6 +85,45 @@ def _urlopen_transport(url: str, headers: Mapping[str, str], body: bytes) -> byt
             return response.read()
     except (HTTPError, URLError) as exc:
         raise RuntimeError(f"chat request failed: {exc}") from exc
+
+
+def _openai_compatible_usage(raw: Mapping[str, object]) -> ChatUsage:
+    usage = raw.get("usage")
+    if not isinstance(usage, Mapping):
+        return _unavailable_usage()
+    input_tokens = usage.get("prompt_tokens")
+    output_tokens = usage.get("completion_tokens")
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        return _unavailable_usage(
+            "provider usage block did not include prompt_tokens/completion_tokens counts"
+        )
+    return ChatUsage(available=True, input_tokens=input_tokens, output_tokens=output_tokens, raw=dict(usage))
+
+
+def _anthropic_usage(raw: Mapping[str, object]) -> ChatUsage:
+    usage = raw.get("usage")
+    if not isinstance(usage, Mapping):
+        return _unavailable_usage()
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        return _unavailable_usage(
+            "provider usage block did not include input_tokens/output_tokens counts"
+        )
+    return ChatUsage(available=True, input_tokens=input_tokens, output_tokens=output_tokens, raw=dict(usage))
+
+
+def _google_usage(raw: Mapping[str, object]) -> ChatUsage:
+    usage = raw.get("usageMetadata")
+    if not isinstance(usage, Mapping):
+        return _unavailable_usage()
+    input_tokens = usage.get("promptTokenCount")
+    output_tokens = usage.get("candidatesTokenCount")
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        return _unavailable_usage(
+            "provider usage block did not include promptTokenCount/candidatesTokenCount counts"
+        )
+    return ChatUsage(available=True, input_tokens=input_tokens, output_tokens=output_tokens, raw=dict(usage))
 
 
 class OpenAICompatibleAdapter:
@@ -111,7 +168,9 @@ class OpenAICompatibleAdapter:
             raise RuntimeError("provider returned an unexpected chat response") from exc
         if not isinstance(content, str):
             raise RuntimeError("provider returned non-text chat content")
-        return ChatResponse(content=content, model=raw.get("model"), raw=raw)
+        return ChatResponse(
+            content=content, model=raw.get("model"), raw=raw, usage=_openai_compatible_usage(raw)
+        )
 
 
 class AnthropicAdapter:
@@ -160,7 +219,7 @@ class AnthropicAdapter:
             raise RuntimeError("provider returned an unexpected chat response") from exc
         if not content:
             raise RuntimeError("provider returned no text chat content")
-        return ChatResponse(content=content, model=raw.get("model"), raw=raw)
+        return ChatResponse(content=content, model=raw.get("model"), raw=raw, usage=_anthropic_usage(raw))
 
 
 class GoogleAdapter:
@@ -224,7 +283,9 @@ class GoogleAdapter:
             raise RuntimeError("provider returned an unexpected chat response") from exc
         if not content:
             raise RuntimeError("provider returned no text chat content")
-        return ChatResponse(content=content, model=raw.get("modelVersion"), raw=raw)
+        return ChatResponse(
+            content=content, model=raw.get("modelVersion"), raw=raw, usage=_google_usage(raw)
+        )
 
 
 def adapter_for(spec: ProviderSpec, *, transport: Transport = _urlopen_transport) -> ChatAdapter:

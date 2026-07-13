@@ -344,3 +344,108 @@ def test_google_requires_a_non_system_message() -> None:
     )
     with pytest.raises(ValueError, match="user or assistant"):
         adapter.complete(ChatRequest((ChatMessage("system", "instructions"),)))
+
+
+def test_compatible_adapter_normalizes_usage_block() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps(
+            {
+                "choices": [{"message": {"content": "hello"}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17},
+            }
+        ).encode()
+
+    adapter = OpenAICompatibleAdapter(ProviderSpec(ProviderKind.OPENAI, model="gpt"), transport=transport)
+    response = adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert response.usage.available is True
+    assert response.usage.input_tokens == 12
+    assert response.usage.output_tokens == 5
+    assert response.usage.raw == {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17}
+    assert response.usage.unavailable_reason is None
+
+
+def test_compatible_adapter_marks_usage_unavailable_without_usage_block() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    adapter = OpenAICompatibleAdapter(ProviderSpec(ProviderKind.OPENAI, model="gpt"), transport=transport)
+    response = adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert response.usage.available is False
+    assert response.usage.input_tokens is None
+    assert response.usage.output_tokens is None
+    assert response.usage.raw is None
+    assert response.usage.unavailable_reason is not None
+    assert response.content == "hello"
+
+
+def test_anthropic_adapter_normalizes_usage_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps(
+            {
+                "model": "claude-test",
+                "content": [{"type": "text", "text": "hello"}],
+                "usage": {"input_tokens": 8, "output_tokens": 3},
+            }
+        ).encode()
+
+    adapter = AnthropicAdapter(ProviderSpec(ProviderKind.ANTHROPIC, model="claude-test"), transport=transport)
+    response = adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert response.usage.available is True
+    assert response.usage.input_tokens == 8
+    assert response.usage.output_tokens == 3
+    assert response.usage.raw == {"input_tokens": 8, "output_tokens": 3}
+    assert response.usage.unavailable_reason is None
+
+
+def test_anthropic_adapter_marks_usage_unavailable_without_usage_block() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps({"content": [{"type": "text", "text": "hello"}]}).encode()
+
+    adapter = AnthropicAdapter(ProviderSpec(ProviderKind.ANTHROPIC, model="claude-test"), transport=transport)
+    response = adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert response.usage.available is False
+    assert response.usage.unavailable_reason is not None
+    assert response.content == "hello"
+
+
+def test_google_adapter_normalizes_usage_metadata() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps(
+            {
+                "candidates": [{"content": {"parts": [{"text": "hello"}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 20,
+                    "candidatesTokenCount": 7,
+                    "totalTokenCount": 27,
+                },
+            }
+        ).encode()
+
+    adapter = GoogleAdapter(ProviderSpec(ProviderKind.GOOGLE, model="gemini"), transport=transport)
+    response = adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert response.usage.available is True
+    assert response.usage.input_tokens == 20
+    assert response.usage.output_tokens == 7
+    assert response.usage.raw == {
+        "promptTokenCount": 20,
+        "candidatesTokenCount": 7,
+        "totalTokenCount": 27,
+    }
+    assert response.usage.unavailable_reason is None
+
+
+def test_google_adapter_marks_usage_unavailable_without_usage_metadata() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps({"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}).encode()
+
+    adapter = GoogleAdapter(ProviderSpec(ProviderKind.GOOGLE, model="gemini"), transport=transport)
+    response = adapter.complete(ChatRequest((ChatMessage("user", "hi"),)))
+
+    assert response.usage.available is False
+    assert response.usage.unavailable_reason is not None
+    assert response.content == "hello"
