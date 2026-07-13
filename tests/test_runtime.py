@@ -558,6 +558,163 @@ def test_step_without_approval_requirement_dispatches_as_before(tmp_path) -> Non
     assert running.approval_status is None
 
 
+def test_approve_step_unblocks_dispatch(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Perform sensitive work")
+    coordinator.add_step(
+        "run-1",
+        "sensitive",
+        objective="Change external state",
+        command=("true",),
+        approval_required=True,
+    )
+
+    approved = coordinator.approve_step("sensitive", agent_id="agent-1")
+
+    assert approved.approval_status is ApprovalStatus.APPROVED
+    assert approved.status is StepStatus.QUEUED
+    assert RunCoordinator(StateStore(database)).get_step("sensitive") == approved
+
+    running = coordinator.start_next_step("run-1")
+
+    assert running is not None
+    assert running.status is StepStatus.RUNNING
+    assert running.approval_status is ApprovalStatus.APPROVED
+
+
+def test_reject_step_produces_terminal_outcome_without_execution(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Perform sensitive work")
+    coordinator.add_step(
+        "run-1",
+        "sensitive",
+        objective="Change external state",
+        command=("true",),
+        approval_required=True,
+    )
+    calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            calls.append(tuple(argv))
+            return SandboxResult(tuple(argv), 0, "", "")
+
+    step, run = coordinator.reject_step("sensitive", agent_id="agent-1")
+
+    assert calls == []
+    assert step.status is StepStatus.FAILED
+    assert step.approval_status is ApprovalStatus.REJECTED
+    assert step.output is not None and step.output["error_type"] == "ApprovalRejectedError"
+    assert run.status is RunStatus.FAILED
+    assert run.output is not None and run.output["failed_step_id"] == "sensitive"
+
+    with pytest.raises(ValueError, match="terminal run"):
+        coordinator.execute_next_step("run-1", Executor())
+    assert calls == []
+
+
+def test_reject_step_on_first_queued_step_fails_a_never_started_run(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Perform sensitive work")
+    coordinator.add_step(
+        "run-1",
+        "sensitive",
+        objective="Change external state",
+        command=("true",),
+        approval_required=True,
+    )
+
+    step, run = coordinator.reject_step("sensitive")
+
+    assert run.status is RunStatus.FAILED
+    assert step.status is StepStatus.FAILED
+
+
+def test_decision_against_already_decided_step_changes_nothing(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Perform sensitive work")
+    coordinator.add_step(
+        "run-1",
+        "sensitive",
+        objective="Change external state",
+        command=("true",),
+        approval_required=True,
+    )
+
+    approved = coordinator.approve_step("sensitive")
+
+    with pytest.raises(ValueError, match="not pending approval: sensitive"):
+        coordinator.approve_step("sensitive")
+    with pytest.raises(ValueError, match="not pending approval: sensitive"):
+        coordinator.reject_step("sensitive")
+
+    assert coordinator.get_step("sensitive") == approved
+    assert coordinator.get("run-1").status is RunStatus.QUEUED
+
+
+def test_competing_approval_decisions_apply_exactly_once(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Perform sensitive work")
+    coordinator.add_step(
+        "run-1",
+        "sensitive",
+        objective="Change external state",
+        command=("true",),
+        approval_required=True,
+    )
+
+    def decide():
+        instance = RunCoordinator(StateStore(database))
+        try:
+            return instance.approve_step("sensitive")
+        except ValueError as error:
+            return str(error)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = tuple(pool.map(lambda _: decide(), range(2)))
+
+    assert sum(not isinstance(result, str) for result in results) == 1
+    final = RunCoordinator(StateStore(database)).get_step("sensitive")
+    assert final.approval_status is ApprovalStatus.APPROVED
+
+
+def test_approval_decisions_append_atomic_history_with_agent_attribution(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Perform sensitive work")
+    coordinator.add_step(
+        "run-1",
+        "sensitive",
+        objective="Change external state",
+        command=("true",),
+        approval_required=True,
+    )
+    coordinator.approve_step("sensitive", agent_id="agent-1")
+
+    history = RunCoordinator(StateStore(database)).list_history("run-1")
+    assert [(entry.transition, entry.status, entry.agent_id) for entry in history] == [
+        ("created", "queued", None),
+        ("step_approved", "queued", "agent-1"),
+    ]
+
+    coordinator.add_step(
+        "run-1",
+        "sensitive-2",
+        objective="Change external state again",
+        command=("true",),
+        approval_required=True,
+    )
+    coordinator.reject_step("sensitive-2", agent_id="agent-2")
+
+    history = RunCoordinator(StateStore(database)).list_history("run-1")
+    assert [(entry.transition, entry.status, entry.agent_id) for entry in history[-2:]] == [
+        ("step_rejected", "failed", "agent-2"),
+        ("run_failed", "failed", "agent-2"),
+    ]
+
+
 def test_step_requires_exactly_one_execution_input_without_mutation(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     run = coordinator.create("run-1", objective="Validate inputs")

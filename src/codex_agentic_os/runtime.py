@@ -628,6 +628,92 @@ class RunCoordinator:
 
         return self.transition_step(step_id, StepStatus.CANCELLED)
 
+    def approve_step(self, step_id: str, *, agent_id: str | None = None) -> RunStep:
+        """Approve a pending step so a subsequent dispatch executes it normally."""
+
+        current = self.get_step(step_id)
+        if current is None:
+            raise KeyError(f"step does not exist: {step_id}")
+        if current.approval_status is not ApprovalStatus.PENDING:
+            raise ValueError(f"step is not pending approval: {step_id}")
+        if agent_id is not None:
+            self._require_registered_agent(agent_id)
+
+        payload = self._decision_payload(current, ApprovalStatus.APPROVED)
+        try:
+            stored = self.store.put_many(
+                (("step", step_id, current.status, payload),),
+                expected=(("step", step_id, current.status, current.revision),),
+                history=(
+                    RunHistoryEntry(
+                        current.run_id, 0, "step_approved", current.status,
+                        step_id=step_id, agent_id=agent_id,
+                        execution_kind=self._execution_kind(current),
+                    ),
+                ),
+            )
+        except StateConflictError as error:
+            raise ValueError(f"step approval conflict: {step_id}") from error
+        return self._step(stored[0])
+
+    def reject_step(
+        self, step_id: str, *, agent_id: str | None = None
+    ) -> tuple[RunStep, AgentRun]:
+        """Reject a pending step, producing a terminal outcome without executing it."""
+
+        current = self.get_step(step_id)
+        if current is None:
+            raise KeyError(f"step does not exist: {step_id}")
+        if current.approval_status is not ApprovalStatus.PENDING:
+            raise ValueError(f"step is not pending approval: {step_id}")
+        run = self.get(current.run_id)
+        if run is None:  # Defensive: durable step records must reference an existing run.
+            raise KeyError(f"run does not exist: {current.run_id}")
+        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            raise ValueError(f"run must be active to reject a step: {run.run_id}")
+        if agent_id is not None:
+            self._require_registered_agent(agent_id)
+
+        output: dict[str, object] = {
+            "error": "step rejected by operator",
+            "error_type": "ApprovalRejectedError",
+        }
+        step_payload = self._decision_payload(current, ApprovalStatus.REJECTED)
+        step_payload["output"] = output
+        run_payload: dict[str, object] = {
+            "objective": run.objective,
+            "output": {"failed_step_id": step_id, "error": output["error"]},
+        }
+        if run.agent_id is not None:
+            run_payload["agent_id"] = run.agent_id
+
+        try:
+            stored = self.store.put_many(
+                (
+                    ("step", step_id, StepStatus.FAILED, step_payload),
+                    ("run", run.run_id, RunStatus.FAILED, run_payload),
+                ),
+                expected=(
+                    ("step", step_id, current.status, current.revision),
+                    ("run", run.run_id, run.status, run.revision),
+                ),
+                history=(
+                    RunHistoryEntry(
+                        run.run_id, 0, "step_rejected", StepStatus.FAILED,
+                        step_id=step_id, agent_id=agent_id,
+                        execution_kind=self._execution_kind(current),
+                    ),
+                    RunHistoryEntry(
+                        run.run_id, 0, "run_failed", RunStatus.FAILED,
+                        agent_id=agent_id,
+                        execution_kind=self._execution_kind(current),
+                    ),
+                ),
+            )
+        except StateConflictError as error:
+            raise ValueError(f"step rejection conflict: {step_id}") from error
+        return self._step(stored[0]), self._run(stored[1])
+
     def complete_step_from_result(
         self, step_id: str, result: ExecutionResult
     ) -> tuple[RunStep, AgentRun]:
@@ -1001,6 +1087,27 @@ class RunCoordinator:
         payload["approval_required"] = step.approval_required
         if step.approval_status is not None:
             payload["approval_status"] = step.approval_status
+
+    @staticmethod
+    def _decision_payload(
+        step: RunStep, approval_status: ApprovalStatus
+    ) -> dict[str, object]:
+        """Build a fresh step payload recording an operator approval decision."""
+
+        payload: dict[str, object] = {
+            "run_id": step.run_id,
+            "position": step.position,
+            "objective": step.objective,
+        }
+        if step.command is not None:
+            payload["command"] = list(step.command)
+        if step.timeout is not None:
+            payload["timeout"] = step.timeout
+        if step.message is not None:
+            payload["message"] = RunCoordinator._message_payload(step.message)
+        payload["approval_required"] = step.approval_required
+        payload["approval_status"] = approval_status
+        return payload
 
     @staticmethod
     def _message_payload(message: ProviderMessage) -> dict[str, object]:
