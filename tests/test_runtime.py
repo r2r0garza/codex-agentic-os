@@ -10,6 +10,7 @@ from codex_agentic_os.runtime import (
     AgentRun,
     ApprovalRequiredError,
     ApprovalStatus,
+    ClaimStaleness,
     ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
@@ -184,6 +185,174 @@ def test_claim_rejects_invalid_runs_without_mutation(tmp_path) -> None:
     with pytest.raises(ValueError, match="agent id must not be empty"):
         coordinator.claim("assigned", " ")
     assert coordinator.get("assigned") == assigned
+
+
+def test_evaluate_claim_staleness_boundary_uses_injected_clock_and_heartbeat(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    registered_at = datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
+    AgentRegistry(store, clock=lambda: registered_at).register("agent-1")
+    _RunCoordinator(store).create("run-1", objective="Build feature")
+    _RunCoordinator(store).claim("run-1", "agent-1")
+
+    at_threshold = _RunCoordinator(
+        store, clock=lambda: datetime(2026, 7, 12, 12, 5, 0, tzinfo=timezone.utc)
+    )
+    fresh = at_threshold.evaluate_claim_staleness("run-1", threshold_seconds=300)
+    assert fresh == ClaimStaleness(
+        run_id="run-1",
+        agent_id="agent-1",
+        last_seen="2026-07-12T12:00:00+00:00",
+        threshold_seconds=300,
+        evaluated_at="2026-07-12T12:05:00+00:00",
+        stale=False,
+    )
+
+    past_threshold = _RunCoordinator(
+        store, clock=lambda: datetime(2026, 7, 12, 12, 5, 1, tzinfo=timezone.utc)
+    )
+    stale = past_threshold.evaluate_claim_staleness("run-1", threshold_seconds=300)
+    assert stale.stale is True
+    assert stale.evaluated_at == "2026-07-12T12:05:01+00:00"
+
+
+def test_evaluate_claim_staleness_is_durable_across_restart(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    AgentRegistry(
+        store, clock=lambda: datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
+    ).register("agent-1")
+    _RunCoordinator(store).create("run-1", objective="Build feature")
+    _RunCoordinator(store).claim("run-1", "agent-1")
+
+    reloaded = _RunCoordinator(
+        StateStore(database, read_only=True),
+        clock=lambda: datetime(2026, 7, 12, 13, 0, tzinfo=timezone.utc),
+    )
+    evaluation = reloaded.evaluate_claim_staleness("run-1", threshold_seconds=60)
+
+    assert evaluation.last_seen == "2026-07-12T12:00:00+00:00"
+    assert evaluation.stale is True
+
+
+@pytest.mark.parametrize("threshold", [0, -1, -0.5])
+def test_evaluate_claim_staleness_rejects_non_positive_threshold_without_mutation(
+    tmp_path, threshold
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    AgentRegistry(store).register("agent-1")
+    coordinator = _RunCoordinator(store)
+    coordinator.create("run-1", objective="Build feature")
+    claimed = coordinator.claim("run-1", "agent-1")
+
+    with pytest.raises(ValueError, match="threshold must be a positive"):
+        coordinator.evaluate_claim_staleness("run-1", threshold_seconds=threshold)
+
+    assert coordinator.get("run-1") == claimed
+
+
+def test_evaluate_claim_staleness_rejects_missing_run(tmp_path) -> None:
+    coordinator = _RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+
+    with pytest.raises(KeyError, match="run does not exist: missing"):
+        coordinator.evaluate_claim_staleness("missing", threshold_seconds=60)
+
+
+def test_evaluate_claim_staleness_rejects_unclaimed_run_without_mutation(
+    tmp_path,
+) -> None:
+    coordinator = _RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    queued = coordinator.create("run-1", objective="Build feature")
+
+    with pytest.raises(ValueError, match="run is not claimed: run-1"):
+        coordinator.evaluate_claim_staleness("run-1", threshold_seconds=60)
+
+    assert coordinator.get("run-1") == queued
+
+
+def test_evaluate_claim_staleness_rejects_unregistered_owner_without_mutation(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    created = store.insert(
+        "run",
+        "run-1",
+        status=RunStatus.QUEUED,
+        payload={"objective": "Build feature", "agent_id": "ghost-agent"},
+    )
+    coordinator = _RunCoordinator(store)
+
+    with pytest.raises(ValueError, match="agent is not registered: ghost-agent"):
+        coordinator.evaluate_claim_staleness("run-1", threshold_seconds=60)
+
+    assert coordinator.get("run-1").revision == created.revision
+
+
+def test_evaluate_claim_staleness_rejects_legacy_agent_without_heartbeat(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("agent", "legacy-agent", status="registered", payload={})
+    coordinator = _RunCoordinator(store)
+    created = coordinator.create(
+        "run-1", objective="Build feature", agent_id="legacy-agent"
+    )
+
+    with pytest.raises(
+        ValueError, match="agent has no recorded heartbeat: legacy-agent"
+    ):
+        coordinator.evaluate_claim_staleness("run-1", threshold_seconds=60)
+
+    assert coordinator.get("run-1") == created
+
+
+def test_evaluate_claim_staleness_rejects_naive_last_seen_without_mutation(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert(
+        "agent",
+        "naive-agent",
+        status="registered",
+        payload={"last_seen": "2026-07-12T12:00:00"},
+    )
+    coordinator = _RunCoordinator(store)
+    created = coordinator.create(
+        "run-1", objective="Build feature", agent_id="naive-agent"
+    )
+
+    with pytest.raises(ValueError, match="ambiguous last_seen"):
+        coordinator.evaluate_claim_staleness("run-1", threshold_seconds=60)
+
+    assert coordinator.get("run-1") == created
+
+
+def test_evaluate_claim_staleness_rejects_malformed_last_seen_without_mutation(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert(
+        "agent",
+        "broken-agent",
+        status="registered",
+        payload={"last_seen": "not-a-timestamp"},
+    )
+    coordinator = _RunCoordinator(store)
+    created = coordinator.create(
+        "run-1", objective="Build feature", agent_id="broken-agent"
+    )
+
+    with pytest.raises(ValueError, match="invalid last_seen"):
+        coordinator.evaluate_claim_staleness("run-1", threshold_seconds=60)
+
+    assert coordinator.get("run-1") == created
 
 
 def test_release_claim_clears_exact_queued_assignment(tmp_path) -> None:

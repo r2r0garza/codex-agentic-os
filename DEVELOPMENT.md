@@ -337,6 +337,24 @@ codex-agentic-os run reject step-003 --agent-id operator-1
 
 Missing and already-decided steps are rejected without mutation.
 
+Report whether a claimed run's owning agent is stale relative to an explicit
+positive threshold, before any reassignment is attempted. Staleness compares
+the owner's durable heartbeat (`agent heartbeat`/registration `last_seen`)
+against the current time; a gap strictly greater than the threshold is
+stale, a gap equal to or under it is fresh. The JSON view reports the run,
+owner, last-seen time, threshold, evaluation time, and stale result:
+
+```bash
+codex-agentic-os run staleness run-002 --threshold-seconds 300
+codex-agentic-os run staleness run-002 --threshold-seconds 300 --state-db /path/to/state.sqlite3
+```
+
+Evaluation is read-only. Unclaimed runs, unregistered owners, owners without a
+recorded heartbeat, non-positive thresholds, and naive/ambiguous heartbeat
+timestamps are rejected without mutation. There is no reassignment, background
+monitoring, or automatic policy; see `run staleness` as the inspection step
+that precedes those future capabilities.
+
 Cancel a queued or running run from the CLI. The command preserves completed steps,
 cancels queued or running steps, and prints the resulting durable state as JSON:
 

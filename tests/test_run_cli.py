@@ -2012,3 +2012,118 @@ def test_cli_approval_decision_rejections_do_not_mutate_state(
     assert final.get("run-1") == decided_run
     assert final.get_step("step-1") == decided_step
     assert final.list_history("run-1") == decided_history
+
+
+def test_cli_run_staleness_reports_fresh_owner_and_evidence(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    main(["agent", "register", "agent-1", "--state-db", str(database)])
+    capsys.readouterr()
+    main([
+        "run", "create", "run-1", "--objective", "Build feature",
+        "--agent-id", "agent-1", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+
+    main([
+        "run", "staleness", "run-1", "--threshold-seconds", "999999999",
+        "--state-db", str(database),
+    ])
+    evaluation = json.loads(capsys.readouterr().out)
+
+    assert evaluation["run_id"] == "run-1"
+    assert evaluation["agent_id"] == "agent-1"
+    assert evaluation["threshold_seconds"] == 999999999
+    assert evaluation["stale"] is False
+    assert isinstance(evaluation["last_seen"], str)
+    assert isinstance(evaluation["evaluated_at"], str)
+
+
+def test_cli_run_staleness_detects_owner_past_threshold(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    main(["agent", "register", "agent-1", "--state-db", str(database)])
+    capsys.readouterr()
+    main([
+        "run", "create", "run-1", "--objective", "Build feature",
+        "--agent-id", "agent-1", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+
+    main([
+        "run", "staleness", "run-1", "--threshold-seconds", "1e-9",
+        "--state-db", str(database),
+    ])
+    evaluation = json.loads(capsys.readouterr().out)
+
+    assert evaluation["stale"] is True
+
+
+def test_cli_run_staleness_does_not_mutate_run_or_agent_state(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    main(["agent", "register", "agent-1", "--state-db", str(database)])
+    capsys.readouterr()
+    main([
+        "run", "create", "run-1", "--objective", "Build feature",
+        "--agent-id", "agent-1", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+    original_run = RunCoordinator(StateStore(database)).get("run-1")
+    original_agent = AgentRegistry(StateStore(database)).get("agent-1")
+
+    main([
+        "run", "staleness", "run-1", "--threshold-seconds", "60",
+        "--state-db", str(database),
+    ])
+    capsys.readouterr()
+
+    assert RunCoordinator(StateStore(database)).get("run-1") == original_run
+    assert AgentRegistry(StateStore(database)).get("agent-1") == original_agent
+
+
+def test_cli_run_staleness_rejects_missing_run_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Unrelated")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([
+            "run", "staleness", "missing", "--threshold-seconds", "60",
+            "--state-db", str(database),
+        ])
+
+    assert exit_info.value.code == 2
+    assert "run does not exist: missing" in capsys.readouterr().err
+
+
+def test_cli_run_staleness_rejects_unclaimed_run_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="Unclaimed")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([
+            "run", "staleness", "run-1", "--threshold-seconds", "60",
+            "--state-db", str(database),
+        ])
+
+    assert exit_info.value.code == 2
+    assert "run is not claimed: run-1" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
+@pytest.mark.parametrize("threshold", ["0", "-1"])
+def test_cli_run_staleness_rejects_non_positive_threshold_without_mutation(
+    tmp_path, capsys, threshold
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="Build feature", agent_id="agent-1")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([
+            "run", "staleness", "run-1", "--threshold-seconds", threshold,
+            "--state-db", str(database),
+        ])
+
+    assert exit_info.value.code == 2
+    assert "threshold must be a positive" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == original

@@ -21,6 +21,7 @@ from .providers import DEFAULT_PROVIDER_SPECS, ProviderKind, ProviderSpec
 from .runtime import (
     Agent,
     AgentRegistry,
+    ClaimStaleness,
     ProviderMessage,
     RunCoordinator,
     RunHistoryEntry,
@@ -85,6 +86,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     approvals = run_commands.add_parser(
         "approvals", help="show one run's sanitized step approval requests"
+    )
+    staleness = run_commands.add_parser(
+        "staleness",
+        help="report whether a claimed run's owning agent is stale relative to a threshold",
     )
     approve = run_commands.add_parser("approve", help="approve one pending step")
     reject = run_commands.add_parser("reject", help="reject one pending step")
@@ -183,6 +188,7 @@ def _parser() -> argparse.ArgumentParser:
         inspect,
         history,
         approvals,
+        staleness,
         inspect_step,
         approve,
         reject,
@@ -204,6 +210,12 @@ def _parser() -> argparse.ArgumentParser:
             default=Path(".codex-agentic-os/state.sqlite3"),
             help="path to the runtime state database",
         )
+    staleness.add_argument(
+        "--threshold-seconds",
+        type=float,
+        required=True,
+        help="positive staleness threshold in seconds compared against the owner's heartbeat",
+    )
     recover.add_argument(
         "reason", choices=[reason.value for reason in StepRecoveryReason]
     )
@@ -374,6 +386,12 @@ def _approval_payload(
     return requests
 
 
+def _staleness_payload(evaluation: ClaimStaleness) -> dict[str, object]:
+    """Return the standard JSON-compatible view of one staleness evaluation."""
+
+    return asdict(evaluation)
+
+
 def _step_payload(step: RunStep) -> dict[str, object]:
     """Return the standard JSON-compatible view of one durable step."""
 
@@ -457,6 +475,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "list",
                 "history",
                 "approvals",
+                "staleness",
             }
             coordinator = RunCoordinator(
                 StateStore(arguments.state_db, read_only=read_only)
@@ -572,6 +591,18 @@ def main(argv: Sequence[str] | None = None) -> None:
                         _approval_payload(coordinator, arguments.run_id),
                         indent=2,
                         sort_keys=True,
+                    )
+                )
+                return
+            elif arguments.run_command == "staleness":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                evaluation = coordinator.evaluate_claim_staleness(
+                    arguments.run_id, threshold_seconds=arguments.threshold_seconds
+                )
+                print(
+                    json.dumps(
+                        _staleness_payload(evaluation), indent=2, sort_keys=True
                     )
                 )
                 return

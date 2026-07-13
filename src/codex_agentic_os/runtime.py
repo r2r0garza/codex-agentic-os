@@ -125,6 +125,18 @@ class Agent:
     last_seen: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ClaimStaleness:
+    """Deterministic, read-only evaluation of a claimed run's owner staleness."""
+
+    run_id: str
+    agent_id: str
+    last_seen: str
+    threshold_seconds: float
+    evaluated_at: str
+    stale: bool
+
+
 class ExecutionResult(Protocol):
     """Backend-neutral command result accepted by run coordination."""
 
@@ -170,8 +182,14 @@ class RunCoordinator:
         StepStatus.CANCELLED: frozenset(),
     }
 
-    def __init__(self, store: StateStore) -> None:
+    def __init__(
+        self,
+        store: StateStore,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.store = store
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def create(
         self, run_id: str, *, objective: str, agent_id: str | None = None
@@ -236,6 +254,60 @@ class RunCoordinator:
         self._require_registered_agent(agent_id)
         record = self.store.claim_next_run(agent_id)
         return None if record is None else self._run(record)
+
+    def evaluate_claim_staleness(
+        self, run_id: str, *, threshold_seconds: float
+    ) -> ClaimStaleness:
+        """Report whether a claimed run's owning agent is stale, without mutation.
+
+        Staleness compares the owning agent's durable ``last_seen`` heartbeat
+        against the coordinator's injected clock. A gap strictly greater than
+        ``threshold_seconds`` is stale; a gap equal to or under it is fresh.
+        """
+
+        if (
+            not isinstance(threshold_seconds, (int, float))
+            or isinstance(threshold_seconds, bool)
+            or threshold_seconds <= 0
+        ):
+            raise ValueError("staleness threshold must be a positive number of seconds")
+        run = self.get(run_id)
+        if run is None:
+            raise KeyError(f"run does not exist: {run_id}")
+        if run.agent_id is None:
+            raise ValueError(f"run is not claimed: {run_id}")
+        agent_record = self.store.get("agent", run.agent_id)
+        if agent_record is None:
+            raise ValueError(f"agent is not registered: {run.agent_id}")
+        last_seen = agent_record.payload.get("last_seen")
+        if last_seen is None:
+            raise ValueError(f"agent has no recorded heartbeat: {run.agent_id}")
+        if not isinstance(last_seen, str):
+            raise ValueError(f"agent record has invalid last_seen: {run.agent_id}")
+        last_seen_at = self._parse_last_seen(last_seen)
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("run coordinator clock must return a timezone-aware datetime")
+        evaluated_at = now.astimezone(timezone.utc)
+        elapsed_seconds = (evaluated_at - last_seen_at).total_seconds()
+        return ClaimStaleness(
+            run_id=run_id,
+            agent_id=run.agent_id,
+            last_seen=last_seen,
+            threshold_seconds=threshold_seconds,
+            evaluated_at=evaluated_at.isoformat(),
+            stale=elapsed_seconds > threshold_seconds,
+        )
+
+    @staticmethod
+    def _parse_last_seen(value: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError(f"agent record has invalid last_seen: {value}") from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError(f"agent record has an ambiguous last_seen: {value}")
+        return parsed.astimezone(timezone.utc)
 
     def _require_registered_agent(self, agent_id: str) -> None:
         if self.store.get("agent", agent_id) is None:
