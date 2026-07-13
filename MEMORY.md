@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-13T03:09:00Z — implementation run.
+- Active milestone: Sprint 7 "Stale-claim run reassignment" (#7). Selected its sole unblocked `agent-ready` issue, #63 (inspect claimed-run owner staleness, priority:1).
+- Completed: added a clock-injectable `RunCoordinator.evaluate_claim_staleness` (new `clock` constructor kwarg mirroring `AgentRegistry`) and durable `ClaimStaleness` view comparing a claimed run's owning agent's `last_seen` heartbeat against an operator-supplied positive threshold and the coordinator's current time (stale = elapsed strictly greater than threshold). Added read-only CLI `run staleness RUN_ID --threshold-seconds N` reporting run, owner, last-seen, threshold, evaluation time, and stale result. Rejects without mutation: unclaimed runs, missing runs, non-positive thresholds, unregistered owners, owners with no recorded heartbeat, and naive/ambiguous heartbeat timestamps. Added Plan 0066 and DEVELOPMENT guidance.
+- Verification: focused runtime staleness suite 11 passed (111 total in `test_runtime.py`); focused CLI staleness suite 7 passed (149 total in `test_run_cli.py`); full suite 398 passed (up from 380); index rebuilt/current (20 files, 582 symbols, 3287 relationships); `git diff --check` clean; live CLI UAT covered fresh/stale evaluation, unclaimed/missing-run/invalid-threshold rejection, and confirmed run revision unchanged across evaluations.
+- Implementation commit `e9b3e24` pushed to `origin/main`; issue #63 auto-closed from its `Closes #63` trailer and received a verification comment.
+- Blocked review: #64 depended only on #63, now closed, so `blocked` was removed and `agent-ready` added with evidence (comment posted explaining the unblock). #65 remains correctly blocked on open #63 and #64 (#65's #63 half is now satisfied, but it still depends on #64). Sprint 7 now has one ready issue: #64.
+- Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
+- Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #64. Worktree dirty only for this MEMORY update before commit.
+
+---
+
 - Run: 2026-07-13T02:33:14Z — replenishment run.
 - Active milestone: Sprint 7 "Stale-claim run reassignment" (#7). It had 0 issues, so no implementation was permitted; compared its five exit criteria against the current heartbeat, run-claim, state transaction/history, and CLI evidence and confirmed there is no explicit-threshold stale-owner evaluation, atomic stale-owner transfer, or operator reassignment command.
 - Created three milestone-scoped issues: #63 (inspect claimed-run owner staleness, priority:1, `agent-ready`), #64 (atomically transfer a stale run claim, priority:2, blocked on #63), and #65 (reassign stale claims from the CLI, priority:3, blocked on #63/#64). Each maps directly to Sprint 7 exit criteria and excludes automatic reassignment, recovery/retry of uncertain work, leader election, load balancing, and notifications.
@@ -39,14 +50,3 @@
 - Blocked review: #61 depended only on #59 and #60, now both closed, so `blocked` was removed and `agent-ready` added with evidence. Sprint 6 now has one ready issue: #61.
 - Roadmap horizon: 3 open milestones before and after (Sprint 6 active; Sprint 7 and Sprint 8 future), so no planning handoff was needed. No milestone retrospective or close/remediate action is eligible while #61 remains open.
 - Final target: `main`; next eligible issue: #61. Worktree dirty only for this final MEMORY update until committed and pushed.
-
----
-
-- Run: 2026-07-13T00:34:31Z — implementation and unblock run.
-- Active milestone: Sprint 6 "Operator approval-gated execution" (#6). Selected its sole unblocked `agent-ready` issue, #59 (persist durable step approval gate, priority:1).
-- Completed: added typed `ApprovalStatus` and `ApprovalRequiredError` contracts; `RunCoordinator.add_step(..., approval_required=True)` now persists an explicit pending status for command or provider steps, reconstructs it across process restart, and preserves the metadata through every existing step lifecycle rewrite. `start_next_step`/`execute_next_step` reject the pending step before any run/step revision, history entry, sandbox call, or provider dispatch. Existing steps default to no gate, and CLI presentation remains reserved for #61. Added Plan 0063.
-- Verification: focused runtime suite 95 passed; full suite 370 passed; index rebuilt/current (20 files, 547 symbols, 3021 relationships); `git diff --check` clean.
-- Implementation commit `3c9f1f7` pushed to `origin/main`; issue #59 auto-closed by its `Closes #59` trailer and received a verification comment.
-- Blocked review: #60 depended only on #59, now resolved, so `blocked` was removed and `agent-ready` added with evidence. #61 remains correctly blocked on open #60. Sprint 6 now has one ready issue: #60.
-- Roadmap horizon: 3 open milestones before and after (Sprint 6 active; Sprint 7 and Sprint 8 future), so no planning handoff was needed. No milestone retrospective or close/remediate action is eligible while #60/#61 remain open.
-- Final target: `main`; next eligible issue: #60. Worktree dirty only for this final MEMORY update until committed and pushed.
