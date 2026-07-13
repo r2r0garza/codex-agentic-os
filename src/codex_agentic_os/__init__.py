@@ -23,6 +23,7 @@ from .runtime import (
     StepRecoveryReason,
     StepStatus,
 )
+from .worker import WorkerRunSummary, run_worker
 
 __all__ = [
     "ChatMessage",
@@ -54,4 +55,6 @@ __all__ = [
     "SandboxSpec",
     "StateRecord",
     "StateStore",
+    "WorkerRunSummary",
+    "run_worker",
 ]

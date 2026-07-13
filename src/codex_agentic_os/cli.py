@@ -7,7 +7,7 @@ import json
 import os
 from dataclasses import asdict
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .chat import ChatMessage, ChatRequest, adapter_for
 from .index import (
@@ -34,6 +34,7 @@ from .runtime import (
 )
 from .sandboxes import ContainerSandbox, SandboxKind, SandboxSpec, default_sandboxes
 from .state import StateStore
+from .worker import run_worker
 
 
 def _foundation_payload() -> dict[str, object]:
@@ -372,6 +373,40 @@ def _parser() -> argparse.ArgumentParser:
             help="path to the runtime state database",
         )
 
+    worker = commands.add_parser("worker", help="run a foreground autonomous worker")
+    worker_commands = worker.add_subparsers(dest="worker_command", required=True)
+    worker_run = worker_commands.add_parser(
+        "run",
+        help=(
+            "register or resume a durable agent identity and repeatedly claim "
+            "and execute run steps until stopped"
+        ),
+    )
+    worker_run.add_argument(
+        "--agent-id", required=True, help="durable agent identity to register or resume"
+    )
+    worker_run.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        required=True,
+        help="positive seconds between agent heartbeat refreshes",
+    )
+    worker_run.add_argument(
+        "--poll-interval",
+        type=float,
+        required=True,
+        help="positive seconds to wait when no eligible work is available",
+    )
+    worker_run.add_argument(
+        "--label", help="optional human-readable label for a newly registered agent"
+    )
+    worker_run.add_argument(
+        "--state-db",
+        type=Path,
+        default=Path(".codex-agentic-os/state.sqlite3"),
+        help="path to the runtime state database",
+    )
+
     provider = commands.add_parser("provider", help="inspect configured model providers")
     provider_commands = provider.add_subparsers(dest="provider_command", required=True)
     provider_commands.add_parser("list", help="list default provider specs")
@@ -643,6 +678,43 @@ def _chat_provider_spec(
         base_url=base_url or default_spec.base_url,
         api_key_env=api_key_env or default_spec.api_key_env,
     )
+
+
+def _provider_adapter_resolver() -> Callable[[ProviderMessage], object]:
+    """Build a chat adapter resolver from provider-message defaults, for dispatch."""
+
+    def resolve(message: ProviderMessage):
+        provider_spec = _chat_provider_spec(message.provider, message.model, None, None)
+        return adapter_for(provider_spec)
+
+    return resolve
+
+
+def _persisted_sandbox_resolver() -> Callable[[SandboxPolicy], ContainerSandbox]:
+    """Build a sandbox resolver that only trusts a step's persisted policy."""
+
+    def resolve(policy: SandboxPolicy) -> ContainerSandbox:
+        missing = tuple(
+            name for name in policy.env_passthrough if name not in os.environ
+        )
+        if missing:
+            raise ValueError(
+                "environment variable is not set: " + ", ".join(missing)
+            )
+        return ContainerSandbox(
+            SandboxSpec(
+                kind=policy.kind,
+                image=policy.image,
+                mounts=policy.mounts,
+                env=tuple(
+                    (name, os.environ[name]) for name in policy.env_passthrough
+                ),
+                working_dir=policy.working_dir,
+                network_enabled=policy.network_enabled,
+            )
+        )
+
+    return resolve
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -1025,47 +1097,15 @@ def main(argv: Sequence[str] | None = None) -> None:
                 working_dir = arguments.workdir
                 network_enabled = arguments.network
                 if next_step.message is not None:
-
-                    def resolve_adapter(message: ProviderMessage):
-                        provider_spec = _chat_provider_spec(
-                            message.provider, message.model, None, None
-                        )
-                        return adapter_for(provider_spec)
-
                     result = coordinator.execute_next_step(
-                        arguments.run_id, adapter_resolver=resolve_adapter
+                        arguments.run_id,
+                        adapter_resolver=_provider_adapter_resolver(),
                     )
                 else:
                     if next_step.sandbox_policy is not None:
-
-                        def resolve_sandbox(policy: SandboxPolicy):
-                            missing = tuple(
-                                name
-                                for name in policy.env_passthrough
-                                if name not in os.environ
-                            )
-                            if missing:
-                                raise ValueError(
-                                    "environment variable is not set: "
-                                    + ", ".join(missing)
-                                )
-                            return ContainerSandbox(
-                                SandboxSpec(
-                                    kind=policy.kind,
-                                    image=policy.image,
-                                    mounts=policy.mounts,
-                                    env=tuple(
-                                        (name, os.environ[name])
-                                        for name in policy.env_passthrough
-                                    ),
-                                    working_dir=policy.working_dir,
-                                    network_enabled=policy.network_enabled,
-                                )
-                            )
-
                         result = coordinator.execute_next_step(
                             arguments.run_id,
-                            sandbox_resolver=resolve_sandbox,
+                            sandbox_resolver=_persisted_sandbox_resolver(),
                         )
                     else:
                         assert kind is not None
@@ -1136,6 +1176,31 @@ def main(argv: Sequence[str] | None = None) -> None:
                         sort_keys=True,
                     )
                 )
+        elif arguments.command == "worker":
+            store = StateStore(arguments.state_db)
+            coordinator = RunCoordinator(store)
+            registry = AgentRegistry(store)
+            summary = run_worker(
+                coordinator,
+                registry,
+                arguments.agent_id,
+                heartbeat_interval=arguments.heartbeat_interval,
+                poll_interval=arguments.poll_interval,
+                sandbox_resolver=_persisted_sandbox_resolver(),
+                adapter_resolver=_provider_adapter_resolver(),
+                label=arguments.label,
+            )
+            print(
+                json.dumps(
+                    {
+                        "agent_id": summary.agent_id,
+                        "claimed_run_ids": list(summary.claimed_run_ids),
+                        "executed_step_ids": list(summary.executed_step_ids),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
         elif arguments.command == "provider":
             providers = (
                 [spec.to_dict() for spec in DEFAULT_PROVIDER_SPECS]

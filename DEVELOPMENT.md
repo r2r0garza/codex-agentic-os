@@ -535,6 +535,32 @@ codex-agentic-os agent list --state-db /path/to/state.sqlite3
 The registry only records that an agent id exists; it does not track liveness and
 `run claim`/`run add-step --agent-id` still accept any unchecked identifier.
 
+Run a foreground autonomous worker for one durable agent identity. The command
+registers a new agent id, or heartbeats and resumes an already-registered one, then
+repeatedly claims and executes queued run steps until stopped:
+
+```bash
+codex-agentic-os worker run --agent-id agent-1 \
+  --heartbeat-interval 30 --poll-interval 5
+codex-agentic-os worker run --agent-id agent-1 --label "Build worker" \
+  --heartbeat-interval 30 --poll-interval 5 --state-db /path/to/state.sqlite3
+```
+
+Both intervals must be positive and are validated before any registration or
+heartbeat mutation. Each iteration prefers a `queued` run already assigned to the
+worker's agent id (from a prior `run create --agent-id` or an earlier worker
+session) over claiming a new unassigned one, then executes that run's queued steps
+in order through the same durable coordinator `run execute-next` uses, stopping
+once the run reaches a terminal status. Command steps dispatch only from their
+persisted sandbox policy — as with `run execute-next`, a command step without one
+fails through the existing explicit error path rather than receiving worker-supplied
+flags. Provider-message steps resolve an adapter from the step's declared provider
+and model, identically to `run execute-next`. Completed step and run outcomes are
+visible from a separate process via `run inspect` and `run history`. The worker
+does not yet skip approval-gated or context-unresolved steps, dispatch from
+anything but a persisted sandbox policy, or handle interruption cleanly; those are
+tracked as follow-up Sprint 12 work.
+
 Inspect declared capabilities:
 
 ```bash

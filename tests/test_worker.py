@@ -1,0 +1,314 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from codex_agentic_os.chat import ChatResponse
+from codex_agentic_os.runtime import (
+    AgentRegistry,
+    ProviderMessage,
+    RunCoordinator,
+    RunStatus,
+    StepStatus,
+)
+from codex_agentic_os.sandboxes import SandboxResult
+from codex_agentic_os.state import StateStore
+from codex_agentic_os.worker import register_or_resume_agent, run_worker
+
+
+class _Clock:
+    """Deterministic injectable clock advancing only when told to."""
+
+    def __init__(self, start: datetime) -> None:
+        self.moment = start
+
+    def __call__(self) -> datetime:
+        return self.moment
+
+    def advance(self, seconds: float) -> None:
+        self.moment += timedelta(seconds=seconds)
+
+
+class _CountingSleeper:
+    """Records sleep calls and advances an associated clock, for cadence tests."""
+
+    def __init__(self, clock: _Clock) -> None:
+        self.clock = clock
+        self.calls: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.calls.append(seconds)
+        self.clock.advance(seconds)
+
+
+def _bounded_should_continue(iterations: int):
+    remaining = [iterations]
+
+    def should_continue() -> bool:
+        if remaining[0] <= 0:
+            return False
+        remaining[0] -= 1
+        return True
+
+    return should_continue
+
+
+class _Executor:
+    def execute(self, argv, *, timeout=None):
+        return SandboxResult(tuple(argv), 0, "ok", "")
+
+
+class _Adapter:
+    def complete(self, request):
+        return ChatResponse("synthesized", model="served-model")
+
+
+def test_register_or_resume_agent_creates_new_identity(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    registry = AgentRegistry(store)
+
+    agent = register_or_resume_agent(registry, "agent-1", label="Worker")
+
+    assert agent.agent_id == "agent-1"
+    assert agent.label == "Worker"
+    assert agent.revision == 1
+
+
+def test_register_or_resume_agent_heartbeats_existing_identity(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    registry = AgentRegistry(store)
+    original = registry.register("agent-1", label="Worker")
+
+    resumed = register_or_resume_agent(registry, "agent-1")
+
+    assert resumed.agent_id == "agent-1"
+    assert resumed.label == "Worker"
+    assert resumed.revision == original.revision + 1
+
+
+@pytest.mark.parametrize(
+    ("heartbeat_interval", "poll_interval"),
+    [(0, 5), (-1, 5), (5, 0), (5, -1)],
+)
+def test_run_worker_rejects_non_positive_intervals_without_mutation(
+    tmp_path, heartbeat_interval, poll_interval
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+
+    with pytest.raises(ValueError, match="positive number of seconds"):
+        run_worker(
+            coordinator,
+            registry,
+            "agent-1",
+            heartbeat_interval=heartbeat_interval,
+            poll_interval=poll_interval,
+            should_continue=_bounded_should_continue(1),
+        )
+
+    assert registry.list_agents() == ()
+
+
+def test_run_worker_claims_assigned_run_and_executes_steps_in_order(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-1", objective="Deliver", agent_id="agent-1")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "second",
+        objective="Second",
+        message=ProviderMessage("local", "Use the results"),
+    )
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        executor=_Executor(),
+        adapter_resolver=lambda _: _Adapter(),
+        should_continue=_bounded_should_continue(3),
+    )
+
+    assert summary.claimed_run_ids == ("run-1",)
+    assert summary.executed_step_ids == ("first", "second")
+    run = coordinator.get("run-1")
+    assert run is not None
+    assert run.status is RunStatus.SUCCEEDED
+    first = coordinator.get_step("first")
+    second = coordinator.get_step("second")
+    assert first is not None and first.status is StepStatus.SUCCEEDED
+    assert second is not None and second.status is StepStatus.SUCCEEDED
+
+
+def test_run_worker_claims_next_unassigned_eligible_run(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-1", objective="Deliver")
+    coordinator.add_step("run-1", "only", objective="Only", command=("true",))
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        executor=_Executor(),
+        should_continue=_bounded_should_continue(2),
+    )
+
+    assert summary.claimed_run_ids == ("run-1",)
+    assert summary.executed_step_ids == ("only",)
+    run = coordinator.get("run-1")
+    assert run is not None
+    assert run.status is RunStatus.SUCCEEDED
+    assert run.agent_id == "agent-1"
+
+
+def test_run_worker_prefers_previously_assigned_run_over_unassigned_run(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-unassigned", objective="Elsewhere")
+    coordinator.add_step(
+        "run-unassigned", "unassigned-only", objective="Only", command=("true",)
+    )
+    coordinator.create("run-assigned", objective="Deliver", agent_id="agent-1")
+    coordinator.add_step(
+        "run-assigned", "assigned-only", objective="Only", command=("true",)
+    )
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        executor=_Executor(),
+        should_continue=_bounded_should_continue(2),
+    )
+
+    assert summary.claimed_run_ids == ("run-assigned",)
+
+
+def test_run_worker_refreshes_heartbeat_on_configured_cadence(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    clock = _Clock(start)
+    sleeper = _CountingSleeper(clock)
+
+    run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=10,
+        poll_interval=5,
+        clock=clock,
+        sleeper=sleeper,
+        should_continue=_bounded_should_continue(3),
+    )
+
+    agent = registry.get("agent-1")
+    assert agent is not None
+    assert agent.revision == 2
+    assert sleeper.calls == [5, 5, 5]
+
+    clock.advance(10)
+    run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=10,
+        poll_interval=5,
+        clock=clock,
+        sleeper=sleeper,
+        should_continue=_bounded_should_continue(1),
+    )
+    agent = registry.get("agent-1")
+    assert agent is not None
+    assert agent.revision == 3
+
+
+def test_run_worker_idles_without_busy_spinning_when_no_work_available(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    clock = _Clock(start)
+    sleeper = _CountingSleeper(clock)
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=2.5,
+        clock=clock,
+        sleeper=sleeper,
+        should_continue=_bounded_should_continue(3),
+    )
+
+    assert summary.claimed_run_ids == ()
+    assert summary.executed_step_ids == ()
+    assert sleeper.calls == [2.5, 2.5, 2.5]
+
+
+def test_run_worker_command_step_uses_persisted_sandbox_policy_resolver(
+    tmp_path,
+) -> None:
+    from codex_agentic_os.runtime import SandboxPolicy
+    from codex_agentic_os.sandboxes import SandboxKind
+
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-1", objective="Deliver", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1",
+        "only",
+        objective="Only",
+        command=("true",),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+    )
+
+    seen_policies = []
+
+    def resolver(policy):
+        seen_policies.append(policy)
+        return _Executor()
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        sandbox_resolver=resolver,
+        should_continue=_bounded_should_continue(2),
+    )
+
+    assert summary.executed_step_ids == ("only",)
+    assert len(seen_policies) == 1
+    assert seen_policies[0].kind is SandboxKind.DOCKER
