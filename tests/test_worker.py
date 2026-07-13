@@ -482,3 +482,45 @@ def test_run_worker_command_step_uses_persisted_sandbox_policy_resolver(
     assert summary.executed_step_ids == ("only",)
     assert len(seen_policies) == 1
     assert seen_policies[0].kind is SandboxKind.DOCKER
+
+
+def test_run_worker_command_step_without_persisted_policy_fails_without_ad_hoc_executor(
+    tmp_path,
+) -> None:
+    """A worker never invents a fallback executor for a step with no persisted policy.
+
+    ``run_worker`` (via the real CLI wiring) only ever supplies a
+    ``sandbox_resolver``, never an ``executor`` override, so a command step
+    declared without a persisted ``sandbox_policy`` must fail through
+    ``execute_next_step``'s existing explicit error rather than dispatching
+    through any resolver-independent path.
+    """
+
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-1", objective="Deliver", agent_id="agent-1")
+    coordinator.add_step("run-1", "only", objective="Only", command=("true",))
+
+    resolver_calls = []
+
+    def resolver(policy):
+        resolver_calls.append(policy)
+        return _Executor()
+
+    with pytest.raises(ValueError, match="next command step requires a sandbox: only"):
+        run_worker(
+            coordinator,
+            registry,
+            "agent-1",
+            heartbeat_interval=60,
+            poll_interval=1,
+            sandbox_resolver=resolver,
+            should_continue=_bounded_should_continue(2),
+        )
+
+    assert resolver_calls == []
+    step = coordinator.get_step("only")
+    assert step is not None and step.status is StepStatus.QUEUED

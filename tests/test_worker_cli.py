@@ -5,7 +5,7 @@ import json
 import pytest
 
 from codex_agentic_os.cli import main
-from codex_agentic_os.runtime import AgentRegistry, RunCoordinator, SandboxPolicy
+from codex_agentic_os.runtime import AgentRegistry, RunCoordinator, RunStatus, SandboxPolicy
 from codex_agentic_os.sandboxes import SandboxKind, SandboxResult
 from codex_agentic_os.state import StateStore
 from codex_agentic_os.worker import WorkerRunSummary
@@ -184,3 +184,159 @@ def test_cli_worker_run_resumes_existing_agent_identity(
     agent_payload = json.loads(capsys.readouterr().out)
     assert agent_payload["label"] == "Original"
     assert agent_payload["revision"] == 2
+
+
+def test_cli_worker_run_help_exposes_no_sandbox_override_flags(capsys) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["worker", "run", "--help"])
+
+    assert exit_info.value.code == 0
+    help_text = capsys.readouterr().out
+    forbidden = (
+        "--image",
+        "--mount",
+        "--sandbox",
+        "--network",
+        "--env",
+        "--working-dir",
+        "--workdir",
+        "--cpu",
+        "--memory",
+    )
+    for flag in forbidden:
+        assert flag not in help_text
+
+
+def test_cli_worker_run_fails_deterministically_without_persisted_sandbox_policy(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Deliver")
+    step = coordinator.add_step("run-1", "only", objective="Only", command=("true",))
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "worker",
+                "run",
+                "--agent-id",
+                "agent-1",
+                "--heartbeat-interval",
+                "60",
+                "--poll-interval",
+                "1",
+                "--state-db",
+                str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "next command step requires a sandbox: only" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    reloaded_run = reloaded.get("run-1")
+    assert reloaded_run is not None and reloaded_run.status is RunStatus.QUEUED
+    assert reloaded.get_step("only") == step
+
+
+def test_cli_worker_run_fails_deterministically_when_persisted_env_var_missing(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Deliver")
+    step = coordinator.add_step(
+        "run-1",
+        "only",
+        objective="Only",
+        command=("true",),
+        sandbox_policy=SandboxPolicy(
+            kind=SandboxKind.DOCKER, env_passthrough=("MISSING_WORKER_TOKEN",)
+        ),
+    )
+    monkeypatch.delenv("MISSING_WORKER_TOKEN", raising=False)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "worker",
+                "run",
+                "--agent-id",
+                "agent-1",
+                "--heartbeat-interval",
+                "60",
+                "--poll-interval",
+                "1",
+                "--state-db",
+                str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert (
+        "environment variable is not set: MISSING_WORKER_TOKEN"
+        in capsys.readouterr().err
+    )
+    reloaded = RunCoordinator(StateStore(database))
+    reloaded_run = reloaded.get("run-1")
+    assert reloaded_run is not None and reloaded_run.status is RunStatus.QUEUED
+    assert reloaded.get_step("only") == step
+
+
+def test_cli_worker_run_resolves_persisted_env_passthrough_by_name_only(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    monkeypatch.setenv("WORKER_WIDGET_TOKEN", "super-secret-value")
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Deliver")
+    coordinator.add_step(
+        "run-1",
+        "only",
+        objective="Only",
+        command=("true",),
+        sandbox_policy=SandboxPolicy(
+            kind=SandboxKind.DOCKER, env_passthrough=("WORKER_WIDGET_TOKEN",)
+        ),
+    )
+
+    captured_env: list[tuple[tuple[str, str], ...]] = []
+
+    def fake_execute(self, argv, *, timeout=None):
+        captured_env.append(self.spec.env)
+        return SandboxResult(tuple(argv), 0, "ok", "")
+
+    monkeypatch.setattr(
+        "codex_agentic_os.sandboxes.ContainerSandbox.execute", fake_execute
+    )
+
+    def fake_sleep(seconds):
+        raise _StopLoop()
+
+    monkeypatch.setattr("codex_agentic_os.worker.time.sleep", fake_sleep)
+
+    with pytest.raises(_StopLoop):
+        main(
+            [
+                "worker",
+                "run",
+                "--agent-id",
+                "agent-1",
+                "--heartbeat-interval",
+                "60",
+                "--poll-interval",
+                "1",
+                "--state-db",
+                str(database),
+            ]
+        )
+
+    assert captured_env == [(("WORKER_WIDGET_TOKEN", "super-secret-value"),)]
+
+    main(["run", "inspect", "run-1", "--state-db", str(database)])
+    raw_payload = capsys.readouterr().out
+    assert "super-secret-value" not in raw_payload
+    payload = json.loads(raw_payload)
+    assert payload["steps"][0]["sandbox_policy"]["env_passthrough"] == [
+        "WORKER_WIDGET_TOKEN"
+    ]
