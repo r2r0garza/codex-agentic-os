@@ -4,10 +4,10 @@
 - Active milestone: Sprint 11 "Explicit cross-step provider context" (#11). Selected the sole unblocked `agent-ready` issue, #78 (persist explicit provider context step references, priority:1). Sprint 11 retains open issues #79 and #80, so its exit criteria are not ready for retrospective or close-or-remediate review.
 - Completed: provider-message steps can now durably declare ordered earlier same-run references through `RunStep.context_step_ids`, the library `add_step(..., context_step_ids=...)` boundary, and repeatable CLI `run add-step --context-step STEP_ID`. Unknown references, cross-run references, duplicates, and command-step context reject before append. References survive restart, every lifecycle payload rewrite, approval decisions, and explicit retry attempts. Read-only `run inspect` / `run inspect-step` show step ids only and never inline referenced outputs. Existing steps without references retain their prior inspection shape. Added Plan 0077 and DEVELOPMENT guidance.
 - Verification: activated `.venv`; focused runtime/CLI/state suites passed (`374 passed`, including 8 new tests); full suite `486 passed` (up from 478); a fresh-process CLI/SQLite UAT persisted and reloaded two references in declared order and confirmed the durable provider-step payload contains ids but no copied referenced output; committed index rebuilt/current (20 files, 682 symbols, 4081 relationships); `git diff --check` clean.
-- Durable state: implementation commit/push and issue #78 closure are pending.
-- Blocked review: #79 remains blocked on #78 until the implementation commit closes it; #80 remains blocked on #79. After closure, #79 should become the next eligible issue.
+- Durable state: implementation commit `eac3294` pushed to `origin/main`; issue #78 auto-closed via its commit trailer and received a verification comment. This MEMORY finalization commit/push is pending.
+- Blocked review: repository-wide review found #79 and #80. #79's sole dependency #78 is closed, so `blocked` was removed and `agent-ready` added with an evidence comment. #80 remains correctly blocked on open #79. Sprint 11 now has one ready issue: #79 (priority:2), the next eligible implementation.
 - Roadmap horizon: 18 open milestones before and after this run (Sprint 11 through Sprint 28), above the three-sprint threshold, so no planning handoff is needed.
-- Final target: `main`; worktree contains only this issue's implementation, derived index, plan, documentation, tests, and MEMORY record.
+- Final target: `main`; worktree dirty only for this MEMORY finalization before commit.
 
 ---
 
