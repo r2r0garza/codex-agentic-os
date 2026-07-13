@@ -520,7 +520,9 @@ class StateStore:
                 "objective": step_payload["objective"],
                 "retried_step_id": step_id,
             }
-            for key in ("command", "timeout", "message", "sandbox_policy"):
+            for key in (
+                "command", "timeout", "message", "sandbox_policy", "context_step_ids"
+            ):
                 if key in step_payload:
                     new_step_payload[key] = step_payload[key]
             approval_required = bool(step_payload.get("approval_required", False))

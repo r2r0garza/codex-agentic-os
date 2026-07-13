@@ -482,6 +482,38 @@ def test_retry_failed_step_creates_queued_attempt_and_reopens_run(tmp_path) -> N
     )
 
 
+def test_retry_failed_step_preserves_provider_context_step_ids(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    run = store.insert(
+        "run", "run-1", status="failed",
+        payload={"objective": "Compose", "output": {"failed_step_id": "model"}},
+    )
+    store.insert(
+        "step", "source", status="succeeded",
+        payload={
+            "run_id": "run-1", "position": 1, "objective": "Source",
+            "command": ["true"], "output": {"exit_code": 0},
+        },
+    )
+    failed = store.insert(
+        "step", "model", status="failed",
+        payload={
+            "run_id": "run-1", "position": 2, "objective": "Synthesize",
+            "message": {"provider": "local", "content": "Use source"},
+            "context_step_ids": ["source"],
+            "output": {"error": "offline", "error_type": "RuntimeError"},
+        },
+    )
+
+    _, retried, _ = store.retry_failed_step(
+        "model", "model-retry",
+        expected_step_revision=failed.revision,
+        expected_run_revision=run.revision,
+    )
+
+    assert retried.payload["context_step_ids"] == ["source"]
+
+
 def test_retry_failed_step_rejects_stale_revisions_without_mutation(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     store = StateStore(database)

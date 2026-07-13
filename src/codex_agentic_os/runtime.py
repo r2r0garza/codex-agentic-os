@@ -120,6 +120,7 @@ class RunStep:
     command: tuple[str, ...] | None = None
     timeout: float | None = None
     message: ProviderMessage | None = None
+    context_step_ids: tuple[str, ...] = ()
     approval_required: bool = False
     approval_status: ApprovalStatus | None = None
     sandbox_policy: SandboxPolicy | None = None
@@ -529,6 +530,7 @@ class RunCoordinator:
                 payload["message"] = self._message_payload(step.message)
             if step.sandbox_policy is not None:
                 payload["sandbox_policy"] = self._sandbox_policy_payload(step.sandbox_policy)
+            self._add_context_step_ids_payload(payload, step)
             self._add_approval_payload(payload, step)
             records.append(("step", step.step_id, StepStatus.CANCELLED, payload))
 
@@ -600,6 +602,7 @@ class RunCoordinator:
                 step_payload["sandbox_policy"] = self._sandbox_policy_payload(
                     next_step.sandbox_policy
                 )
+            self._add_context_step_ids_payload(step_payload, next_step)
             self._add_approval_payload(step_payload, next_step)
             stored = self.store.put_many(
                 (
@@ -719,6 +722,7 @@ class RunCoordinator:
         command: Sequence[str] | None = None,
         timeout: float | None = None,
         message: ProviderMessage | Mapping[str, object] | None = None,
+        context_step_ids: Sequence[str] | None = None,
         approval_required: bool = False,
         sandbox_policy: SandboxPolicy | Mapping[str, object] | None = None,
     ) -> RunStep:
@@ -735,6 +739,11 @@ class RunCoordinator:
         normalized_message = self._validate_message(message)
         if (normalized_command is None) == (normalized_message is None):
             raise ValueError("step requires exactly one of command or provider message")
+        normalized_context_step_ids = self._validate_context_step_ids(
+            run_id,
+            context_step_ids,
+            has_message=normalized_message is not None,
+        )
         if not isinstance(approval_required, bool):
             raise ValueError("approval_required must be a boolean")
         normalized_sandbox_policy = self._validate_sandbox_policy(
@@ -752,6 +761,8 @@ class RunCoordinator:
             payload["timeout"] = timeout
         if normalized_message is not None:
             payload["message"] = self._message_payload(normalized_message)
+        if normalized_context_step_ids:
+            payload["context_step_ids"] = list(normalized_context_step_ids)
         if normalized_sandbox_policy is not None:
             payload["sandbox_policy"] = self._sandbox_policy_payload(normalized_sandbox_policy)
         try:
@@ -810,6 +821,7 @@ class RunCoordinator:
             payload["timeout"] = current.timeout
         if current.message is not None:
             payload["message"] = self._message_payload(current.message)
+        self._add_context_step_ids_payload(payload, current)
         self._add_approval_payload(payload, current)
         if output is not None:
             payload["output"] = dict(output)
@@ -982,6 +994,7 @@ class RunCoordinator:
             step_payload["message"] = self._message_payload(current.message)
         if current.sandbox_policy is not None:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
+        self._add_context_step_ids_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
         run_status: RunStatus | None = None
@@ -1066,6 +1079,7 @@ class RunCoordinator:
             "message": self._message_payload(current.message),
             "output": output,
         }
+        self._add_context_step_ids_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
         superseded_step_ids = self._superseded_step_ids(run.run_id)
         final = all(
@@ -1139,6 +1153,7 @@ class RunCoordinator:
             step_payload["message"] = self._message_payload(current.message)
         if current.sandbox_policy is not None:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
+        self._add_context_step_ids_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
         run_payload: dict[str, object] = {
@@ -1212,6 +1227,7 @@ class RunCoordinator:
             step_payload["message"] = self._message_payload(current.message)
         if current.sandbox_policy is not None:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
+        self._add_context_step_ids_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
         run_payload: dict[str, object] = {
@@ -1282,6 +1298,7 @@ class RunCoordinator:
         command = record.payload.get("command")
         timeout = record.payload.get("timeout")
         message = record.payload.get("message")
+        context_step_ids = record.payload.get("context_step_ids")
         sandbox_policy = record.payload.get("sandbox_policy")
         approval_required = record.payload.get("approval_required", False)
         approval_status_value = record.payload.get("approval_status")
@@ -1295,6 +1312,9 @@ class RunCoordinator:
             raise ValueError(f"step record has invalid output: {record.key}")
         normalized_command = RunCoordinator._validate_command(command, timeout)
         normalized_message = RunCoordinator._validate_message(message)
+        normalized_context_step_ids = RunCoordinator._validate_stored_context_step_ids(
+            context_step_ids, has_message=normalized_message is not None
+        )
         if normalized_command is not None and normalized_message is not None:
             raise ValueError(f"step record has ambiguous execution input: {record.key}")
         normalized_sandbox_policy = RunCoordinator._validate_sandbox_policy(
@@ -1328,6 +1348,7 @@ class RunCoordinator:
             command=normalized_command,
             timeout=timeout,
             message=normalized_message,
+            context_step_ids=normalized_context_step_ids,
             approval_required=approval_required,
             approval_status=approval_status,
             sandbox_policy=normalized_sandbox_policy,
@@ -1340,6 +1361,15 @@ class RunCoordinator:
         payload["approval_required"] = step.approval_required
         if step.approval_status is not None:
             payload["approval_status"] = step.approval_status
+
+    @staticmethod
+    def _add_context_step_ids_payload(
+        payload: dict[str, object], step: RunStep
+    ) -> None:
+        """Preserve declared context references without resolving their outputs."""
+
+        if step.context_step_ids:
+            payload["context_step_ids"] = list(step.context_step_ids)
 
     @staticmethod
     def _decision_payload(
@@ -1358,6 +1388,7 @@ class RunCoordinator:
             payload["timeout"] = step.timeout
         if step.message is not None:
             payload["message"] = RunCoordinator._message_payload(step.message)
+        RunCoordinator._add_context_step_ids_payload(payload, step)
         if step.sandbox_policy is not None:
             payload["sandbox_policy"] = RunCoordinator._sandbox_policy_payload(
                 step.sandbox_policy
@@ -1369,6 +1400,47 @@ class RunCoordinator:
     @staticmethod
     def _message_payload(message: ProviderMessage) -> dict[str, object]:
         return {key: value for key, value in asdict(message).items() if value is not None}
+
+    def _validate_context_step_ids(
+        self,
+        run_id: str,
+        context_step_ids: Sequence[str] | None,
+        *,
+        has_message: bool,
+    ) -> tuple[str, ...]:
+        normalized = self._validate_stored_context_step_ids(
+            context_step_ids, has_message=has_message
+        )
+        for context_step_id in normalized:
+            referenced = self.get_step(context_step_id)
+            if referenced is None:
+                raise ValueError(f"context step does not exist: {context_step_id}")
+            if referenced.run_id != run_id:
+                raise ValueError(
+                    f"context step belongs to another run: {context_step_id}"
+                )
+        return normalized
+
+    @staticmethod
+    def _validate_stored_context_step_ids(
+        context_step_ids: Sequence[str] | object | None,
+        *,
+        has_message: bool,
+    ) -> tuple[str, ...]:
+        if context_step_ids is None:
+            return ()
+        if isinstance(context_step_ids, (str, bytes)) or not isinstance(
+            context_step_ids, Sequence
+        ):
+            raise ValueError("context step ids must be a sequence")
+        normalized = tuple(context_step_ids)
+        if any(not isinstance(step_id, str) or not step_id for step_id in normalized):
+            raise ValueError("context step ids must be non-empty strings")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("context step ids must be unique")
+        if normalized and not has_message:
+            raise ValueError("context step ids require a provider message")
+        return normalized
 
     @staticmethod
     def _sandbox_policy_payload(policy: SandboxPolicy) -> dict[str, object]:

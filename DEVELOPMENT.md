@@ -293,6 +293,19 @@ codex-agentic-os run add-step run-002 step-002 --objective "Summarize output" \
   --state-db .codex-agentic-os/state.sqlite3
 ```
 
+Declare earlier steps from the same run as explicit provider context by repeating
+`--context-step` in the order their persisted outputs should later be resolved. The
+declaration stores and displays step ids only; it does not copy referenced outputs
+into inspection payloads. Unknown steps and steps from another run are rejected
+before the provider step is appended:
+
+```bash
+codex-agentic-os run add-step run-002 step-003 --objective "Compare results" \
+  --provider ollama --message "Compare the prior results" \
+  --context-step step-001 --context-step step-002 \
+  --state-db .codex-agentic-os/state.sqlite3
+```
+
 Add `--approval-required` to either form to keep the step queued until an operator
 records an explicit decision:
 

@@ -147,6 +147,15 @@ def _parser() -> argparse.ArgumentParser:
     add_step.add_argument("--temperature", type=float, help="optional non-negative sampling temperature")
     add_step.add_argument("--max-tokens", type=int, help="optional positive response token limit")
     add_step.add_argument(
+        "--context-step",
+        action="append",
+        default=[],
+        metavar="STEP_ID",
+        help=(
+            "include an earlier same-run step as provider context; repeat to preserve order"
+        ),
+    )
+    add_step.add_argument(
         "--approval-required",
         action="store_true",
         help="require an explicit operator decision before dispatch",
@@ -573,6 +582,8 @@ def _step_payload(
     payload.pop("approval_status")
     if step.message is None:
         payload.pop("message")
+    if not step.context_step_ids:
+        payload.pop("context_step_ids")
     if step.sandbox_policy is None:
         payload.pop("sandbox_policy")
     else:
@@ -761,6 +772,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     command=arguments.step_command or None,
                     timeout=arguments.timeout,
                     message=message,
+                    context_step_ids=arguments.context_step,
                     approval_required=arguments.approval_required,
                     sandbox_policy=sandbox_policy,
                 )

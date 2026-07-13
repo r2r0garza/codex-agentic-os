@@ -410,6 +410,33 @@ def test_cli_adds_and_inspects_provider_message_step(tmp_path, capsys) -> None:
     }
 
 
+def test_cli_inspects_only_declared_provider_context_step_ids(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.transition_step("first", StepStatus.RUNNING)
+    coordinator.transition_step(
+        "first", StepStatus.SUCCEEDED, output={"private": "persisted output"}
+    )
+    coordinator.add_step("run-1", "second", objective="Second", command=("true",))
+
+    main(
+        [
+            "run", "add-step", "run-1", "model", "--objective", "Synthesize",
+            "--provider", "local", "--message", "Use prior results",
+            "--context-step", "second", "--context-step", "first",
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+    main(["run", "inspect-step", "model", "--state-db", str(database)])
+    inspected = json.loads(capsys.readouterr().out)
+
+    assert inspected["context_step_ids"] == ["second", "first"]
+    assert "persisted output" not in json.dumps(inspected)
+
+
 def test_cli_add_step_accepts_hyphen_prefixed_command_after_double_dash(
     tmp_path, capsys
 ) -> None:

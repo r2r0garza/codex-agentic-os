@@ -815,6 +815,80 @@ def test_provider_message_step_round_trips_across_restart(tmp_path) -> None:
     assert RunCoordinator(StateStore(database)).get_step("model") == created
 
 
+def test_provider_context_step_ids_round_trip_in_declared_order(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.add_step("run-1", "second", objective="Second", command=("true",))
+
+    created = coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage(provider="local", content="Synthesize the results"),
+        context_step_ids=("second", "first"),
+    )
+
+    assert created.context_step_ids == ("second", "first")
+    assert RunCoordinator(StateStore(database)).get_step("model") == created
+
+
+@pytest.mark.parametrize(
+    ("context_step_ids", "command", "message", "error"),
+    [
+        (("missing",), None, ProviderMessage("local", "Use it"), "does not exist"),
+        (("other",), None, ProviderMessage("local", "Use it"), "another run"),
+        (("first",), ("true",), None, "require a provider message"),
+        (("first", "first"), None, ProviderMessage("local", "Use it"), "unique"),
+    ],
+)
+def test_provider_context_step_ids_reject_invalid_references_without_mutation(
+    tmp_path, context_step_ids, command, message, error
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.create("run-2", objective="Other work")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.add_step("run-2", "other", objective="Other", command=("true",))
+    before = coordinator.list_steps("run-1")
+
+    with pytest.raises(ValueError, match=error):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Synthesize",
+            command=command,
+            message=message,
+            context_step_ids=context_step_ids,
+        )
+
+    assert coordinator.list_steps("run-1") == before
+
+
+def test_provider_context_step_ids_survive_lifecycle_payload_rewrites(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.transition_step("first", StepStatus.RUNNING)
+    coordinator.transition_step("first", StepStatus.SUCCEEDED, output={"secret": "value"})
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage("local", "Use the result"),
+        context_step_ids=("first",),
+    )
+
+    running = coordinator.transition_step("model", StepStatus.RUNNING)
+    failed = coordinator.transition_step(
+        "model", StepStatus.FAILED, output={"error": "no adapter", "error_type": "ValueError"}
+    )
+
+    assert running.context_step_ids == ("first",)
+    assert failed.context_step_ids == ("first",)
+
+
 def test_approval_required_step_round_trips_across_restart(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

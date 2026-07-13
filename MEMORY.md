@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-13T17:36:18Z — implementation run.
+- Active milestone: Sprint 11 "Explicit cross-step provider context" (#11). Selected the sole unblocked `agent-ready` issue, #78 (persist explicit provider context step references, priority:1). Sprint 11 retains open issues #79 and #80, so its exit criteria are not ready for retrospective or close-or-remediate review.
+- Completed: provider-message steps can now durably declare ordered earlier same-run references through `RunStep.context_step_ids`, the library `add_step(..., context_step_ids=...)` boundary, and repeatable CLI `run add-step --context-step STEP_ID`. Unknown references, cross-run references, duplicates, and command-step context reject before append. References survive restart, every lifecycle payload rewrite, approval decisions, and explicit retry attempts. Read-only `run inspect` / `run inspect-step` show step ids only and never inline referenced outputs. Existing steps without references retain their prior inspection shape. Added Plan 0077 and DEVELOPMENT guidance.
+- Verification: activated `.venv`; focused runtime/CLI/state suites passed (`374 passed`, including 8 new tests); full suite `486 passed` (up from 478); a fresh-process CLI/SQLite UAT persisted and reloaded two references in declared order and confirmed the durable provider-step payload contains ids but no copied referenced output; committed index rebuilt/current (20 files, 682 symbols, 4081 relationships); `git diff --check` clean.
+- Durable state: implementation commit/push and issue #78 closure are pending.
+- Blocked review: #79 remains blocked on #78 until the implementation commit closes it; #80 remains blocked on #79. After closure, #79 should become the next eligible issue.
+- Roadmap horizon: 18 open milestones before and after this run (Sprint 11 through Sprint 28), above the three-sprint threshold, so no planning handoff is needed.
+- Final target: `main`; worktree contains only this issue's implementation, derived index, plan, documentation, tests, and MEMORY record.
+
+---
+
 - Run: 2026-07-13T17:10:49Z — implementation run with post-implementation retrospective and milestone closure.
 - Active milestone at start: Sprint 10 "Provider usage and cost evidence" (#10), holding its sole unblocked `agent-ready` issue, #76 (add read-only `run usage` CLI summary, priority:3). Implementation issue #76 and retrospective issue #77 are now closed, and milestone #10 is closed without remediation. Sprint 11 "Explicit cross-step provider context" (#11) is active with 0 issues.
 - Completed: added `codex-agentic-os run usage RUN_ID`, a read-only command listing provider steps in durable position order (step id, status, provider, resolved model, and a `usage` block of `available`/`input_tokens`/`output_tokens`/`raw`/`unavailable_reason`) plus a run-level aggregate (`steps_with_usage_available`, `steps_with_usage_unavailable`, summed `input_tokens`/`output_tokens`, null when nothing is available). Command steps are omitted from the list; steps that have not yet succeeded or whose adapter reported no usage are marked explicitly unavailable rather than fabricating zero counts. The command reuses the existing read-only `StateStore` path and missing-database/unknown-run rejection shared with `inspect`/`history`/`approvals`/`staleness`. Added Plan 0076 and a DEVELOPMENT.md section for the command.
@@ -40,15 +51,4 @@
 - Durable state: implementation commit `134b4a5` pushed to `origin/main`; issue #72 auto-closed and received verification evidence; retrospective #73 created, completed, and closed; milestone #9 closed.
 - Blocked review: no open `blocked` issues existed repository-wide at the time.
 - Roadmap horizon: 20 open milestones before Sprint 9 closure and 19 after (Sprint 10 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones were added.
-- Final target: `main`.
-
----
-
-- Run: 2026-07-13T15:12:00Z — implementation run.
-- Active milestone: Sprint 9 "Persisted per-step sandbox policy" (#9). At run start it already held two issues (#71 agent-ready priority:1, #72 blocked priority:2) that a prior, unrecorded replenishment pass had created between the last durable MEMORY entry (06:37:25Z) and this run; this entry restores the record. Selected the sole unblocked `agent-ready` issue, #71 (persist per-step sandbox policy at command step creation).
-- Completed: added a durable `SandboxPolicy` view (`kind`, `image`, `mounts`, `working_dir`, `env_passthrough` names, `network_enabled`) reusing `SandboxKind` from `sandboxes.py`. `RunStep.sandbox_policy` and `RunCoordinator.add_step(..., sandbox_policy=...)` validate independently of the CLI (invalid kind, empty image, malformed mount, relative/empty workdir, malformed/duplicate env-passthrough name, non-bool network all reject before any queued step is appended). The policy is preserved across every existing step payload rewrite and through `StateStore.retry_failed_step`, so it survives the full step lifecycle. `run add-step` gained `--sandbox`, `--image`, `--mount`, `--env-passthrough`, `--workdir`, `--network`. Added Plan 0072 and DEVELOPMENT usage guidance.
-- Verification: activated `.venv`; focused runtime/CLI suites passed; full suite `452 passed` (up from 433); committed index rebuilt/current (20 files, 629 symbols, 3799 relationships); `git diff --check` clean. Fresh-process CLI UAT persisted a full policy, reloaded it identically from a separate process, confirmed the raw SQLite payload holds only env-passthrough variable names, and rejected a malformed policy before any queued step was appended.
-- Durable state: implementation commit `fb581bb` pushed to `origin/main`; issue #71 auto-closed via `Closes #71` trailer and received a verification comment.
-- Blocked review: repo-wide `blocked` search found only #72, whose sole dependency #71 was now closed; removed `blocked` and added `agent-ready` with an evidence comment. Sprint 9 had one ready issue: #72 (now closed).
-- Roadmap horizon: 20 open milestones before and after this run (Sprint 9 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
 - Final target: `main`.
