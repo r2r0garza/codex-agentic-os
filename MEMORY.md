@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-13T06:10:00Z — implementation run.
+- Active milestone: Sprint 8 "Explicit failed-step retry" (#8). Selected its sole unblocked `agent-ready` issue, #68 (atomically create a new attempt for an eligible failed step, priority:2).
+- Completed: added `StateStore.retry_failed_step`, a single `BEGIN IMMEDIATE` transaction that CAS-validates the failed step (status/revision) and failed run (status/revision), inserts a new `QUEUED` step at the next position carrying the same command/message/timeout/objective/approval requirement (approval, when required, resets to `pending`), reopens the run to `queued` with its `output` cleared without touching the original step, and appends exactly one `step_retried` history entry via a new `retried_step_id` history column linking the prior and new attempt. Added `RunCoordinator.retry_step`, which rejects a non-`FAILED` step or an `uncertain` recovered outcome (via #67's `failure_kind`/`retry_eligible`) before any mutation. Since `FAILED` is terminal and the original step's revision never changes again, exactly-one-winner safety comes from the run's CAS revision, not the step's. Added Plan 0070 and DEVELOPMENT guidance; no CLI command was added (reserved for #69).
+- Verification: activated `.venv`; focused suites (3 new `test_state.py`, 6 new `test_runtime.py`) passed; full suite `426 passed` (up from 417, includes one existing `test_run_cli.py` history field-set assertion updated for the new `retried_step_id` field); index rebuilt/current (20 files, 611 symbols, 3599 relationships); `git diff --check` clean. Fresh-process UAT created a definite command failure, retried it, and re-read from a fresh `StateStore`/`RunCoordinator` — original step byte-for-byte unchanged, new step queued with identical command/timeout, run reopened to `queued` at revision+1 with output cleared, and exactly one `step_retried` history entry linking both attempts.
+- Implementation commit `93c4284` pushed to `origin/main`; issue #68 auto-closed from its `Closes #68` trailer and received a verification comment, which also records a discovered gap: a run reopened by retry cannot currently reach `succeeded` because the superseded original failed step never itself transitions to `succeeded`, so `complete_step_from_result`/`complete_step_from_chat_response`'s "all steps succeeded" check blocks it.
+- Blocked review: #69's sole dependency #68 is closed, so `blocked` was removed and `agent-ready` added; its comment carries forward the completion-check gap since #69's fourth acceptance criterion requires the run to reach a terminal status through existing execution paths. No open `blocked` issues remain repository-wide. Sprint 8 has one ready issue: #69.
+- Roadmap horizon: 21 open milestones before and after (Sprint 8 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
+- Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #69. Worktree dirty only for this MEMORY update before commit.
+
+---
+
 - Run: 2026-07-13T05:34:56Z — implementation run.
 - Active milestone: Sprint 8 "Explicit failed-step retry" (#8). Selected its sole unblocked `agent-ready` issue, #67 (classify failed-step retry eligibility in read-only inspection, priority:1).
 - Completed: added pure `RunStep.failure_kind` / `retry_eligible` runtime views derived from existing durable markers. Nonzero command results and provider adapter errors classify as `definite` and eligible; recovered interrupted/timed-out outcomes classify as `uncertain` and ineligible; non-failed steps expose no classification. Existing `run inspect` and `run inspect-step` JSON now present the view for failed steps. Added Plan 0069 and DEVELOPMENT guidance; persistence and mutation paths are unchanged.
@@ -39,14 +50,3 @@
 - Blocked review: no open `blocked` issues exist repository-wide. Sprint 7 now has all three delivery issues (#63, #64, #65) closed and no ready issue; its next eligible run is retrospective-only under the one-mode-per-run rule.
 - Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
 - Final target: `main`; next eligible action is the Sprint 7 retrospective and close-or-remediate procedure. Worktree dirty only for this final MEMORY update until committed and pushed.
-
----
-
-- Run: 2026-07-13T03:36:00Z — implementation run.
-- Active milestone: Sprint 7 "Stale-claim run reassignment" (#7). Selected its sole unblocked `agent-ready` issue, #64 (atomically transfer a stale run claim, priority:2).
-- Completed: added `StateStore.reassign_stale_run_claim`, which holds `BEGIN IMMEDIATE` while comparing the expected run owner/revision, re-reading and validating the owner's durable heartbeat, validating the registered replacement, evaluating the explicit positive staleness threshold, transferring only `run.agent_id`, advancing the run revision, and appending one `claim_reassigned` history entry. Added clock-driven `RunCoordinator.reassign_stale_claim` and Plan 0067. Queued and running runs are eligible; step records are never mutated.
-- Verification: focused state/runtime suites 148 passed; full suite 402 passed; concurrent replacement test produced exactly one winner; running-step record remained byte-for-byte unchanged; fresh-heartbeat attempts produced no state/history mutation; index rebuilt/current (20 files, 589 symbols, 3367 relationships); `git diff --check` clean.
-- Implementation commit `6ec2bc1` pushed to `origin/main`; issue #64 auto-closed from its `Closes #64` trailer and received a verification comment.
-- Blocked review: #65's dependencies #63/#64 are both closed, so `blocked` was removed and `agent-ready` added with evidence. No open `blocked` issues remain repository-wide. Sprint 7 now has one ready issue: #65.
-- Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
-- Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #65. Worktree dirty only for this MEMORY update before commit.
