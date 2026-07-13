@@ -1873,7 +1873,7 @@ def test_cli_execute_next_reports_empty_queue_without_mutation(tmp_path, capsys)
 def test_cli_executes_provider_message_without_sandbox(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    from codex_agentic_os.chat import ChatResponse
+    from codex_agentic_os.chat import ChatResponse, ChatUsage
 
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
@@ -1892,11 +1892,22 @@ def test_cli_executes_provider_message_without_sandbox(
         ),
     )
     captured = {}
+    monkeypatch.setenv("PROVIDER_SECRET", "never-persist-this-secret")
 
     class Adapter:
         def complete(self, request):
             captured["request"] = request
-            return ChatResponse("Hi", model="custom-local", raw={"id": "one"})
+            return ChatResponse(
+                "Hi",
+                model="custom-local",
+                raw={"id": "one"},
+                usage=ChatUsage(
+                    available=True,
+                    input_tokens=11,
+                    output_tokens=2,
+                    raw={"prompt_tokens": 11, "completion_tokens": 2},
+                ),
+            )
 
     def build_adapter(spec):
         captured["spec"] = spec
@@ -1918,8 +1929,19 @@ def test_cli_executes_provider_message_without_sandbox(
         "content": "Hi",
         "model": "custom-local",
         "raw": {"id": "one"},
+        "usage": {
+            "available": True,
+            "input_tokens": 11,
+            "output_tokens": 2,
+            "raw": {"prompt_tokens": 11, "completion_tokens": 2},
+            "unavailable_reason": None,
+        },
     }
     assert payload["run"]["status"] == "succeeded"
+    persisted = json.dumps(payload["steps"][0]["output"])
+    assert "never-persist-this-secret" not in persisted
+    assert "Be concise" not in persisted
+    assert "Hello" not in persisted
 
 
 def test_cli_execute_next_records_provider_failure_without_orphaned_claim(

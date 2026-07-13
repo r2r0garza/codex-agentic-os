@@ -1047,6 +1047,13 @@ class RunCoordinator:
         output: dict[str, object] = {"content": response.content, "model": response.model}
         if response.raw is not None:
             output["raw"] = dict(response.raw)
+        output["usage"] = {
+            "available": response.usage.available,
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+            "raw": None if response.usage.raw is None else dict(response.usage.raw),
+            "unavailable_reason": response.usage.unavailable_reason,
+        }
         run = self.get(current.run_id)
         if run is None:
             raise KeyError(f"run does not exist: {current.run_id}")

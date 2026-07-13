@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from codex_agentic_os.chat import ChatResponse
+from codex_agentic_os.chat import ChatResponse, ChatUsage
 from codex_agentic_os.runtime import (
     Agent,
     AgentRegistry,
@@ -1721,7 +1721,17 @@ def test_execute_next_step_sends_provider_message_and_persists_response(tmp_path
     class Adapter:
         def complete(self, request):
             requests.append(request)
-            return ChatResponse("Durable answer", model="served-model", raw={"id": "r1"})
+            return ChatResponse(
+                "Durable answer",
+                model="served-model",
+                raw={"id": "r1"},
+                usage=ChatUsage(
+                    available=True,
+                    input_tokens=17,
+                    output_tokens=5,
+                    raw={"prompt_tokens": 17, "completion_tokens": 5},
+                ),
+            )
 
     def resolve(message):
         resolved.append(message)
@@ -1757,8 +1767,53 @@ def test_execute_next_step_sends_provider_message_and_persists_response(tmp_path
         "content": "Durable answer",
         "model": "served-model",
         "raw": {"id": "r1"},
+        "usage": {
+            "available": True,
+            "input_tokens": 17,
+            "output_tokens": 5,
+            "raw": {"prompt_tokens": 17, "completion_tokens": 5},
+            "unavailable_reason": None,
+        },
     }
     assert run.status is RunStatus.SUCCEEDED
+    assert RunCoordinator(StateStore(database)).get_step("manual") == step
+
+
+def test_execute_next_step_persists_explicit_unavailable_usage(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(
+                "Durable answer",
+                usage=ChatUsage(
+                    available=False,
+                    unavailable_reason="provider response did not include a usage block",
+                ),
+            )
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Coordinate work")
+    coordinator.add_step(
+        "run-1",
+        "manual",
+        objective="Review output",
+        message=ProviderMessage(provider="local", content="Review output"),
+    )
+
+    step, run = coordinator.execute_next_step(
+        "run-1", adapter_resolver=lambda _: Adapter()
+    )
+
+    assert step.status is StepStatus.SUCCEEDED
+    assert run.status is RunStatus.SUCCEEDED
+    assert step.output["usage"] == {
+        "available": False,
+        "input_tokens": None,
+        "output_tokens": None,
+        "raw": None,
+        "unavailable_reason": "provider response did not include a usage block",
+    }
     assert RunCoordinator(StateStore(database)).get_step("manual") == step
 
 
