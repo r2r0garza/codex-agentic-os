@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-12T23:45:00Z — replenishment run.
+- Active milestone: Sprint 6 "Operator approval-gated execution" (#6). It had 0 issues, so no implementation was permitted; compared its four exit criteria against the runtime/state source (`RunStep`/`StepStatus` have no approval concept yet) and found uncovered work across the durable approval gate, the compare-and-swap approve/reject decision, and CLI inspection/decision surfaces.
+- Created three milestone-scoped issues: #59 (persist durable step approval gate, priority:1, `agent-ready`), #60 (approve and reject pending step decisions, priority:2, blocked on #59), and #61 (CLI approval inspection and decision commands, priority:3, blocked on #59/#60). Each maps directly to a named Sprint 6 exit criterion and excludes policy language, RBAC, notification delivery, expiry, delegation, and automatic risk classification.
+- Verification: activated `.venv`; `codex-agentic-os index check` reported current (20 files, 538 symbols, 2975 relationships); read runtime.py's `RunStep`/`StepStatus`/`start_next_step`/`execute_next_step` and state.py's CAS/history primitives plus cli.py's `run` subcommand surface to confirm no approval mechanism exists; validated GitHub milestone assignment, priority/area labels, dependency labels, and `git diff --check` before commit. No project code changed, so pytest was not run.
+- Blocked review: repo-wide `blocked` search found only #60 and #61, both created this run with genuinely unresolved dependencies; no label changes needed. Sprint 6 now has one ready issue: #59.
+- Roadmap horizon: 3 open milestones before and after (Sprint 6 active; Sprint 7 and Sprint 8 future), so no planning handoff was needed. No milestones were created or closed.
+- Final target: `main`; durable record commit/push pending this entry. Next eligible issue: #59. Worktree dirty only for this MEMORY update before commit.
+
+---
+
 - Run: 2026-07-12T23:32:34Z — retrospective and roadmap-maintenance run.
 - Active milestone at start: Sprint 5 "Auditable mixed-step run history" (#5). No implementation issue selected; all delivery issues #55, #56, and #57 were already closed, so this run used retrospective mode.
 - Retrospective: full suite `366 passed`; the separate mixed command/provider CLI reconstruction acceptance test passed (`1 passed`); `codex-agentic-os index check` reported current (20 files, 538 symbols, 2975 relationships); `git diff --check` passed. Created and closed retrospective issue #58 with all four exit criteria marked pass, architecture/quality evidence, and no remediation. Closed milestone #5.
@@ -41,13 +51,3 @@
 - Blocked review: #56 was blocked only on #55, now resolved, so `blocked` was removed and `agent-ready` added. #57 remains correctly blocked on #55 and #56 (#56 still open). Sprint 5 now has one ready issue: #56.
 - Roadmap horizon: 3 open milestones before and after (Sprint 5 active; Sprint 6 and Sprint 7 future); no planning run needed.
 - Final target: `main`; next eligible issue: #56. Worktree dirty only for this MEMORY record until committed and pushed.
-
----
-
-- Run: 2026-07-12T21:32:24Z — replenishment run.
-- Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). It had no issues, so no implementation was permitted; repository evidence showed uncovered work across atomic history persistence, mixed-step lifecycle provenance, and read-only operator inspection.
-- Created three milestone-scoped issues: #55 (persist atomic run transition history, priority:1, `agent-ready`), #56 (record mixed-step lifecycle provenance atomically, priority:2, blocked on #55), and #57 (inspect mixed-run history from the CLI, priority:3, blocked on #55/#56). Each maps directly to named Sprint 5 exit criteria and excludes cross-run analytics, logging infrastructure, retention, and future approval work.
-- Verification: activated `.venv`; `codex-agentic-os index check` reported current; inspected the committed index plus relevant runtime/state source and Plans 0037, 0038, 0057, and 0058; validated GitHub milestone assignment, priority/area labels, dependency labels, and `git diff --check` before commit. No project code changed, so pytest was not run.
-- Blocked review: #56 and #57 are the repository's only blocked issues and their dependencies remain unresolved; labels are correct and no blocker state changed. Sprint 5 now has one ready issue: #55.
-- Roadmap horizon: 3 open milestones before and after (Sprint 5 active; Sprint 6 and Sprint 7 future), so no planning handoff was needed. No milestones were created or closed.
-- Final target: `main`; durable record commit/push pending this entry. Next eligible issue: #55. Worktree dirty only for this MEMORY update before commit.
