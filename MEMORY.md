@@ -1,5 +1,14 @@
 # Automation Memory
 
+- Run: 2026-07-13T01:34:21Z — implementation run.
+- Active milestone: Sprint 6 "Operator approval-gated execution" (#6). Selected its sole unblocked `agent-ready` issue, #61 (CLI approval inspection and decision commands, priority:3).
+- Completed: added CLI `--approval-required` step creation; a read-only `run approvals <run_id>` view that reports approval/step status, execution kind, and requesting/deciding agent attribution while excluding command arguments, provider request bodies, credentials, raw environment values, and terminal output; and `run approve`/`run reject` commands with optional registered deciding-agent attribution. Added Plan 0065 and DEVELOPMENT guidance.
+- Verification: focused CLI suite 141 passed (up from 136); full suite 380 passed (up from 376); live SQLite CLI UAT reconstructed pending and approved state plus `step_approved` history without exposing the sensitive command; index rebuilt/current (20 files, 563 symbols, 3156 relationships); `git diff --check` clean.
+- Implementation commit/push and issue closure are pending this durable record. Blocked review and roadmap horizon review follow the push.
+- Final target: `main`; issue #61 is expected to close from the implementation commit. Worktree contains only this run's focused changes.
+
+---
+
 - Run: 2026-07-13T01:07:09Z — implementation and unblock run.
 - Active milestone: Sprint 6 "Operator approval-gated execution" (#6). Selected its sole unblocked `agent-ready` issue, #60 (approve and reject pending step decisions, priority:2).
 - Completed: added `RunCoordinator.approve_step`/`reject_step`, backed by `StateStore.put_many` compare-and-swap on the step's (and, for rejection, the run's) expected status/revision. Approval clears the Plan 0063 dispatch gate so a subsequent `start_next_step`/`execute_next_step` executes the step exactly as a non-approval step would. Rejection produces an explicit terminal step/run outcome (mirroring `fail_step_from_error` semantics) without ever executing the command or provider message, covering both a never-started (queued) run and an already-running run. A decision against an already-decided step, or a stale expected revision, mutates no state and appends no history entry. Both decisions append an atomic `step_approved`/`step_rejected` run-history entry with the deciding agent id when known. CLI presentation remains reserved for #61. Added Plan 0064.
@@ -39,15 +48,3 @@
 - Roadmap horizon: 3 open milestones before retrospective closure (5, 6, 7), then 2 (6, 7). The planning handoff used VISION.md's explicit retry/recovery contract plus indexed `execute_next_step()`/`recover_running_step()` evidence to create future Sprint 8 "Explicit failed-step retry" (#8), with no issues because Sprint 6 is active. Resulting horizon is 3 open milestones (6 active, 7 and 8 future).
 - Durable GitHub state: issue #58 closed; milestone #5 closed; milestone #8 created. Repository record commit `062e8c2` pushed to `origin/main`.
 - Final target: `main`; next eligible action is Sprint 6 replenishment against its approval-gated execution exit criteria. Final record committed and pushed; branch clean and aligned with `origin/main`.
-
----
-
-- Run: 2026-07-12T23:00:00Z — implementation run.
-- Active milestone: Sprint 5 "Auditable mixed-step run history" (#5). Selected its sole unblocked `agent-ready` issue, #57 (inspect mixed-run history from the CLI, priority:3).
-- Completed: added a read-only `run history <run_id>` CLI subcommand as a thin wrapper over the existing `RunCoordinator.list_history()`/`StateStore.list_run_history()` read contract from #55/#56. Reused the `run inspect`/`run list` read-only pattern (`read_only=True` StateStore, explicit `coordinator.get(run_id) is None` check raising the standard `ValueError`/exit-2 rather than the coordinator's `KeyError`). Output is stable JSON in sequence order with run/step id, transition, resulting status, agent id when known, and execution kind, excluding credentials, raw environment values, command arguments, provider request bodies, and terminal outputs. Added Plan 0062 and documented the command in DEVELOPMENT.md.
-- Verification: 5 new focused CLI tests (stable order, mixed command/provider reconstruction across separate `main()` process invocations against the same database, missing-run rejection, missing-database rejection, no-mutation); full suite 366 passed (up from 361); index rebuilt/current (20 files, 538 symbols, 2975 relationships); `git diff --check` clean. Live CLI UAT against a real SQLite database confirmed stable output and explicit missing-run/missing-database rejection without writes.
-- Implementation commit `4dd4394` pushed to `origin/main`; issue #57 auto-closed by its `Closes #57` trailer, with a follow-up comment recording verification evidence.
-- Blocked review: no `blocked` issues exist anywhere in the repository; nothing to change.
-- Sprint 5 now has 0 open issues (all three closed); it remains the active milestone awaiting a retrospective run, not yet eligible for implementation.
-- Roadmap horizon: 3 open milestones before and after (Sprint 5 active/awaiting retrospective; Sprint 6 and Sprint 7 future); no planning run needed.
-- Final target: `main`; next eligible action is a Sprint 5 retrospective (no ready implementation issue remains). Worktree dirty only for this final MEMORY update until committed and pushed.

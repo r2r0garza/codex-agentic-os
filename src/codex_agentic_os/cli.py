@@ -83,6 +83,11 @@ def _parser() -> argparse.ArgumentParser:
     history = run_commands.add_parser(
         "history", help="show one run's durable lifecycle history in order"
     )
+    approvals = run_commands.add_parser(
+        "approvals", help="show one run's sanitized step approval requests"
+    )
+    approve = run_commands.add_parser("approve", help="approve one pending step")
+    reject = run_commands.add_parser("reject", help="reject one pending step")
     transition = run_commands.add_parser(
         "transition", help="advance a run through an explicit lifecycle transition"
     )
@@ -123,6 +128,11 @@ def _parser() -> argparse.ArgumentParser:
     add_step.add_argument("--system", help="optional system instruction")
     add_step.add_argument("--temperature", type=float, help="optional non-negative sampling temperature")
     add_step.add_argument("--max-tokens", type=int, help="optional positive response token limit")
+    add_step.add_argument(
+        "--approval-required",
+        action="store_true",
+        help="require an explicit operator decision before dispatch",
+    )
     list_runs.add_argument(
         "--status",
         action="append",
@@ -172,14 +182,21 @@ def _parser() -> argparse.ArgumentParser:
     for command in (
         inspect,
         history,
+        approvals,
         inspect_step,
+        approve,
+        reject,
         cancel,
         cancel_step,
         prune,
         execute_next,
         recover,
     ):
-        identifier = "step_id" if command in (inspect_step, cancel_step, recover) else "run_id"
+        identifier = (
+            "step_id"
+            if command in (inspect_step, approve, reject, cancel_step, recover)
+            else "run_id"
+        )
         command.add_argument(identifier)
         command.add_argument(
             "--state-db",
@@ -190,6 +207,8 @@ def _parser() -> argparse.ArgumentParser:
     recover.add_argument(
         "reason", choices=[reason.value for reason in StepRecoveryReason]
     )
+    approve.add_argument("--agent-id", help="registered agent recording the decision")
+    reject.add_argument("--agent-id", help="registered agent recording the decision")
     recover.add_argument("--detail", help="operator context for the recovery")
     execute_next.add_argument(
         "--sandbox", choices=[kind.value for kind in SandboxKind]
@@ -319,6 +338,42 @@ def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, objec
     return [asdict(entry) for entry in entries]
 
 
+def _approval_payload(
+    coordinator: RunCoordinator, run_id: str
+) -> list[dict[str, object]]:
+    """Return sanitized approval requests and their known agent attribution."""
+
+    run = coordinator.get(run_id)
+    if run is None:
+        raise ValueError(f"run does not exist: {run_id}")
+    deciding_agents = {
+        entry.step_id: entry.agent_id
+        for entry in coordinator.list_history(run_id)
+        if entry.transition in {"step_approved", "step_rejected"}
+    }
+    requests = []
+    for step in coordinator.list_steps(run_id):
+        if not step.approval_required:
+            continue
+        requests.append(
+            {
+                "step_id": step.step_id,
+                "run_id": step.run_id,
+                "position": step.position,
+                "objective": step.objective,
+                "step_status": step.status.value,
+                "approval_required": True,
+                "approval_status": (
+                    None if step.approval_status is None else step.approval_status.value
+                ),
+                "execution_kind": "command" if step.command is not None else "provider",
+                "requesting_agent_id": run.agent_id,
+                "deciding_agent_id": deciding_agents.get(step.step_id),
+            }
+        )
+    return requests
+
+
 def _step_payload(step: RunStep) -> dict[str, object]:
     """Return the standard JSON-compatible view of one durable step."""
 
@@ -401,6 +456,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "inspect-step",
                 "list",
                 "history",
+                "approvals",
             }
             coordinator = RunCoordinator(
                 StateStore(arguments.state_db, read_only=read_only)
@@ -467,6 +523,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     command=arguments.step_command or None,
                     timeout=arguments.timeout,
                     message=message,
+                    approval_required=arguments.approval_required,
                 )
                 run_id = arguments.run_id
             elif arguments.run_command == "list":
@@ -509,6 +566,28 @@ def main(argv: Sequence[str] | None = None) -> None:
                     )
                 )
                 return
+            elif arguments.run_command == "approvals":
+                print(
+                    json.dumps(
+                        _approval_payload(coordinator, arguments.run_id),
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+                return
+            elif arguments.run_command in {"approve", "reject"}:
+                step = coordinator.get_step(arguments.step_id)
+                if step is None:
+                    raise ValueError(f"step does not exist: {arguments.step_id}")
+                if arguments.run_command == "approve":
+                    coordinator.approve_step(
+                        arguments.step_id, agent_id=arguments.agent_id
+                    )
+                else:
+                    coordinator.reject_step(
+                        arguments.step_id, agent_id=arguments.agent_id
+                    )
+                run_id = step.run_id
             elif arguments.run_command == "transition":
                 if coordinator.get(arguments.run_id) is None:
                     raise ValueError(f"run does not exist: {arguments.run_id}")
@@ -650,6 +729,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                     detail=arguments.detail,
                 )
                 run_id = step.run_id
+            elif arguments.run_command in {"approve", "reject"}:
+                pass
             else:
                 run_id = arguments.run_id
             print(json.dumps(_run_payload(coordinator, run_id), indent=2, sort_keys=True))

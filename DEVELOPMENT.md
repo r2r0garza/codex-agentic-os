@@ -265,6 +265,14 @@ codex-agentic-os run add-step run-002 step-002 --objective "Summarize output" \
   --state-db .codex-agentic-os/state.sqlite3
 ```
 
+Add `--approval-required` to either form to keep the step queued until an operator
+records an explicit decision:
+
+```bash
+codex-agentic-os run add-step run-002 step-003 --objective "Publish result" \
+  --approval-required --state-db .codex-agentic-os/state.sqlite3 -- publish-result
+```
+
 Record a sandbox result through the structural execution-result boundary. A zero exit
 completes the step successfully and succeeds the run when every step is complete; a
 nonzero exit fails both the step and run:
@@ -307,6 +315,27 @@ codex-agentic-os run history run-002 --state-db /path/to/state.sqlite3
 
 History inspection requires an existing database and run; it fails without
 creating a database and without mutating state.
+
+List one run's approval-required steps without exposing command arguments, provider
+request bodies, credentials, raw environment values, or terminal output. The stable
+JSON view includes approval and step status, execution kind, and requesting/deciding
+agent identifiers when known:
+
+```bash
+codex-agentic-os run approvals run-002
+codex-agentic-os run approvals run-002 --state-db /path/to/state.sqlite3
+```
+
+Approve or reject a pending request. An optional registered agent identifier records
+who made the decision in durable history. Approval leaves the step queued and eligible
+for normal execution; rejection fails the step and run without dispatching it:
+
+```bash
+codex-agentic-os run approve step-003 --agent-id operator-1
+codex-agentic-os run reject step-003 --agent-id operator-1
+```
+
+Missing and already-decided steps are rejected without mutation.
 
 Cancel a queued or running run from the CLI. The command preserves completed steps,
 cancels queued or running steps, and prints the resulting durable state as JSON:

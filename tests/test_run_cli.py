@@ -1907,3 +1907,108 @@ def test_cli_history_does_not_mutate_run_or_step_state(tmp_path, capsys) -> None
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get("run-1") == original_run
     assert reloaded.get_step("step-1") == original_step
+
+
+def test_cli_approval_flow_is_sanitized_and_reconstructible(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    main([
+        "agent", "register", "operator-1", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+    main([
+        "run", "create", "run-1", "--objective", "Approval flow",
+        "--agent-id", "operator-1", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+    main([
+        "run", "add-step", "run-1", "step-1", "--objective", "Sensitive command",
+        "--approval-required", "--state-db", str(database), "--",
+        "sh", "-c", "TOKEN=secret do-work",
+    ])
+    capsys.readouterr()
+
+    main(["run", "approvals", "run-1", "--state-db", str(database)])
+    pending = json.loads(capsys.readouterr().out)
+    assert pending == [{
+        "approval_required": True,
+        "approval_status": "pending",
+        "deciding_agent_id": None,
+        "execution_kind": "command",
+        "objective": "Sensitive command",
+        "position": 1,
+        "requesting_agent_id": "operator-1",
+        "run_id": "run-1",
+        "step_id": "step-1",
+        "step_status": "queued",
+    }]
+    assert "secret" not in json.dumps(pending)
+
+    main([
+        "run", "approve", "step-1", "--agent-id", "operator-1",
+        "--state-db", str(database),
+    ])
+    capsys.readouterr()
+    main(["run", "approvals", "run-1", "--state-db", str(database)])
+    approved = json.loads(capsys.readouterr().out)
+    assert approved[0]["approval_status"] == "approved"
+    assert approved[0]["deciding_agent_id"] == "operator-1"
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    history = json.loads(capsys.readouterr().out)
+    assert history[-1]["transition"] == "step_approved"
+    assert history[-1]["agent_id"] == "operator-1"
+
+
+def test_cli_rejects_pending_step_and_records_terminal_decision(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Reject flow")
+    coordinator.add_step(
+        "run-1", "step-1", objective="Provider request",
+        message=ProviderMessage(provider="ollama", content="private request"),
+        approval_required=True,
+    )
+
+    main(["run", "reject", "step-1", "--state-db", str(database)])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["status"] == "failed"
+    main(["run", "approvals", "run-1", "--state-db", str(database)])
+    requests = json.loads(capsys.readouterr().out)
+    assert requests[0]["approval_status"] == "rejected"
+    assert requests[0]["step_status"] == "failed"
+    assert requests[0]["execution_kind"] == "provider"
+    assert "private request" not in json.dumps(requests)
+
+
+@pytest.mark.parametrize("command", ["approve", "reject"])
+def test_cli_approval_decision_rejections_do_not_mutate_state(
+    tmp_path, capsys, command
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Decision conflicts")
+    original_step = coordinator.add_step(
+        "run-1", "step-1", objective="Pending", command=("true",),
+        approval_required=True,
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", command, "missing", "--state-db", str(database)])
+    assert exit_info.value.code == 2
+    assert "step does not exist: missing" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("step-1") == original_step
+
+    reloaded.approve_step("step-1")
+    decided_run = reloaded.get("run-1")
+    decided_step = reloaded.get_step("step-1")
+    decided_history = reloaded.list_history("run-1")
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", command, "step-1", "--state-db", str(database)])
+    assert exit_info.value.code == 2
+    assert "step is not pending approval" in capsys.readouterr().err
+    final = RunCoordinator(StateStore(database))
+    assert final.get("run-1") == decided_run
+    assert final.get_step("step-1") == decided_step
+    assert final.list_history("run-1") == decided_history
