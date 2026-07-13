@@ -15,6 +15,7 @@ from codex_agentic_os.runtime import (
     RunCoordinator as _RunCoordinator,
     RunStatus,
     RunStep,
+    StepFailureKind,
     StepRecoveryReason,
     StepStatus,
 )
@@ -1384,6 +1385,8 @@ def test_failed_sandbox_result_fails_step_and_run(tmp_path) -> None:
     assert run.status is RunStatus.FAILED
     assert run.revision == 3
     assert run.output == {"failed_step_id": "command", "exit_code": 17}
+    assert step.failure_kind is StepFailureKind.DEFINITE
+    assert step.retry_eligible is True
 
 
 @pytest.mark.parametrize("returncode", [0, 17])
@@ -1665,6 +1668,8 @@ def test_execute_next_step_fails_step_on_adapter_transport_error(tmp_path) -> No
         "failed_step_id": "model",
         "error": "chat request failed: connection refused",
     }
+    assert step.failure_kind is StepFailureKind.DEFINITE
+    assert step.retry_eligible is True
 
 
 def test_execute_next_step_fails_step_on_adapter_resolution_error(tmp_path) -> None:
@@ -1786,11 +1791,33 @@ def test_recover_running_step_fails_step_and_run_durably(tmp_path, reason) -> No
         "failed_step_id": "command",
         "recovery_reason": reason.value,
     }
+    assert step.failure_kind is StepFailureKind.UNCERTAIN
+    assert step.retry_eligible is False
     assert step.revision == 3
     assert run.revision == 3
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get_step("command") == step
     assert reloaded.get("run-1") == run
+
+
+@pytest.mark.parametrize("status", [StepStatus.QUEUED, StepStatus.RUNNING, StepStatus.SUCCEEDED])
+def test_non_failed_steps_have_no_failure_classification(tmp_path, status) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / f"{status.value}.sqlite3"))
+    coordinator.create("run-1", objective="Inspect classification")
+    step = coordinator.add_step(
+        "run-1", "command", objective="Run command", command=("true",)
+    )
+    if status is StepStatus.RUNNING:
+        step = coordinator.start_next_step("run-1")
+    elif status is StepStatus.SUCCEEDED:
+        coordinator.start_next_step("run-1")
+        step, _ = coordinator.complete_step_from_result(
+            "command", SandboxResult(("docker", "run", "true"), 0, "", "")
+        )
+
+    assert step is not None
+    assert step.failure_kind is None
+    assert step.retry_eligible is None
 
 
 def test_recover_running_step_validates_state_and_reason_before_mutation(tmp_path) -> None:

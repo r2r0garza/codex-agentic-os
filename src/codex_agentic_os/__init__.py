@@ -17,6 +17,7 @@ from .runtime import (
     RunStatus,
     RunStep,
     SandboxExecutor,
+    StepFailureKind,
     StepRecoveryReason,
     StepStatus,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "RunStatus",
     "RunStep",
     "SandboxExecutor",
+    "StepFailureKind",
     "StepRecoveryReason",
     "StepStatus",
     "ContainerSandbox",

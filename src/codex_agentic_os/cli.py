@@ -433,6 +433,11 @@ def _step_payload(step: RunStep) -> dict[str, object]:
     if step.message is None:
         payload.pop("message")
     payload["status"] = step.status.value
+    if step.status is StepStatus.FAILED:
+        payload["failure_kind"] = (
+            None if step.failure_kind is None else step.failure_kind.value
+        )
+        payload["retry_eligible"] = step.retry_eligible
     return payload
 
 

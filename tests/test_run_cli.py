@@ -11,6 +11,7 @@ from codex_agentic_os.runtime import (
     ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
+    StepRecoveryReason,
     StepStatus,
 )
 from codex_agentic_os.sandboxes import ContainerSandbox, SandboxResult
@@ -1069,7 +1070,57 @@ def test_cli_inspects_active_step_statuses(tmp_path, capsys, status) -> None:
 
     main(["run", "inspect-step", "step-1", "--state-db", str(database)])
 
-    assert json.loads(capsys.readouterr().out)["status"] == status.value
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == status.value
+    assert "failure_kind" not in payload
+    assert "retry_eligible" not in payload
+
+
+@pytest.mark.parametrize("command", ["inspect", "inspect-step"])
+@pytest.mark.parametrize(
+    ("failure_source", "failure_kind", "retry_eligible"),
+    [
+        ("command", "definite", True),
+        ("provider", "definite", True),
+        ("recovery", "uncertain", False),
+    ],
+)
+def test_cli_inspection_classifies_failed_step_retry_eligibility(
+    tmp_path, capsys, command, failure_source, failure_kind, retry_eligible
+) -> None:
+    database = tmp_path / f"{command}-{failure_source}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Inspect failed work")
+    if failure_source == "provider":
+        coordinator.add_step(
+            "run-1",
+            "step-1",
+            objective="Ask provider",
+            message=ProviderMessage(provider="local", content="Review"),
+        )
+    else:
+        coordinator.add_step(
+            "run-1", "step-1", objective="Run command", command=("false",)
+        )
+    coordinator.start_next_step("run-1")
+    if failure_source == "command":
+        coordinator.complete_step_from_result(
+            "step-1", SandboxResult(("docker", "run", "false"), 17, "", "failed")
+        )
+    elif failure_source == "provider":
+        coordinator.fail_step_from_error("step-1", RuntimeError("provider unavailable"))
+    else:
+        coordinator.recover_running_step("step-1", StepRecoveryReason.TIMED_OUT)
+
+    arguments = ["run", command]
+    arguments.append("run-1" if command == "inspect" else "step-1")
+    arguments.extend(["--state-db", str(database)])
+    main(arguments)
+
+    payload = json.loads(capsys.readouterr().out)
+    step = payload["steps"][0] if command == "inspect" else payload
+    assert step["failure_kind"] == failure_kind
+    assert step["retry_eligible"] is retry_eligible
 
 
 def test_cli_step_inspection_rejects_missing_state_without_mutation(tmp_path, capsys) -> None:

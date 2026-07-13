@@ -73,6 +73,13 @@ class StepRecoveryReason(StrEnum):
     TIMED_OUT = "timed_out"
 
 
+class StepFailureKind(StrEnum):
+    """Operator-visible certainty of a durable failed-step outcome."""
+
+    DEFINITE = "definite"
+    UNCERTAIN = "uncertain"
+
+
 @dataclass(frozen=True, slots=True)
 class AgentRun:
     """Typed view of a durable run record."""
@@ -101,6 +108,40 @@ class RunStep:
     message: ProviderMessage | None = None
     approval_required: bool = False
     approval_status: ApprovalStatus | None = None
+
+    @property
+    def failure_kind(self) -> StepFailureKind | None:
+        """Classify known execution failures without changing durable state."""
+
+        if self.status is not StepStatus.FAILED or self.output is None:
+            return None
+        if "recovery_reason" in self.output:
+            return StepFailureKind.UNCERTAIN
+        if self.approval_status is ApprovalStatus.REJECTED:
+            return None
+        exit_code = self.output.get("exit_code")
+        if (
+            self.command is not None
+            and isinstance(exit_code, int)
+            and not isinstance(exit_code, bool)
+            and exit_code != 0
+        ):
+            return StepFailureKind.DEFINITE
+        if (
+            self.message is not None
+            and isinstance(self.output.get("error"), str)
+            and isinstance(self.output.get("error_type"), str)
+        ):
+            return StepFailureKind.DEFINITE
+        return None
+
+    @property
+    def retry_eligible(self) -> bool | None:
+        """Report explicit-retry eligibility for failed steps only."""
+
+        if self.status is not StepStatus.FAILED:
+            return None
+        return self.failure_kind is StepFailureKind.DEFINITE
 
 
 @dataclass(frozen=True, slots=True)

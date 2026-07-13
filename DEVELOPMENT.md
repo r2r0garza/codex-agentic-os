@@ -290,6 +290,10 @@ codex-agentic-os run inspect run-002 --state-db /path/to/state.sqlite3
 
 The default database is `.codex-agentic-os/state.sqlite3`. Inspection prints JSON and
 fails without creating a database when the configured path does not exist.
+Failed steps include computed `failure_kind` and `retry_eligible` fields. Nonzero
+command results and provider adapter errors are `definite` and retry-eligible;
+recovered interrupted or timed-out outcomes are `uncertain` and ineligible because
+their prior side effects may be unknown. Non-failed steps omit both fields.
 
 List durable runs in stable run identifier order without loading their steps or
 modifying runtime state:
