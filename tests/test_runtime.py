@@ -8,6 +8,8 @@ from codex_agentic_os.runtime import (
     Agent,
     AgentRegistry,
     AgentRun,
+    ApprovalRequiredError,
+    ApprovalStatus,
     ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
@@ -472,6 +474,88 @@ def test_provider_message_step_round_trips_across_restart(tmp_path) -> None:
 
     assert created.message == message
     assert RunCoordinator(StateStore(database)).get_step("model") == created
+
+
+def test_approval_required_step_round_trips_across_restart(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Perform sensitive work")
+
+    created = coordinator.add_step(
+        "run-1",
+        "sensitive",
+        objective="Change external state",
+        command=("true",),
+        approval_required=True,
+    )
+
+    assert created.approval_required is True
+    assert created.approval_status is ApprovalStatus.PENDING
+    assert RunCoordinator(StateStore(database)).get_step("sensitive") == created
+
+
+def test_pending_approval_refuses_start_without_mutation(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    run = coordinator.create("run-1", objective="Perform sensitive work")
+    step = coordinator.add_step(
+        "run-1",
+        "sensitive",
+        objective="Change external state",
+        command=("true",),
+        approval_required=True,
+    )
+
+    with pytest.raises(
+        ApprovalRequiredError, match="requires approval before dispatch: sensitive"
+    ):
+        coordinator.start_next_step("run-1")
+
+    assert coordinator.get("run-1") == run
+    assert coordinator.get_step("sensitive") == step
+
+
+def test_pending_approval_refuses_execute_before_sandbox_dispatch(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    run = coordinator.create("run-1", objective="Perform sensitive work")
+    step = coordinator.add_step(
+        "run-1",
+        "sensitive",
+        objective="Change external state",
+        command=("true",),
+        approval_required=True,
+    )
+    calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            calls.append((tuple(argv), timeout))
+            return SandboxResult(tuple(argv), 0, "", "")
+
+    executor = Executor()
+
+    with pytest.raises(ApprovalRequiredError, match="sensitive"):
+        coordinator.execute_next_step("run-1", executor)
+
+    assert calls == []
+    assert coordinator.get("run-1") == run
+    assert coordinator.get_step("sensitive") == step
+
+
+def test_step_without_approval_requirement_dispatches_as_before(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Perform ordinary work")
+    created = coordinator.add_step(
+        "run-1", "ordinary", objective="Run command", command=("true",)
+    )
+
+    running = coordinator.start_next_step("run-1")
+
+    assert created.approval_required is False
+    assert created.approval_status is None
+    assert running is not None
+    assert running.status is StepStatus.RUNNING
+    assert running.approval_required is False
+    assert running.approval_status is None
 
 
 def test_step_requires_exactly_one_execution_input_without_mutation(tmp_path) -> None:

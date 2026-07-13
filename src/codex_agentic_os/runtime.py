@@ -54,6 +54,18 @@ class StepStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ApprovalStatus(StrEnum):
+    """Durable operator decision state for an approval-gated step."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class ApprovalRequiredError(ValueError):
+    """Raised when dispatch reaches a step awaiting operator approval."""
+
+
 class StepRecoveryReason(StrEnum):
     """Explicit reasons for failing a running step with an uncertain result."""
 
@@ -87,6 +99,8 @@ class RunStep:
     command: tuple[str, ...] | None = None
     timeout: float | None = None
     message: ProviderMessage | None = None
+    approval_required: bool = False
+    approval_status: ApprovalStatus | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +340,7 @@ class RunCoordinator:
                 payload["timeout"] = step.timeout
             if step.message is not None:
                 payload["message"] = self._message_payload(step.message)
+            self._add_approval_payload(payload, step)
             records.append(("step", step.step_id, StepStatus.CANCELLED, payload))
 
         run_payload: dict[str, object] = {"objective": current.objective}
@@ -373,6 +388,10 @@ class RunCoordinator:
         )
         if next_step is None:
             return None
+        if next_step.approval_status is ApprovalStatus.PENDING:
+            raise ApprovalRequiredError(
+                f"step requires approval before dispatch: {next_step.step_id}"
+            )
         if run.status is RunStatus.QUEUED:
             run_payload: dict[str, object] = {"objective": run.objective}
             if run.agent_id is not None:
@@ -388,6 +407,7 @@ class RunCoordinator:
                 step_payload["timeout"] = next_step.timeout
             if next_step.message is not None:
                 step_payload["message"] = self._message_payload(next_step.message)
+            self._add_approval_payload(step_payload, next_step)
             stored = self.store.put_many(
                 (
                     ("run", run_id, RunStatus.RUNNING, run_payload),
@@ -486,6 +506,7 @@ class RunCoordinator:
         command: Sequence[str] | None = None,
         timeout: float | None = None,
         message: ProviderMessage | Mapping[str, object] | None = None,
+        approval_required: bool = False,
     ) -> RunStep:
         """Append a queued step to a non-terminal run."""
 
@@ -500,9 +521,14 @@ class RunCoordinator:
         normalized_message = self._validate_message(message)
         if (normalized_command is None) == (normalized_message is None):
             raise ValueError("step requires exactly one of command or provider message")
+        if not isinstance(approval_required, bool):
+            raise ValueError("approval_required must be a boolean")
         payload: dict[str, object] = {
             "objective": objective,
+            "approval_required": approval_required,
         }
+        if approval_required:
+            payload["approval_status"] = ApprovalStatus.PENDING
         if normalized_command is not None:
             payload["command"] = list(normalized_command)
         if timeout is not None:
@@ -565,6 +591,7 @@ class RunCoordinator:
             payload["timeout"] = current.timeout
         if current.message is not None:
             payload["message"] = self._message_payload(current.message)
+        self._add_approval_payload(payload, current)
         if output is not None:
             payload["output"] = dict(output)
         run = self.get(current.run_id)
@@ -638,6 +665,7 @@ class RunCoordinator:
             step_payload["timeout"] = current.timeout
         if current.message is not None:
             step_payload["message"] = self._message_payload(current.message)
+        self._add_approval_payload(step_payload, current)
 
         run_status: RunStatus | None = None
         run_output: dict[str, object] | None = None
@@ -711,6 +739,7 @@ class RunCoordinator:
             "message": self._message_payload(current.message),
             "output": output,
         }
+        self._add_approval_payload(step_payload, current)
         final = all(
             candidate.step_id == step_id or candidate.status is StepStatus.SUCCEEDED
             for candidate in self.list_steps(run.run_id)
@@ -778,6 +807,7 @@ class RunCoordinator:
             step_payload["timeout"] = current.timeout
         if current.message is not None:
             step_payload["message"] = self._message_payload(current.message)
+        self._add_approval_payload(step_payload, current)
 
         run_payload: dict[str, object] = {
             "objective": run.objective,
@@ -848,6 +878,7 @@ class RunCoordinator:
             step_payload["timeout"] = current.timeout
         if current.message is not None:
             step_payload["message"] = self._message_payload(current.message)
+        self._add_approval_payload(step_payload, current)
 
         run_payload: dict[str, object] = {
             "objective": run.objective,
@@ -917,6 +948,8 @@ class RunCoordinator:
         command = record.payload.get("command")
         timeout = record.payload.get("timeout")
         message = record.payload.get("message")
+        approval_required = record.payload.get("approval_required", False)
+        approval_status_value = record.payload.get("approval_status")
         if not isinstance(run_id, str) or not run_id:
             raise ValueError(f"step record has invalid run id: {record.key}")
         if not isinstance(position, int) or isinstance(position, bool) or position < 1:
@@ -929,6 +962,19 @@ class RunCoordinator:
         normalized_message = RunCoordinator._validate_message(message)
         if normalized_command is not None and normalized_message is not None:
             raise ValueError(f"step record has ambiguous execution input: {record.key}")
+        if not isinstance(approval_required, bool):
+            raise ValueError(f"step record has invalid approval requirement: {record.key}")
+        if approval_status_value is None:
+            approval_status = None
+        else:
+            try:
+                approval_status = ApprovalStatus(approval_status_value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"step record has invalid approval status: {record.key}"
+                ) from error
+        if approval_required != (approval_status is not None):
+            raise ValueError(f"step record has inconsistent approval state: {record.key}")
         try:
             status = StepStatus(record.status)
         except ValueError as error:
@@ -944,7 +990,17 @@ class RunCoordinator:
             command=normalized_command,
             timeout=timeout,
             message=normalized_message,
+            approval_required=approval_required,
+            approval_status=approval_status,
         )
+
+    @staticmethod
+    def _add_approval_payload(payload: dict[str, object], step: RunStep) -> None:
+        """Preserve approval metadata across durable lifecycle rewrites."""
+
+        payload["approval_required"] = step.approval_required
+        if step.approval_status is not None:
+            payload["approval_status"] = step.approval_status
 
     @staticmethod
     def _message_payload(message: ProviderMessage) -> dict[str, object]:
