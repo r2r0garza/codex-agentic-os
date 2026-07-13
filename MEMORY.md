@@ -1,5 +1,16 @@
 # Automation Memory
 
+- Run: 2026-07-13T05:34:56Z — implementation run.
+- Active milestone: Sprint 8 "Explicit failed-step retry" (#8). Selected its sole unblocked `agent-ready` issue, #67 (classify failed-step retry eligibility in read-only inspection, priority:1).
+- Completed: added pure `RunStep.failure_kind` / `retry_eligible` runtime views derived from existing durable markers. Nonzero command results and provider adapter errors classify as `definite` and eligible; recovered interrupted/timed-out outcomes classify as `uncertain` and ineligible; non-failed steps expose no classification. Existing `run inspect` and `run inspect-step` JSON now present the view for failed steps. Added Plan 0069 and DEVELOPMENT guidance; persistence and mutation paths are unchanged.
+- Verification: activated `.venv`; focused runtime/CLI tests passed; full suite `417 passed`; committed index rebuilt/current (20 files, 601 symbols, 3485 relationships); `git diff --check` clean. Fresh-process CLI UAT classified command/provider/recovery failures as definite/definite/uncertain and confirmed the SQLite database was byte-identical before and after inspection.
+- Implementation commit `10d087c` pushed to `origin/main`; issue #67 auto-closed from its `Closes #67` trailer and received a verification comment. Sprint 8 still has open delivery issues, so retrospective and close-or-remediate are not yet eligible.
+- Blocked review: #68's sole dependency #67 is closed, so `blocked` was removed and `agent-ready` added with evidence. #69 remains correctly blocked on open #68. Sprint 8 has one ready issue: #68.
+- Roadmap horizon: 21 open milestones before and after (Sprint 8 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
+- Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #68. Worktree dirty only for this MEMORY update before commit.
+
+---
+
 - Run: 2026-07-12T00:00:00Z — replenishment run.
 - Active milestone: Sprint 8 "Explicit failed-step retry" (#8). It had 0 issues, so no implementation was permitted; compared its four exit criteria against current evidence in `runtime.py` (`execute_next_step`, `complete_step_from_result`, `fail_step_from_error`, `recover_running_step`) and `cli.py` (`run inspect`/`inspect-step`, no retry command) and confirmed FAILED is a terminal run/step state with no read-only distinction between definite failures and uncertain recovered outcomes, and no retry path exists.
 - Created three milestone-scoped issues mapped to the exit criteria: #67 (classify failed-step retry eligibility in read-only inspection, priority:1, `agent-ready`), #68 (atomically create a new attempt for an eligible failed step, priority:2, `blocked` on #67), and #69 (retry a failed step from the CLI, priority:3, `blocked` on #67/#68). Each excludes automatic retry, backoff, retry budgets, workflow branching, and compensation of external side effects.
@@ -39,14 +50,3 @@
 - Blocked review: #65's dependencies #63/#64 are both closed, so `blocked` was removed and `agent-ready` added with evidence. No open `blocked` issues remain repository-wide. Sprint 7 now has one ready issue: #65.
 - Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
 - Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #65. Worktree dirty only for this MEMORY update before commit.
-
----
-
-- Run: 2026-07-13T03:09:00Z — implementation run.
-- Active milestone: Sprint 7 "Stale-claim run reassignment" (#7). Selected its sole unblocked `agent-ready` issue, #63 (inspect claimed-run owner staleness, priority:1).
-- Completed: added a clock-injectable `RunCoordinator.evaluate_claim_staleness` (new `clock` constructor kwarg mirroring `AgentRegistry`) and durable `ClaimStaleness` view comparing a claimed run's owning agent's `last_seen` heartbeat against an operator-supplied positive threshold and the coordinator's current time (stale = elapsed strictly greater than threshold). Added read-only CLI `run staleness RUN_ID --threshold-seconds N` reporting run, owner, last-seen, threshold, evaluation time, and stale result. Rejects without mutation: unclaimed runs, missing runs, non-positive thresholds, unregistered owners, owners with no recorded heartbeat, and naive/ambiguous heartbeat timestamps. Added Plan 0066 and DEVELOPMENT guidance.
-- Verification: focused runtime staleness suite 11 passed (111 total in `test_runtime.py`); focused CLI staleness suite 7 passed (149 total in `test_run_cli.py`); full suite 398 passed (up from 380); index rebuilt/current (20 files, 582 symbols, 3287 relationships); `git diff --check` clean; live CLI UAT covered fresh/stale evaluation, unclaimed/missing-run/invalid-threshold rejection, and confirmed run revision unchanged across evaluations.
-- Implementation commit `e9b3e24` pushed to `origin/main`; issue #63 auto-closed from its `Closes #63` trailer and received a verification comment.
-- Blocked review: #64 depended only on #63, now closed, so `blocked` was removed and `agent-ready` added with evidence (comment posted explaining the unblock). #65 remains correctly blocked on open #63 and #64 (#65's #63 half is now satisfied, but it still depends on #64). Sprint 7 now has one ready issue: #64.
-- Roadmap horizon: 22 open milestones before and after (Sprint 7 through Sprint 28), above the three-sprint threshold, so no planning handoff occurred and no milestones changed.
-- Final target: `main`; durable MEMORY commit/push pending this entry. Next eligible issue: #64. Worktree dirty only for this MEMORY update before commit.
