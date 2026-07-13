@@ -268,9 +268,20 @@ codex-agentic-os run add-step run-002 step-004 --objective "Run in a fixed sandb
 ```
 
 `run inspect` and `run inspect-step` show the persisted policy without a `sandbox_policy`
-key when a command step has none. Dispatching a step through its persisted policy is
-covered by a follow-up sprint issue; `run execute-next` still requires per-invocation
-sandbox flags today.
+key when a command step has none. Dispatch a step with a persisted policy without
+repeating sandbox flags:
+
+```bash
+API_KEY=secret DEBUG=1 codex-agentic-os run execute-next run-002 \
+  --state-db .codex-agentic-os/state.sqlite3
+```
+
+Environment passthrough names are resolved from the executing process immediately
+before sandbox construction. A missing name fails without starting the queued step,
+and resolved values are redacted from the recorded sandbox command rather than
+persisted. Per-invocation sandbox flags are rejected
+when the next command step has a persisted policy; command steps without one retain
+the legacy `run execute-next --sandbox ...` path.
 
 Append a provider-message step with no trailing command. The provider and message are
 required together; model, system, temperature, and token limit are optional:

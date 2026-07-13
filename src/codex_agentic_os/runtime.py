@@ -210,6 +210,12 @@ class SandboxExecutor(Protocol):
     ) -> ExecutionResult: ...
 
 
+class SandboxPolicyResolver(Protocol):
+    """Build an executor from one persisted sandbox policy at dispatch time."""
+
+    def __call__(self, policy: SandboxPolicy) -> SandboxExecutor: ...
+
+
 class ChatAdapterResolver(Protocol):
     """Resolve the configured adapter for one persisted provider message."""
 
@@ -624,6 +630,7 @@ class RunCoordinator:
         run_id: str,
         executor: SandboxExecutor | None = None,
         *,
+        sandbox_resolver: SandboxPolicyResolver | None = None,
         adapter_resolver: ChatAdapterResolver | None = None,
     ) -> tuple[RunStep, AgentRun] | None:
         """Execute and complete the next queued command or provider message."""
@@ -642,8 +649,25 @@ class RunCoordinator:
         )
         if next_step is None:
             return None
+        resolved_executor = executor
         if next_step.command is not None:
-            if executor is None:
+            if next_step.sandbox_policy is not None:
+                if executor is not None:
+                    raise ValueError(
+                        "persisted sandbox policy conflicts with an injected executor"
+                    )
+                if sandbox_resolver is None:
+                    raise ValueError(
+                        "next command step requires its persisted sandbox policy: "
+                        f"{next_step.step_id}"
+                    )
+                if next_step.approval_status is ApprovalStatus.PENDING:
+                    raise ApprovalRequiredError(
+                        "step requires approval before dispatch: "
+                        f"{next_step.step_id}"
+                    )
+                resolved_executor = sandbox_resolver(next_step.sandbox_policy)
+            elif executor is None:
                 raise ValueError(
                     f"next command step requires a sandbox: {next_step.step_id}"
                 )
@@ -659,8 +683,10 @@ class RunCoordinator:
         if running_step is None:  # Defensive: next_step proved queued above.
             return None
         if running_step.command is not None:
-            assert executor is not None
-            result = executor.execute(running_step.command, timeout=running_step.timeout)
+            assert resolved_executor is not None
+            result = resolved_executor.execute(
+                running_step.command, timeout=running_step.timeout
+            )
             return self.complete_step_from_result(running_step.step_id, result)
 
         assert adapter_resolver is not None and running_step.message is not None
@@ -923,8 +949,18 @@ class RunCoordinator:
         if current.status is not StepStatus.RUNNING:
             raise ValueError(f"step must be running to record a result: {step_id}")
 
+        result_command = list(result.command)
+        if current.sandbox_policy is not None:
+            passthrough_names = frozenset(current.sandbox_policy.env_passthrough)
+            for index, argument in enumerate(result_command):
+                if index == 0 or result_command[index - 1] != "--env":
+                    continue
+                name, separator, _ = argument.partition("=")
+                if separator and name in passthrough_names:
+                    result_command[index] = name
+
         output: dict[str, object] = {
-            "command": list(result.command),
+            "command": result_command,
             "exit_code": result.returncode,
             "stdout": result.stdout,
             "stderr": result.stderr,

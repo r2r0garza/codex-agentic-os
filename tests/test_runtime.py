@@ -1453,6 +1453,38 @@ def test_sandbox_policy_survives_dispatch_and_completion(tmp_path) -> None:
     assert reloaded.sandbox_policy == policy
 
 
+def test_persisted_policy_result_redacts_resolved_environment_values(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Build feature")
+    coordinator.add_step(
+        "run-1", "first", objective="First command", command=("true",),
+        sandbox_policy=SandboxPolicy(
+            kind=SandboxKind.DOCKER, env_passthrough=("API_TOKEN",)
+        ),
+    )
+    coordinator.start_next_step("run-1")
+
+    completed, _ = coordinator.complete_step_from_result(
+        "first",
+        SandboxResult(
+            (
+                "docker", "run", "--env", "API_TOKEN=runtime-only-secret",
+                "python:3.12-slim", "true",
+            ),
+            0,
+            "ok\n",
+            "",
+        ),
+    )
+
+    assert completed.output is not None
+    assert completed.output["command"] == [
+        "docker", "run", "--env", "API_TOKEN", "python:3.12-slim", "true",
+    ]
+    assert b"runtime-only-secret" not in database.read_bytes()
+
+
 def test_sandbox_results_complete_steps_and_run_without_backend_coupling(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Build feature")
@@ -1596,6 +1628,71 @@ def test_execute_next_step_uses_injected_sandbox_and_completes_run(tmp_path) -> 
     assert step.status is StepStatus.SUCCEEDED
     assert step.output["stdout"] == "hello\n"
     assert run.status is RunStatus.SUCCEEDED
+
+
+def test_execute_next_step_resolves_persisted_sandbox_policy_before_dispatch(
+    tmp_path,
+) -> None:
+    policy = SandboxPolicy(
+        kind=SandboxKind.PODMAN,
+        image="custom:1",
+        mounts=(("/host", "/workspace"),),
+        working_dir="/workspace",
+        env_passthrough=("TOKEN",),
+        network_enabled=True,
+    )
+    resolved = []
+    calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            calls.append((tuple(argv), timeout))
+            return SandboxResult(("podman", "run", *argv), 0, "ok\n", "")
+
+    def resolve(received_policy):
+        resolved.append(received_policy)
+        return Executor()
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Execute persisted policy")
+    coordinator.add_step(
+        "run-1", "command", objective="Run", command=("true",), timeout=3,
+        sandbox_policy=policy,
+    )
+
+    step, run = coordinator.execute_next_step(
+        "run-1", sandbox_resolver=resolve
+    )
+
+    assert resolved == [policy]
+    assert calls == [(('true',), 3)]
+    assert step.status is StepStatus.SUCCEEDED
+    assert step.sandbox_policy == policy
+    assert run.status is RunStatus.SUCCEEDED
+
+
+@pytest.mark.parametrize("supply_executor", [False, True])
+def test_execute_next_step_rejects_bypassing_persisted_policy_without_mutation(
+    tmp_path, supply_executor
+) -> None:
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            raise AssertionError("must not execute")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    run = coordinator.create("run-1", objective="Execute persisted policy")
+    step = coordinator.add_step(
+        "run-1", "command", objective="Run", command=("true",),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+    )
+
+    with pytest.raises(ValueError, match="persisted sandbox policy"):
+        coordinator.execute_next_step(
+            "run-1", Executor() if supply_executor else None
+        )
+
+    assert coordinator.get("run-1") == run
+    assert coordinator.get_step("command") == step
 
 
 def test_execute_next_step_records_nonzero_result(tmp_path) -> None:

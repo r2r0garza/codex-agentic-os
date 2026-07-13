@@ -11,10 +11,11 @@ from codex_agentic_os.runtime import (
     ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
+    SandboxPolicy,
     StepRecoveryReason,
     StepStatus,
 )
-from codex_agentic_os.sandboxes import ContainerSandbox, SandboxResult
+from codex_agentic_os.sandboxes import ContainerSandbox, SandboxKind, SandboxResult
 from codex_agentic_os.state import StateStore
 
 
@@ -1726,6 +1727,131 @@ def test_cli_executes_exactly_one_next_step(
     assert payload["steps"][1]["status"] == "queued"
     assert payload["run"]["status"] == ("running" if returncode == 0 else "failed")
     assert "execution" not in payload
+
+
+@pytest.mark.parametrize("network_enabled", [False, True])
+def test_cli_executes_from_persisted_sandbox_policy_and_resolves_worker_env(
+    tmp_path, monkeypatch, capsys, network_enabled
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+    policy = SandboxPolicy(
+        kind=SandboxKind.PODMAN,
+        image="custom:1",
+        mounts=(("/host/repo", "/workspace"),),
+        env_passthrough=("API_TOKEN", "DEBUG"),
+        working_dir="/workspace",
+        network_enabled=network_enabled,
+    )
+    coordinator.add_step(
+        "run-1",
+        "step-1",
+        objective="First",
+        command=("printf", "hello"),
+        timeout=4,
+        sandbox_policy=policy,
+    )
+    coordinator.add_step(
+        "run-1", "step-2", objective="Second", command=("true",),
+        sandbox_policy=policy,
+    )
+    monkeypatch.setenv("API_TOKEN", "worker-secret")
+    monkeypatch.setenv("DEBUG", "1")
+    calls = []
+
+    def execute(self, argv, *, timeout=None):
+        calls.append((self.spec, tuple(argv), timeout))
+        return SandboxResult(("podman", *argv), 0, "hello", "")
+
+    monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
+
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    first_payload = json.loads(capsys.readouterr().out)
+    monkeypatch.setenv("API_TOKEN", "changed-worker-secret")
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert len(calls) == 2
+    spec, command, timeout = calls[0]
+    assert spec.kind is SandboxKind.PODMAN
+    assert spec.image == "custom:1"
+    assert spec.mounts == (("/host/repo", "/workspace"),)
+    assert spec.env == (("API_TOKEN", "worker-secret"), ("DEBUG", "1"))
+    assert spec.working_dir == "/workspace"
+    assert spec.network_enabled is network_enabled
+    assert command == ("printf", "hello")
+    assert timeout == 4
+    assert first_payload["steps"][0]["status"] == "succeeded"
+    assert first_payload["steps"][1]["status"] == "queued"
+    assert calls[1][0].env == (
+        ("API_TOKEN", "changed-worker-secret"),
+        ("DEBUG", "1"),
+    )
+    assert payload["steps"][1]["status"] == "succeeded"
+    assert "worker-secret" not in database.read_bytes().decode("utf-8", errors="ignore")
+    assert "changed-worker-secret" not in database.read_bytes().decode(
+        "utf-8", errors="ignore"
+    )
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--sandbox", "docker"),
+        ("--image", "other:1"),
+        ("--mount", "/other:/workspace"),
+        ("--env", "TOKEN=secret"),
+        ("--workdir", "/other"),
+        ("--network",),
+    ],
+)
+def test_cli_rejects_flags_that_conflict_with_persisted_policy_before_mutation(
+    tmp_path, capsys, flags
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    run = coordinator.create("run-1", objective="Execute durable work")
+    step = coordinator.add_step(
+        "run-1", "step-1", objective="First", command=("true",),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.PODMAN),
+    )
+
+    with pytest.raises(SystemExit) as error:
+        main([
+            "run", "execute-next", "run-1", *flags,
+            "--state-db", str(database),
+        ])
+
+    assert error.value.code == 2
+    assert "per-invocation sandbox flags are not allowed" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == run
+    assert reloaded.get_step("step-1") == step
+
+
+def test_cli_missing_persisted_environment_name_does_not_start_step(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    run = coordinator.create("run-1", objective="Execute durable work")
+    step = coordinator.add_step(
+        "run-1", "step-1", objective="First", command=("true",),
+        sandbox_policy=SandboxPolicy(
+            kind=SandboxKind.DOCKER, env_passthrough=("MISSING_TOKEN",)
+        ),
+    )
+    monkeypatch.delenv("MISSING_TOKEN", raising=False)
+
+    with pytest.raises(SystemExit) as error:
+        main(["run", "execute-next", "run-1", "--state-db", str(database)])
+
+    assert error.value.code == 2
+    assert "environment variable is not set: MISSING_TOKEN" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == run
+    assert reloaded.get_step("step-1") == step
 
 
 def test_cli_execute_next_reports_empty_queue_without_mutation(tmp_path, capsys) -> None:

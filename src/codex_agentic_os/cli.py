@@ -900,7 +900,26 @@ def main(argv: Sequence[str] | None = None) -> None:
                     payload["execution"] = {"attempted": False}
                     print(json.dumps(payload, indent=2, sort_keys=True))
                     return
-                if next_step.command is not None and arguments.sandbox is None:
+                sandbox_flags_supplied = any(
+                    (
+                        arguments.sandbox is not None,
+                        arguments.image is not None,
+                        bool(arguments.mount),
+                        bool(arguments.env),
+                        arguments.workdir is not None,
+                        arguments.network,
+                    )
+                )
+                if next_step.sandbox_policy is not None and sandbox_flags_supplied:
+                    raise ValueError(
+                        "next command step has a persisted sandbox policy; "
+                        "per-invocation sandbox flags are not allowed"
+                    )
+                if (
+                    next_step.command is not None
+                    and next_step.sandbox_policy is None
+                    and arguments.sandbox is None
+                ):
                     raise ValueError("next command step requires --sandbox")
                 kind = (
                     SandboxKind(arguments.sandbox)
@@ -925,29 +944,61 @@ def main(argv: Sequence[str] | None = None) -> None:
                         arguments.run_id, adapter_resolver=resolve_adapter
                     )
                 else:
-                    assert kind is not None
-                    spec = (
-                        SandboxSpec(
-                            kind=kind,
-                            image=arguments.image,
-                            mounts=mounts,
-                            env=env,
-                            working_dir=working_dir,
-                            network_enabled=network_enabled,
+                    if next_step.sandbox_policy is not None:
+
+                        def resolve_sandbox(policy: SandboxPolicy):
+                            missing = tuple(
+                                name
+                                for name in policy.env_passthrough
+                                if name not in os.environ
+                            )
+                            if missing:
+                                raise ValueError(
+                                    "environment variable is not set: "
+                                    + ", ".join(missing)
+                                )
+                            return ContainerSandbox(
+                                SandboxSpec(
+                                    kind=policy.kind,
+                                    image=policy.image,
+                                    mounts=policy.mounts,
+                                    env=tuple(
+                                        (name, os.environ[name])
+                                        for name in policy.env_passthrough
+                                    ),
+                                    working_dir=policy.working_dir,
+                                    network_enabled=policy.network_enabled,
+                                )
+                            )
+
+                        result = coordinator.execute_next_step(
+                            arguments.run_id,
+                            sandbox_resolver=resolve_sandbox,
                         )
-                        if arguments.image is not None
-                        else SandboxSpec(
-                            kind=kind,
-                            mounts=mounts,
-                            env=env,
-                            working_dir=working_dir,
-                            network_enabled=network_enabled,
+                    else:
+                        assert kind is not None
+                        spec = (
+                            SandboxSpec(
+                                kind=kind,
+                                image=arguments.image,
+                                mounts=mounts,
+                                env=env,
+                                working_dir=working_dir,
+                                network_enabled=network_enabled,
+                            )
+                            if arguments.image is not None
+                            else SandboxSpec(
+                                kind=kind,
+                                mounts=mounts,
+                                env=env,
+                                working_dir=working_dir,
+                                network_enabled=network_enabled,
+                            )
                         )
-                    )
-                    result = coordinator.execute_next_step(
-                        arguments.run_id,
-                        ContainerSandbox(spec),
-                    )
+                        result = coordinator.execute_next_step(
+                            arguments.run_id,
+                            ContainerSandbox(spec),
+                        )
                 run_id = arguments.run_id
                 if result is None:
                     payload = _run_payload(coordinator, run_id)
