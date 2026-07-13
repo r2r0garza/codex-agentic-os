@@ -924,13 +924,16 @@ class RunCoordinator:
         if step_status is StepStatus.FAILED:
             run_status = RunStatus.FAILED
             run_output = {"failed_step_id": step_id, "exit_code": result.returncode}
-        elif all(
-            candidate.step_id == step_id
-            or candidate.status is StepStatus.SUCCEEDED
-            for candidate in self.list_steps(run.run_id)
-        ):
-            run_status = RunStatus.SUCCEEDED
-            run_output = {"completed_steps": len(self.list_steps(run.run_id))}
+        else:
+            superseded_step_ids = self._superseded_step_ids(run.run_id)
+            if all(
+                candidate.step_id == step_id
+                or candidate.status is StepStatus.SUCCEEDED
+                or candidate.step_id in superseded_step_ids
+                for candidate in self.list_steps(run.run_id)
+            ):
+                run_status = RunStatus.SUCCEEDED
+                run_output = {"completed_steps": len(self.list_steps(run.run_id))}
 
         if run_status is None:
             step = self.transition_step(step_id, step_status, output=output)
@@ -992,8 +995,11 @@ class RunCoordinator:
             "output": output,
         }
         self._add_approval_payload(step_payload, current)
+        superseded_step_ids = self._superseded_step_ids(run.run_id)
         final = all(
-            candidate.step_id == step_id or candidate.status is StepStatus.SUCCEEDED
+            candidate.step_id == step_id
+            or candidate.status is StepStatus.SUCCEEDED
+            or candidate.step_id in superseded_step_ids
             for candidate in self.list_steps(run.run_id)
         )
         if not final:
@@ -1284,6 +1290,15 @@ class RunCoordinator:
         """Return the non-sensitive execution category persisted in history."""
 
         return "command" if step.command is not None else "provider"
+
+    def _superseded_step_ids(self, run_id: str) -> frozenset[str]:
+        """Return failed attempts durably superseded by explicit retries."""
+
+        return frozenset(
+            entry.retried_step_id
+            for entry in self.list_history(run_id)
+            if entry.transition == "step_retried" and entry.retried_step_id is not None
+        )
 
     @staticmethod
     def _validate_message(

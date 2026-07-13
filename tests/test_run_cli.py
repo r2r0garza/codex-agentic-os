@@ -1123,6 +1123,148 @@ def test_cli_inspection_classifies_failed_step_retry_eligibility(
     assert step["retry_eligible"] is retry_eligible
 
 
+def test_cli_retries_failed_step_and_inspection_links_both_attempts(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Retry durable work")
+    coordinator.add_step(
+        "run-1", "command", objective="Run command", command=("false",), timeout=4
+    )
+    coordinator.start_next_step("run-1")
+    failed_step, failed_run = coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "false"), 17, "", "boom")
+    )
+
+    main([
+        "run", "retry-step", "command", "command-retry",
+        "--expected-step-revision", str(failed_step.revision),
+        "--expected-run-revision", str(failed_run.revision),
+        "--state-db", str(database),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["status"] == "queued"
+    assert payload["steps"][0]["status"] == "failed"
+    assert payload["steps"][0]["retried_into_step_id"] == "command-retry"
+    assert payload["steps"][1]["status"] == "queued"
+    assert payload["steps"][1]["retried_from_step_id"] == "command"
+
+    main(["run", "inspect-step", "command", "--state-db", str(database)])
+    original = json.loads(capsys.readouterr().out)
+    main(["run", "inspect-step", "command-retry", "--state-db", str(database)])
+    retry = json.loads(capsys.readouterr().out)
+    assert original["retried_into_step_id"] == "command-retry"
+    assert retry["retried_from_step_id"] == "command"
+
+
+@pytest.mark.parametrize("rejection", ["uncertain", "non-failed", "stale"])
+def test_cli_retry_rejections_do_not_mutate_state(
+    tmp_path, capsys, rejection
+) -> None:
+    database = tmp_path / f"{rejection}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Reject unsafe retry")
+    coordinator.add_step(
+        "run-1", "command", objective="Run command", command=("false",)
+    )
+    if rejection == "non-failed":
+        step = coordinator.get_step("command")
+        run = coordinator.get("run-1")
+    else:
+        coordinator.start_next_step("run-1")
+        if rejection == "uncertain":
+            step, run = coordinator.recover_running_step(
+                "command", StepRecoveryReason.INTERRUPTED
+            )
+        else:
+            step, run = coordinator.complete_step_from_result(
+                "command", SandboxResult(("docker", "false"), 2, "", "boom")
+            )
+    before_steps = coordinator.list_steps("run-1")
+    before_history = coordinator.list_history("run-1")
+    expected_run_revision = run.revision - 1 if rejection == "stale" else run.revision
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([
+            "run", "retry-step", "command", "command-retry",
+            "--expected-step-revision", str(step.revision),
+            "--expected-run-revision", str(expected_run_revision),
+            "--state-db", str(database),
+        ])
+
+    assert exit_info.value.code == 2
+    error = capsys.readouterr().err
+    assert ("not retry-eligible" if rejection != "stale" else "retry conflict") in error
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == run
+    assert reloaded.list_steps("run-1") == before_steps
+    assert reloaded.list_history("run-1") == before_history
+    assert reloaded.get_step("command-retry") is None
+
+
+def test_cli_retry_uses_approval_execution_and_history_paths_after_restart(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    setup = RunCoordinator(StateStore(database))
+    setup.create("run-1", objective="Retry approved work")
+    setup.add_step(
+        "run-1",
+        "command",
+        objective="Run command",
+        command=("false",),
+        approval_required=True,
+    )
+    setup.approve_step("command")
+    setup.start_next_step("run-1")
+    original, failed_run = setup.complete_step_from_result(
+        "command", SandboxResult(("docker", "false"), 9, "", "boom")
+    )
+
+    main([
+        "run", "retry-step", "command", "command-retry",
+        "--expected-step-revision", str(original.revision),
+        "--expected-run-revision", str(failed_run.revision),
+        "--state-db", str(database),
+    ])
+    capsys.readouterr()
+    main(["run", "approve", "command-retry", "--state-db", str(database)])
+    capsys.readouterr()
+
+    monkeypatch.setattr(
+        "codex_agentic_os.cli.ContainerSandbox.execute",
+        lambda self, argv, timeout=None: SandboxResult(
+            ("docker", *argv), 0, "retried", ""
+        ),
+    )
+    main([
+        "run", "execute-next", "run-1", "--sandbox", "docker",
+        "--state-db", str(database),
+    ])
+    completed = json.loads(capsys.readouterr().out)
+
+    assert completed["run"]["status"] == "succeeded"
+    assert completed["steps"][0]["status"] == "failed"
+    assert completed["steps"][1]["status"] == "succeeded"
+    assert completed["steps"][0]["retried_into_step_id"] == "command-retry"
+    assert completed["steps"][1]["retried_from_step_id"] == "command"
+    assert RunCoordinator(StateStore(database)).get_step("command") == original
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    history = json.loads(capsys.readouterr().out)
+    assert [entry["transition"] for entry in history[-6:]] == [
+        "step_retried",
+        "step_approved",
+        "run_started",
+        "step_started",
+        "step_succeeded",
+        "run_succeeded",
+    ]
+    assert history[-1]["transition"] == "run_succeeded"
+
+
 def test_cli_step_inspection_rejects_missing_state_without_mutation(tmp_path, capsys) -> None:
     missing_database = tmp_path / "missing.sqlite3"
     with pytest.raises(SystemExit) as exit_info:

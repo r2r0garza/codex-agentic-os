@@ -313,9 +313,22 @@ and appends one `step_retried` history entry linking the prior and new attempt
 (`step_id` is the new attempt, `retried_step_id` is the retried one). The original
 failed step's status, output, and history stay byte-for-byte unchanged; a stale
 expected step or run revision is rejected without mutation, and concurrent retries
-of the same failed step produce exactly one winner. There is no CLI command yet,
-no automatic or background retry, no backoff or retry budget, and no compensation
-of external side effects.
+of the same failed step produce exactly one winner.
+
+Perform the same operation explicitly from the CLI, supplying revisions from prior
+inspection and a unique identifier for the new attempt:
+
+```bash
+codex-agentic-os run retry-step command command-retry \
+  --expected-step-revision 3 --expected-run-revision 4
+```
+
+The standard run output shows `retried_into_step_id` on the failed attempt and
+`retried_from_step_id` on the new attempt. A retried approval-required step returns to
+`pending` and must use the existing `run approve` path before execution. Successful
+completion ignores only prior failed attempts proven superseded by durable
+`step_retried` history. There is no automatic or background retry, no backoff or retry
+budget, and no compensation of external side effects.
 
 List durable runs in stable run identifier order without loading their steps or
 modifying runtime state:

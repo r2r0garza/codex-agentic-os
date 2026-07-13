@@ -1860,6 +1860,61 @@ def test_retry_step_creates_new_queued_attempt_and_reopens_run(tmp_path) -> None
     assert running_step.status is StepStatus.RUNNING
 
 
+def test_successful_retry_completes_run_despite_superseded_failed_attempt(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Retry command")
+    coordinator.add_step("run-1", "command", objective="Run", command=("false",))
+    coordinator.start_next_step("run-1")
+    failed_step, failed_run = coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "false"), 1, "", "boom")
+    )
+    coordinator.retry_step(
+        "command", "command-retry",
+        expected_step_revision=failed_step.revision,
+        expected_run_revision=failed_run.revision,
+    )
+    coordinator.start_next_step("run-1")
+
+    retried_step, completed_run = coordinator.complete_step_from_result(
+        "command-retry", SandboxResult(("docker", "false"), 0, "ok", "")
+    )
+
+    assert retried_step.status is StepStatus.SUCCEEDED
+    assert completed_run.status is RunStatus.SUCCEEDED
+    assert coordinator.get_step("command") == failed_step
+    assert coordinator.list_history("run-1")[-1].transition == "run_succeeded"
+
+
+def test_successful_provider_retry_completes_run_after_superseded_failure(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Retry provider")
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Ask model",
+        message=ProviderMessage(provider="ollama", content="Answer"),
+    )
+    coordinator.start_next_step("run-1")
+    failed_step, failed_run = coordinator.fail_step_from_error(
+        "model", RuntimeError("provider unavailable")
+    )
+    coordinator.retry_step(
+        "model", "model-retry",
+        expected_step_revision=failed_step.revision,
+        expected_run_revision=failed_run.revision,
+    )
+    coordinator.start_next_step("run-1")
+
+    retried_step, completed_run = coordinator.complete_step_from_chat_response(
+        "model-retry", ChatResponse("answer", model="local")
+    )
+
+    assert retried_step.status is StepStatus.SUCCEEDED
+    assert completed_run.status is RunStatus.SUCCEEDED
+    assert coordinator.get_step("model") == failed_step
+    assert coordinator.list_history("run-1")[-1].transition == "run_succeeded"
+
+
 def test_retry_step_rejects_uncertain_recovered_step_without_mutation(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Execute command")

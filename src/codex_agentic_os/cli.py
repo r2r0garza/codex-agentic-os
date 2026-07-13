@@ -95,6 +95,10 @@ def _parser() -> argparse.ArgumentParser:
         "reassign-claim",
         help="atomically transfer a demonstrably stale run claim to a replacement agent",
     )
+    retry_step = run_commands.add_parser(
+        "retry-step",
+        help="atomically create a new attempt for one retry-eligible failed step",
+    )
     approve = run_commands.add_parser("approve", help="approve one pending step")
     reject = run_commands.add_parser("reject", help="reject one pending step")
     transition = run_commands.add_parser(
@@ -200,6 +204,20 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="positive staleness threshold in seconds compared against the current owner's heartbeat",
     )
+    retry_step.add_argument("step_id")
+    retry_step.add_argument("new_step_id")
+    retry_step.add_argument(
+        "--expected-step-revision",
+        type=int,
+        required=True,
+        help="the failed step's current revision, as read from prior inspection",
+    )
+    retry_step.add_argument(
+        "--expected-run-revision",
+        type=int,
+        required=True,
+        help="the failed run's current revision, as read from prior inspection",
+    )
     for command in (
         create,
         claim,
@@ -208,6 +226,7 @@ def _parser() -> argparse.ArgumentParser:
         add_step,
         list_runs,
         reassign_claim,
+        retry_step,
     ):
         command.add_argument(
             "--state-db",
@@ -369,9 +388,26 @@ def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
         raise ValueError(f"run does not exist: {run_id}")
     run_data = asdict(run)
     run_data["status"] = run.status.value
+    retry_lineage = {
+        entry.retried_step_id: entry.step_id
+        for entry in coordinator.list_history(run_id)
+        if entry.transition == "step_retried"
+        and entry.retried_step_id is not None
+        and entry.step_id is not None
+    }
+    retried_from = {
+        new_step_id: prior_step_id
+        for prior_step_id, new_step_id in retry_lineage.items()
+    }
     steps = []
     for step in coordinator.list_steps(run_id):
-        steps.append(_step_payload(step))
+        steps.append(
+            _step_payload(
+                step,
+                retried_from_step_id=retried_from.get(step.step_id),
+                retried_into_step_id=retry_lineage.get(step.step_id),
+            )
+        )
     return {"run": run_data, "steps": steps}
 
 
@@ -423,7 +459,12 @@ def _staleness_payload(evaluation: ClaimStaleness) -> dict[str, object]:
     return asdict(evaluation)
 
 
-def _step_payload(step: RunStep) -> dict[str, object]:
+def _step_payload(
+    step: RunStep,
+    *,
+    retried_from_step_id: str | None = None,
+    retried_into_step_id: str | None = None,
+) -> dict[str, object]:
     """Return the standard JSON-compatible view of one durable step."""
 
     payload = asdict(step)
@@ -438,6 +479,10 @@ def _step_payload(step: RunStep) -> dict[str, object]:
             None if step.failure_kind is None else step.failure_kind.value
         )
         payload["retry_eligible"] = step.retry_eligible
+    if retried_from_step_id is not None:
+        payload["retried_from_step_id"] = retried_from_step_id
+    if retried_into_step_id is not None:
+        payload["retried_into_step_id"] = retried_into_step_id
     return payload
 
 
@@ -608,7 +653,38 @@ def main(argv: Sequence[str] | None = None) -> None:
                 step = coordinator.get_step(arguments.step_id)
                 if step is None:
                     raise ValueError(f"step does not exist: {arguments.step_id}")
-                print(json.dumps(_step_payload(step), indent=2, sort_keys=True))
+                retry_entries = tuple(
+                    entry
+                    for entry in coordinator.list_history(step.run_id)
+                    if entry.transition == "step_retried"
+                )
+                retried_from_step_id = next(
+                    (
+                        entry.retried_step_id
+                        for entry in retry_entries
+                        if entry.step_id == step.step_id
+                    ),
+                    None,
+                )
+                retried_into_step_id = next(
+                    (
+                        entry.step_id
+                        for entry in retry_entries
+                        if entry.retried_step_id == step.step_id
+                    ),
+                    None,
+                )
+                print(
+                    json.dumps(
+                        _step_payload(
+                            step,
+                            retried_from_step_id=retried_from_step_id,
+                            retried_into_step_id=retried_into_step_id,
+                        ),
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
                 return
             elif arguments.run_command == "history":
                 if coordinator.get(arguments.run_id) is None:
@@ -653,6 +729,17 @@ def main(argv: Sequence[str] | None = None) -> None:
                     threshold_seconds=arguments.threshold_seconds,
                 )
                 run_id = arguments.run_id
+            elif arguments.run_command == "retry-step":
+                step = coordinator.get_step(arguments.step_id)
+                if step is None:
+                    raise ValueError(f"step does not exist: {arguments.step_id}")
+                coordinator.retry_step(
+                    arguments.step_id,
+                    arguments.new_step_id,
+                    expected_step_revision=arguments.expected_step_revision,
+                    expected_run_revision=arguments.expected_run_revision,
+                )
+                run_id = step.run_id
             elif arguments.run_command in {"approve", "reject"}:
                 step = coordinator.get_step(arguments.step_id)
                 if step is None:
@@ -807,7 +894,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     detail=arguments.detail,
                 )
                 run_id = step.run_id
-            elif arguments.run_command in {"approve", "reject"}:
+            elif arguments.run_command in {"approve", "reject", "retry-step"}:
                 pass
             else:
                 run_id = arguments.run_id
