@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -2127,3 +2128,187 @@ def test_cli_run_staleness_rejects_non_positive_threshold_without_mutation(
     assert exit_info.value.code == 2
     assert "threshold must be a positive" in capsys.readouterr().err
     assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
+def test_cli_run_reassign_claim_transfers_ownership_and_records_provenance(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    main(["agent", "register", "agent-1", "--state-db", str(database)])
+    main(["agent", "register", "agent-2", "--state-db", str(database)])
+    main([
+        "run", "create", "run-1", "--objective", "Build feature",
+        "--agent-id", "agent-1", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+
+    main([
+        "run", "reassign-claim", "run-1", "agent-2",
+        "--expected-agent-id", "agent-1", "--expected-revision", "1",
+        "--threshold-seconds", "1e-9", "--state-db", str(database),
+    ])
+    reassigned = json.loads(capsys.readouterr().out)
+
+    assert reassigned["run"]["agent_id"] == "agent-2"
+    assert reassigned["run"]["revision"] == 2
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    history = json.loads(capsys.readouterr().out)
+    assert history[-1]["transition"] == "claim_reassigned"
+    assert history[-1]["agent_id"] == "agent-2"
+    assert RunCoordinator(StateStore(database)).get("run-1").agent_id == "agent-2"
+
+
+def test_cli_run_reassign_claim_preserves_running_step_state(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    main(["agent", "register", "agent-1", "--state-db", str(database)])
+    main(["agent", "register", "agent-2", "--state-db", str(database)])
+    main([
+        "run", "create", "run-1", "--objective", "Build feature",
+        "--agent-id", "agent-1", "--state-db", str(database),
+    ])
+    main([
+        "run", "add-step", "run-1", "step-1", "--objective", "Execute",
+        "--state-db", str(database), "--", "true",
+    ])
+    main(["run", "transition", "run-1", "running", "--state-db", str(database)])
+    main([
+        "run", "transition-step", "step-1", "running", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+    original_run = RunCoordinator(StateStore(database)).get("run-1")
+    original_step = RunCoordinator(StateStore(database)).get_step("step-1")
+    assert original_run.status is RunStatus.RUNNING
+
+    main([
+        "run", "reassign-claim", "run-1", "agent-2",
+        "--expected-agent-id", "agent-1", "--expected-revision",
+        str(original_run.revision), "--threshold-seconds", "1e-9",
+        "--state-db", str(database),
+    ])
+    capsys.readouterr()
+
+    reloaded_run = RunCoordinator(StateStore(database)).get("run-1")
+    reloaded_step = RunCoordinator(StateStore(database)).get_step("step-1")
+    assert reloaded_run.agent_id == "agent-2"
+    assert reloaded_run.status is RunStatus.RUNNING
+    assert reloaded_step == original_step
+
+
+def test_cli_run_reassign_claim_rejects_fresh_owner_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    main(["agent", "register", "agent-1", "--state-db", str(database)])
+    main(["agent", "register", "agent-2", "--state-db", str(database)])
+    main([
+        "run", "create", "run-1", "--objective", "Build feature",
+        "--agent-id", "agent-1", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+    original = RunCoordinator(StateStore(database)).get("run-1")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([
+            "run", "reassign-claim", "run-1", "agent-2",
+            "--expected-agent-id", "agent-1", "--expected-revision", "1",
+            "--threshold-seconds", "999999999", "--state-db", str(database),
+        ])
+
+    assert exit_info.value.code == 2
+    assert "run claim cannot be reassigned: run-1" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == original
+
+
+def test_cli_run_reassign_claim_rejects_stale_expected_revision_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    main(["agent", "register", "agent-1", "--state-db", str(database)])
+    main(["agent", "register", "agent-2", "--state-db", str(database)])
+    main(["agent", "register", "agent-3", "--state-db", str(database)])
+    main([
+        "run", "create", "run-1", "--objective", "Build feature",
+        "--agent-id", "agent-1", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+
+    main([
+        "run", "reassign-claim", "run-1", "agent-2",
+        "--expected-agent-id", "agent-1", "--expected-revision", "1",
+        "--threshold-seconds", "1e-9", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+    winner = RunCoordinator(StateStore(database)).get("run-1")
+    assert winner.agent_id == "agent-2"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([
+            "run", "reassign-claim", "run-1", "agent-3",
+            "--expected-agent-id", "agent-1", "--expected-revision", "1",
+            "--threshold-seconds", "1e-9", "--state-db", str(database),
+        ])
+
+    assert exit_info.value.code == 2
+    assert "run claim cannot be reassigned: run-1" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).get("run-1") == winner
+
+
+def test_cli_run_reassign_claim_rejects_missing_run_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Unrelated")
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([
+            "run", "reassign-claim", "missing", "agent-1",
+            "--expected-agent-id", "agent-0", "--expected-revision", "1",
+            "--threshold-seconds", "60", "--state-db", str(database),
+        ])
+
+    assert exit_info.value.code == 2
+    assert "run does not exist: missing" in capsys.readouterr().err
+
+
+def test_cli_run_reassign_claim_produces_exactly_one_winner_under_contention(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    main(["agent", "register", "agent-1", "--state-db", str(database)])
+    main(["agent", "register", "agent-2", "--state-db", str(database)])
+    main(["agent", "register", "agent-3", "--state-db", str(database)])
+    main([
+        "run", "create", "run-1", "--objective", "Build feature",
+        "--agent-id", "agent-1", "--state-db", str(database),
+    ])
+    capsys.readouterr()
+
+    def attempt(replacement: str) -> bool:
+        try:
+            main([
+                "run", "reassign-claim", "run-1", replacement,
+                "--expected-agent-id", "agent-1", "--expected-revision", "1",
+                "--threshold-seconds", "1e-9", "--state-db", str(database),
+            ])
+            return True
+        except SystemExit:
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(attempt, ("agent-2", "agent-3")))
+    capsys.readouterr()
+
+    assert results.count(True) == 1
+    final = RunCoordinator(StateStore(database)).get("run-1")
+    assert final.agent_id in ("agent-2", "agent-3")
+    assert final.revision == 2
+    reassignment_entries = [
+        entry
+        for entry in RunCoordinator(StateStore(database)).list_history("run-1")
+        if entry.transition == "claim_reassigned"
+    ]
+    assert len(reassignment_entries) == 1
+    assert reassignment_entries[0].agent_id == final.agent_id

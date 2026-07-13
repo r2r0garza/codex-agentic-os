@@ -91,6 +91,10 @@ def _parser() -> argparse.ArgumentParser:
         "staleness",
         help="report whether a claimed run's owning agent is stale relative to a threshold",
     )
+    reassign_claim = run_commands.add_parser(
+        "reassign-claim",
+        help="atomically transfer a demonstrably stale run claim to a replacement agent",
+    )
     approve = run_commands.add_parser("approve", help="approve one pending step")
     reject = run_commands.add_parser("reject", help="reject one pending step")
     transition = run_commands.add_parser(
@@ -177,7 +181,34 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="include only runs without an assigned agent",
     )
-    for command in (create, claim, release, claim_next, add_step, list_runs):
+    reassign_claim.add_argument("run_id")
+    reassign_claim.add_argument("replacement_agent_id")
+    reassign_claim.add_argument(
+        "--expected-agent-id",
+        required=True,
+        help="the run's current owning agent, as read from prior inspection",
+    )
+    reassign_claim.add_argument(
+        "--expected-revision",
+        type=int,
+        required=True,
+        help="the run's current revision, as read from prior inspection",
+    )
+    reassign_claim.add_argument(
+        "--threshold-seconds",
+        type=float,
+        required=True,
+        help="positive staleness threshold in seconds compared against the current owner's heartbeat",
+    )
+    for command in (
+        create,
+        claim,
+        release,
+        claim_next,
+        add_step,
+        list_runs,
+        reassign_claim,
+    ):
         command.add_argument(
             "--state-db",
             type=Path,
@@ -606,6 +637,17 @@ def main(argv: Sequence[str] | None = None) -> None:
                     )
                 )
                 return
+            elif arguments.run_command == "reassign-claim":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                coordinator.reassign_stale_claim(
+                    arguments.run_id,
+                    arguments.replacement_agent_id,
+                    expected_agent_id=arguments.expected_agent_id,
+                    expected_revision=arguments.expected_revision,
+                    threshold_seconds=arguments.threshold_seconds,
+                )
+                run_id = arguments.run_id
             elif arguments.run_command in {"approve", "reject"}:
                 step = coordinator.get_step(arguments.step_id)
                 if step is None:

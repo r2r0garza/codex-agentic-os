@@ -351,9 +351,31 @@ codex-agentic-os run staleness run-002 --threshold-seconds 300 --state-db /path/
 
 Evaluation is read-only. Unclaimed runs, unregistered owners, owners without a
 recorded heartbeat, non-positive thresholds, and naive/ambiguous heartbeat
-timestamps are rejected without mutation. There is no reassignment, background
-monitoring, or automatic policy; see `run staleness` as the inspection step
-that precedes those future capabilities.
+timestamps are rejected without mutation. There is no background monitoring or
+automatic policy; `run staleness` only reports the inspection an operator uses
+before deciding whether to reassign.
+
+Transfer a demonstrably stale claim to a registered replacement agent. The
+command requires the replacement agent id, the run's currently expected owner
+and revision (as read from prior inspection), and an explicit positive
+staleness threshold; it transfers ownership only through the runtime's atomic
+compare-and-swap path and prints the resulting sanitized run:
+
+```bash
+codex-agentic-os run reassign-claim run-002 agent-b \
+    --expected-agent-id agent-a --expected-revision 3 --threshold-seconds 300
+codex-agentic-os run reassign-claim run-002 agent-b \
+    --expected-agent-id agent-a --expected-revision 3 --threshold-seconds 300 \
+    --state-db /path/to/state.sqlite3
+```
+
+A not-yet-stale owner, a stale expected owner/revision (lost contention), or
+an unregistered replacement fail with no mutation. A running run's step
+records are never touched; only run ownership and revision advance, and one
+`claim_reassigned` history entry is appended and visible through `run
+history`. There is no automatic or background reassignment, recovery or
+retry of a running step, notification, or capacity policy — an operator must
+invoke this command explicitly for each transfer.
 
 Cancel a queued or running run from the CLI. The command preserves completed steps,
 cancels queued or running steps, and prints the resulting durable state as JSON:
