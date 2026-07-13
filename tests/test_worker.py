@@ -273,6 +273,176 @@ def test_run_worker_idles_without_busy_spinning_when_no_work_available(
     assert sleeper.calls == [2.5, 2.5, 2.5]
 
 
+def test_run_worker_skips_approval_blocked_run_and_executes_another_eligible_run(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-blocked", objective="Needs approval", agent_id="agent-1")
+    coordinator.add_step(
+        "run-blocked",
+        "gated",
+        objective="Gated",
+        command=("true",),
+        approval_required=True,
+    )
+    coordinator.create("run-ready", objective="Deliver", agent_id="agent-1")
+    coordinator.add_step("run-ready", "only", objective="Only", command=("true",))
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        executor=_Executor(),
+        should_continue=_bounded_should_continue(4),
+    )
+
+    assert "run-ready" in summary.claimed_run_ids
+    assert summary.executed_step_ids == ("only",)
+    ready_run = coordinator.get("run-ready")
+    assert ready_run is not None and ready_run.status is RunStatus.SUCCEEDED
+    blocked_run = coordinator.get("run-blocked")
+    assert blocked_run is not None and blocked_run.status is RunStatus.QUEUED
+    gated_step = coordinator.get_step("gated")
+    assert gated_step is not None and gated_step.status is StepStatus.QUEUED
+
+
+def test_run_worker_skips_unresolved_context_reference_step_without_mutation(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-1", objective="Deliver", agent_id="agent-1")
+    coordinator.add_step("run-1", "first", objective="First", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "referencing",
+        objective="Referencing",
+        message=ProviderMessage("local", "Use the results"),
+        context_step_ids=("first",),
+    )
+    coordinator.cancel_step("first")
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        executor=_Executor(),
+        adapter_resolver=lambda _: _Adapter(),
+        should_continue=_bounded_should_continue(2),
+    )
+
+    assert summary.executed_step_ids == ()
+    referencing = coordinator.get_step("referencing")
+    assert referencing is not None and referencing.status is StepStatus.QUEUED
+    first = coordinator.get_step("first")
+    assert first is not None and first.status is StepStatus.CANCELLED
+    run = coordinator.get("run-1")
+    assert run is not None and run.status is RunStatus.QUEUED
+
+
+def test_run_worker_idles_deterministically_when_only_eligible_run_is_blocked(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-blocked", objective="Needs approval", agent_id="agent-1")
+    coordinator.add_step(
+        "run-blocked",
+        "gated",
+        objective="Gated",
+        command=("true",),
+        approval_required=True,
+    )
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    clock = _Clock(start)
+    sleeper = _CountingSleeper(clock)
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=2,
+        executor=_Executor(),
+        clock=clock,
+        sleeper=sleeper,
+        should_continue=_bounded_should_continue(9),
+    )
+
+    assert summary.executed_step_ids == ()
+    assert sleeper.calls == [2, 2, 2]
+    blocked_run = coordinator.get("run-blocked")
+    assert blocked_run is not None and blocked_run.status is RunStatus.QUEUED
+
+
+def test_run_worker_resumes_blocked_run_on_a_later_poll_cycle(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-1", objective="Needs approval", agent_id="agent-1")
+    step = coordinator.add_step(
+        "run-1",
+        "gated",
+        objective="Gated",
+        command=("true",),
+        approval_required=True,
+    )
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    clock = _Clock(start)
+    sleeper = _CountingSleeper(clock)
+
+    # First bounded run: only blocked work exists, so the worker idles.
+    run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=2,
+        executor=_Executor(),
+        clock=clock,
+        sleeper=sleeper,
+        should_continue=_bounded_should_continue(3),
+    )
+    assert sleeper.calls == [2]
+    blocked_run = coordinator.get("run-1")
+    assert blocked_run is not None and blocked_run.status is RunStatus.QUEUED
+
+    # Approval arrives out of band between worker invocations.
+    coordinator.approve_step(step.step_id)
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=2,
+        executor=_Executor(),
+        clock=clock,
+        sleeper=sleeper,
+        should_continue=_bounded_should_continue(2),
+    )
+
+    assert summary.executed_step_ids == ("gated",)
+    run = coordinator.get("run-1")
+    assert run is not None and run.status is RunStatus.SUCCEEDED
+
+
 def test_run_worker_command_step_uses_persisted_sandbox_policy_resolver(
     tmp_path,
 ) -> None:

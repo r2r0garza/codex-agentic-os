@@ -11,7 +11,9 @@ from .runtime import (
     Agent,
     AgentRegistry,
     AgentRun,
+    ApprovalRequiredError,
     ChatAdapterResolver,
+    ContextReferencesUnresolvedError,
     RunCoordinator,
     RunStatus,
     SandboxExecutor,
@@ -46,15 +48,25 @@ def register_or_resume_agent(
 
 
 def _claim_eligible_run(
-    coordinator: RunCoordinator, agent_id: str
+    coordinator: RunCoordinator,
+    agent_id: str,
+    *,
+    exclude: frozenset[str] = frozenset(),
 ) -> AgentRun | None:
-    """Return a queued run already assigned to ``agent_id``, else claim the next eligible run."""
+    """Return a non-terminal run already assigned to ``agent_id``, else claim the next eligible run.
+
+    ``exclude`` skips runs already known to be blocked on an approval or
+    eligibility gate this poll cycle, so the worker can move on to other
+    assigned or claimable work instead of retrying the same blocked run.
+    """
 
     assigned = next(
         (
             run
             for run in coordinator.list_runs()
-            if run.agent_id == agent_id and run.status is RunStatus.QUEUED
+            if run.agent_id == agent_id
+            and run.status not in _TERMINAL_RUN_STATUSES
+            and run.run_id not in exclude
         ),
         None,
     )
@@ -104,6 +116,7 @@ def run_worker(
     last_heartbeat = clock()
     claimed_run_ids: list[str] = []
     executed_step_ids: list[str] = []
+    blocked_run_ids: set[str] = set()
 
     def heartbeat_if_due() -> None:
         nonlocal last_heartbeat
@@ -114,21 +127,29 @@ def run_worker(
 
     while should_continue():
         heartbeat_if_due()
-        run = _claim_eligible_run(coordinator, agent_id)
+        run = _claim_eligible_run(
+            coordinator, agent_id, exclude=frozenset(blocked_run_ids)
+        )
         if run is None:
             sleeper(poll_interval)
+            blocked_run_ids.clear()
             continue
         if run.run_id not in claimed_run_ids:
             claimed_run_ids.append(run.run_id)
         progressed = False
+        blocked = False
         while should_continue():
             heartbeat_if_due()
-            result = coordinator.execute_next_step(
-                run.run_id,
-                executor,
-                sandbox_resolver=sandbox_resolver,
-                adapter_resolver=adapter_resolver,
-            )
+            try:
+                result = coordinator.execute_next_step(
+                    run.run_id,
+                    executor,
+                    sandbox_resolver=sandbox_resolver,
+                    adapter_resolver=adapter_resolver,
+                )
+            except (ApprovalRequiredError, ContextReferencesUnresolvedError):
+                blocked = True
+                break
             if result is None:
                 break
             step, updated_run = result
@@ -136,8 +157,12 @@ def run_worker(
             progressed = True
             if updated_run.status in _TERMINAL_RUN_STATUSES:
                 break
+        if blocked:
+            blocked_run_ids.add(run.run_id)
+            continue
         if not progressed:
             sleeper(poll_interval)
+            blocked_run_ids.clear()
 
     return WorkerRunSummary(
         agent_id=agent_id,

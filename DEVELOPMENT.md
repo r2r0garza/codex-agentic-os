@@ -556,10 +556,18 @@ persisted sandbox policy — as with `run execute-next`, a command step without 
 fails through the existing explicit error path rather than receiving worker-supplied
 flags. Provider-message steps resolve an adapter from the step's declared provider
 and model, identically to `run execute-next`. Completed step and run outcomes are
-visible from a separate process via `run inspect` and `run history`. The worker
-does not yet skip approval-gated or context-unresolved steps, dispatch from
-anything but a persisted sandbox policy, or handle interruption cleanly; those are
-tracked as follow-up Sprint 12 work.
+visible from a separate process via `run inspect` and `run history`.
+
+When the next queued step on a claimed run is approval-gated or has an unresolved
+`context_step_ids` reference, the worker leaves that step and run untouched — it
+does not call the execution backend — and moves on to another assigned or
+claimable run instead of raising or retrying the same blocked step in a tight
+loop. If no other eligible work exists, the worker idles for exactly one
+`poll-interval` sleep before re-checking, so a step that was blocked only because
+an earlier step hadn't finished, or an operator decision was still pending, is
+retried automatically on a later poll cycle once state changes out of band (for
+example, `run approve`). The worker does not yet handle interruption
+cleanly; that remains tracked as follow-up Sprint 12 work.
 
 Inspect declared capabilities:
 
