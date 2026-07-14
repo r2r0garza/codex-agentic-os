@@ -90,6 +90,9 @@ def _parser() -> argparse.ArgumentParser:
             "a durable plan draft, queuing no steps"
         ),
     )
+    inspect_plan = run_commands.add_parser(
+        "inspect-plan", help="show one durable plan draft, read-only"
+    )
     list_runs = run_commands.add_parser("list", help="list durable runs")
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
     history = run_commands.add_parser(
@@ -216,6 +219,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     plan.add_argument(
         "--max-tokens", type=int, help="optional positive response token limit"
+    )
+    inspect_plan.add_argument("plan_id")
+    inspect_plan.add_argument(
+        "--state-db",
+        type=Path,
+        default=Path(".codex-agentic-os/state.sqlite3"),
+        help="path to the runtime state database",
     )
     list_runs.add_argument(
         "--status",
@@ -811,6 +821,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             read_only = arguments.run_command in {
                 "inspect",
                 "inspect-step",
+                "inspect-plan",
                 "list",
                 "history",
                 "approvals",
@@ -933,6 +944,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                     max_tokens=arguments.max_tokens,
                     objective=arguments.objective,
                 )
+                print(json.dumps(_plan_draft_payload(draft), indent=2, sort_keys=True))
+                return
+            elif arguments.run_command == "inspect-plan":
+                draft = coordinator.get_plan(arguments.plan_id)
+                if draft is None:
+                    raise ValueError(f"plan does not exist: {arguments.plan_id}")
                 print(json.dumps(_plan_draft_payload(draft), indent=2, sort_keys=True))
                 return
             elif arguments.run_command == "list":

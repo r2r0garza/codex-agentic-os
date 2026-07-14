@@ -932,6 +932,17 @@ class RunCoordinator:
             raise ValueError(f"plan already exists: {plan_id}") from error
         return self._plan_draft(record)
 
+    def get_plan(self, plan_id: str) -> PlanDraft | None:
+        """Return a durable plan draft when it exists, read-only.
+
+        Covers both a reviewable ``draft`` and an ``invalid`` malformed
+        proposal recorded by :meth:`propose_plan`; distinguish them via the
+        returned draft's ``status``/``error``. Never mutates state.
+        """
+
+        record = self.store.get("plan", plan_id)
+        return None if record is None else self._plan_draft(record)
+
     def get_step(self, step_id: str) -> RunStep | None:
         """Return a step when it exists."""
 

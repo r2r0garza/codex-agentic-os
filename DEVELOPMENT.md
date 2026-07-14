@@ -362,6 +362,18 @@ malformed or unparseable proposal is instead persisted as an `invalid` plan carr
 raw provider response as evidence, and the command fails explicitly (exit code 2) naming
 the recorded plan id; the run's step queue is unchanged either way.
 
+Inspect a durable plan draft without modifying runtime state, showing every proposed
+step's objective and execution kind in stable order:
+
+```bash
+codex-agentic-os run inspect-plan draft-1 --state-db .codex-agentic-os/state.sqlite3
+```
+
+The same JSON shape `run plan` prints on success is reused here, so a `draft` status is
+reviewable and an `invalid` status carries its recorded error and raw evidence. A plan id
+with no durable record fails explicitly (exit code 2) without creating a database, draft,
+run, or step.
+
 Inspect a durable run and its ordered steps without modifying runtime state:
 
 ```bash

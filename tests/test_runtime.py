@@ -13,6 +13,7 @@ from codex_agentic_os.runtime import (
     ClaimStaleness,
     ContextReferencesUnresolvedError,
     PLAN_PROPOSAL_SYSTEM_PROMPT,
+    PlanDraft,
     PlanProposalError,
     PlanStepProposal,
     ProviderMessage,
@@ -3076,3 +3077,81 @@ def test_propose_plan_rejects_terminal_run_without_dispatching(tmp_path) -> None
             adapter_resolver=lambda message: (_ for _ in ()).throw(AssertionError("no dispatch")),
             provider="ollama",
         )
+
+
+def test_get_plan_returns_a_reviewable_draft_in_stable_order(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(
+                content=(
+                    '{"steps": ['
+                    '{"objective": "Write the fix", "execution_kind": "command"}, '
+                    '{"objective": "Summarize the change", "execution_kind": "provider"}'
+                    "]}"
+                ),
+                model="served-model",
+                raw={"id": "r1"},
+            )
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    coordinator.propose_plan(
+        "run-1", "plan-1", adapter_resolver=lambda message: Adapter(), provider="ollama"
+    )
+
+    draft = coordinator.get_plan("plan-1")
+
+    assert draft == PlanDraft(
+        plan_id="plan-1",
+        run_id="run-1",
+        status="draft",
+        revision=1,
+        steps=(
+            PlanStepProposal(objective="Write the fix", execution_kind="command"),
+            PlanStepProposal(objective="Summarize the change", execution_kind="provider"),
+        ),
+        evidence={
+            "provider": "ollama",
+            "requested_model": None,
+            "response_model": "served-model",
+            "content": draft.evidence["content"],
+            "raw": {"id": "r1"},
+        },
+        error=None,
+    )
+
+    # Read-only: no run or step state was created or changed by inspection.
+    assert coordinator.list_steps("run-1") == ()
+    assert coordinator.get("run-1").status is RunStatus.QUEUED
+
+
+def test_get_plan_returns_an_invalid_draft_with_recorded_error(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(content="not json at all", model="served-model")
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    with pytest.raises(PlanProposalError):
+        coordinator.propose_plan(
+            "run-1", "plan-1", adapter_resolver=lambda message: Adapter(), provider="ollama"
+        )
+
+    draft = coordinator.get_plan("plan-1")
+
+    assert draft.plan_id == "plan-1"
+    assert draft.status == "invalid"
+    assert draft.steps == ()
+    assert draft.error == "plan proposal is not valid JSON: Expecting value: line 1 column 1 (char 0)"
+    assert draft.evidence["content"] == "not json at all"
+
+
+def test_get_plan_returns_none_for_an_absent_plan(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    assert coordinator.get_plan("missing") is None

@@ -3180,3 +3180,117 @@ def test_cli_plan_rejects_missing_run_before_dispatch(tmp_path, monkeypatch, cap
 
     assert exit_info.value.code == 2
     assert "run does not exist: missing-run" in capsys.readouterr().err
+
+
+def test_cli_inspect_plan_prints_a_reviewable_draft_without_mutation(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    proposal_content = (
+        '{"steps": ['
+        '{"objective": "Write the fix", "execution_kind": "command"}, '
+        '{"objective": "Summarize the change", "execution_kind": "provider"}'
+        "]}"
+    )
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(
+                content=proposal_content, model="served-model", raw={"id": "plan-1"}
+            )
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+    main(
+        [
+            "run", "plan", "run-1", "draft-1",
+            "--provider", "ollama", "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    main(["run", "inspect-plan", "draft-1", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "plan_id": "draft-1",
+        "run_id": "run-1",
+        "status": "draft",
+        "revision": 1,
+        "steps": [
+            {"objective": "Write the fix", "execution_kind": "command"},
+            {"objective": "Summarize the change", "execution_kind": "provider"},
+        ],
+        "evidence": {
+            "provider": "ollama",
+            "requested_model": None,
+            "response_model": "served-model",
+            "content": proposal_content,
+            "raw": {"id": "plan-1"},
+        },
+    }
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.list_steps("run-1") == ()
+    assert reloaded.get("run-1").status is RunStatus.QUEUED
+    assert reloaded.get_plan("draft-1").revision == 1
+
+
+def test_cli_inspect_plan_prints_an_invalid_draft_with_recorded_error(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(content="not json at all", model="served-model")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "run", "plan", "run-1", "draft-1",
+                "--provider", "ollama", "--state-db", str(database),
+            ]
+        )
+    capsys.readouterr()
+
+    main(["run", "inspect-plan", "draft-1", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "invalid"
+    assert payload["steps"] == []
+    assert "plan proposal is not valid JSON" in payload["error"]
+    assert payload["evidence"]["content"] == "not json at all"
+
+
+def test_cli_inspect_plan_rejects_a_missing_plan(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "inspect-plan", "missing", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "plan does not exist: missing" in capsys.readouterr().err
+
+
+def test_cli_inspect_plan_rejects_missing_database_without_creating_it(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "inspect-plan", "draft-1", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not database.exists()
