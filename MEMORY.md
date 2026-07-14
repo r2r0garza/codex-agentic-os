@@ -5,7 +5,11 @@
 - Completed: delegation history now persists `delegated_run_id` on the parent's `step_delegated` entry and `parent_run_id`/`parent_step_id` on the child's `created` entry through additive SQLite columns and the existing read-only CLI/API payload. Declaration rejects delegation to the current run's assigned agent or any assigned ancestor agent before step append, while leaving unassigned edges valid; malformed pre-existing parent cycles also reject. Added Plan 0113 and documented the contract.
 - Live review: `scripts/delegation-interruption-review.sh` passed with two registered agents and a Docker command step: the parent worker dispatched the child, was terminated, the child worker completed, and a fresh parent-worker process reconciled the terminal outcome; final inspection and history assertions passed from both directions.
 - Verification: activated `.venv`; 29 focused delegation tests passed; full `pytest` 793 passed (up from 791); refreshed index 27 files / 1146 symbols / 7040 relationships; `index check` current; `git diff --check` clean.
-- Durable state pending: implementation changes are ready to commit/push and close #124. After closure, run the Sprint 20 close-or-remediate retrospective. Target `main`; unrelated untracked `.claude/` remains untouched.
+- Durable state: implementation commit `fb05826` pushed to `origin/main`; #124 closed with commit and verification evidence.
+- Retrospective: created and closed #125. All four Sprint 20 exit criteria passed against #121–#124, Plans 0110–0113, Decisions 0005/0006, focused/full tests, DEVELOPMENT.md, and the real two-agent worker/Docker interruption review. Sprint 20 closed with no remediation; Sprint 21 "Durable model tool calling" is now active with 0 open and 0 ready issues.
+- Blocked review: repository-wide open `blocked` search is empty.
+- Roadmap horizon: 9 ordered open milestones before retrospective closure (Sprint 20 through Sprint 28) and 8 after (Sprint 21 through Sprint 28), above the three-sprint threshold; no planning handoff or roadmap issue was needed.
+- Next eligible action: replenishment-only review for Sprint 21 against its durable model tool-calling objective and exit criteria. Final target `main`; after this MEMORY handoff commit, the worktree is clean except for the preserved unrelated untracked `.claude/` directory.
 
 ---
 
