@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
+import json
 import posixpath
 from typing import Callable, Mapping, Protocol, Sequence
 
@@ -70,6 +71,15 @@ class ApprovalRequiredError(ValueError):
 
 class ContextReferencesUnresolvedError(ValueError):
     """Raised when dispatch reaches a provider step with unresolved context references."""
+
+
+class PlanProposalError(ValueError):
+    """Raised when a provider's plan proposal is malformed or unparseable.
+
+    The malformed proposal and its raw provider evidence are durably recorded
+    as an ``invalid`` plan draft before this error is raised, so the failure
+    remains operator-inspectable.
+    """
 
 
 class StepRecoveryReason(StrEnum):
@@ -177,6 +187,27 @@ class ProviderMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanStepProposal:
+    """One model-proposed ordered step within a durable plan draft."""
+
+    objective: str
+    execution_kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class PlanDraft:
+    """Typed view of a durable model-proposed plan draft attached to a run."""
+
+    plan_id: str
+    run_id: str
+    status: str
+    revision: int
+    steps: tuple[PlanStepProposal, ...] = ()
+    evidence: Mapping[str, object] | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Agent:
     """Typed view of a durable agent registry record."""
 
@@ -225,6 +256,15 @@ class ChatAdapterResolver(Protocol):
     """Resolve the configured adapter for one persisted provider message."""
 
     def __call__(self, message: ProviderMessage) -> ChatAdapter: ...
+
+
+PLAN_PROPOSAL_SYSTEM_PROMPT = (
+    "Decompose the operator objective into an ordered list of durable "
+    "execution steps. Respond with a single JSON object of exactly this "
+    'shape and no other text: {"steps": [{"objective": "<step objective>", '
+    '"execution_kind": "command" or "provider"}, ...]}. Propose at least '
+    "one step."
+)
 
 
 class RunCoordinator:
@@ -799,6 +839,98 @@ class RunCoordinator:
         except StateConflictError as error:
             raise ValueError(f"step already exists: {step_id}") from error
         return self._step(record)
+
+    def propose_plan(
+        self,
+        run_id: str,
+        plan_id: str,
+        *,
+        adapter_resolver: ChatAdapterResolver,
+        provider: str,
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        objective: str | None = None,
+    ) -> PlanDraft:
+        """Dispatch a run's objective through a provider adapter and persist a durable draft.
+
+        Queues no steps. A successful, well-formed proposal is persisted as a
+        ``draft`` plan awaiting an explicit operator acceptance decision. A
+        malformed or unparseable proposal is instead persisted as an
+        ``invalid`` plan carrying the raw provider evidence, and
+        ``PlanProposalError`` is raised naming the recorded draft.
+        """
+
+        run = self.get(run_id)
+        if run is None:
+            raise KeyError(f"run does not exist: {run_id}")
+        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            raise ValueError(f"cannot propose a plan for terminal run: {run_id}")
+        if not provider.strip():
+            raise ValueError("plan provider must be a non-empty string")
+        if self.store.get("plan", plan_id) is not None:
+            raise ValueError(f"plan already exists: {plan_id}")
+        planning_objective = run.objective if objective is None else objective
+        if not planning_objective.strip():
+            raise ValueError("plan objective must not be empty")
+
+        message = ProviderMessage(
+            provider=provider,
+            content=planning_objective,
+            model=model,
+            system=PLAN_PROPOSAL_SYSTEM_PROMPT,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        adapter = adapter_resolver(message)
+        request = ChatRequest(
+            (ChatMessage("system", message.system), ChatMessage("user", message.content)),
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        response = adapter.complete(request)
+
+        evidence: dict[str, object] = {
+            "provider": provider,
+            "requested_model": model,
+            "response_model": response.model,
+            "content": response.content,
+        }
+        if response.raw is not None:
+            evidence["raw"] = dict(response.raw)
+
+        try:
+            steps = self._parse_plan_proposal(response.content)
+        except ValueError as error:
+            payload: dict[str, object] = {
+                "run_id": run_id,
+                "objective": planning_objective,
+                "evidence": evidence,
+                "error": str(error),
+            }
+            try:
+                self.store.insert("plan", plan_id, status="invalid", payload=payload)
+            except StateConflictError as conflict:
+                raise ValueError(f"plan already exists: {plan_id}") from conflict
+            raise PlanProposalError(
+                f"plan proposal is malformed and was recorded as plan/{plan_id} "
+                f"(invalid): {error}"
+            ) from error
+
+        payload = {
+            "run_id": run_id,
+            "objective": planning_objective,
+            "steps": [
+                {"objective": step.objective, "execution_kind": step.execution_kind}
+                for step in steps
+            ],
+            "evidence": evidence,
+        }
+        try:
+            record = self.store.insert("plan", plan_id, status="draft", payload=payload)
+        except StateConflictError as error:
+            raise ValueError(f"plan already exists: {plan_id}") from error
+        return self._plan_draft(record)
 
     def get_step(self, step_id: str) -> RunStep | None:
         """Return a step when it exists."""
@@ -1464,6 +1596,65 @@ class RunCoordinator:
     @staticmethod
     def _message_payload(message: ProviderMessage) -> dict[str, object]:
         return {key: value for key, value in asdict(message).items() if value is not None}
+
+    @staticmethod
+    def _parse_plan_proposal(content: str) -> tuple[PlanStepProposal, ...]:
+        """Validate the minimal accepted plan proposal shape, or raise ``ValueError``."""
+
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"plan proposal is not valid JSON: {error}") from error
+        if not isinstance(parsed, Mapping):
+            raise ValueError("plan proposal must be a JSON object")
+        steps = parsed.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("plan proposal must include a non-empty 'steps' list")
+
+        proposals: list[PlanStepProposal] = []
+        for index, item in enumerate(steps):
+            if not isinstance(item, Mapping):
+                raise ValueError(f"plan proposal step {index} must be a JSON object")
+            step_objective = item.get("objective")
+            execution_kind = item.get("execution_kind")
+            if not isinstance(step_objective, str) or not step_objective.strip():
+                raise ValueError(
+                    f"plan proposal step {index} objective must be a non-empty string"
+                )
+            if execution_kind not in ("command", "provider"):
+                raise ValueError(
+                    f"plan proposal step {index} execution_kind must be "
+                    "'command' or 'provider'"
+                )
+            proposals.append(
+                PlanStepProposal(objective=step_objective, execution_kind=execution_kind)
+            )
+        return tuple(proposals)
+
+    @staticmethod
+    def _plan_draft(record: StateRecord) -> PlanDraft:
+        payload = record.payload
+        raw_steps = payload.get("steps")
+        steps = (
+            tuple(
+                PlanStepProposal(
+                    objective=str(item["objective"]),
+                    execution_kind=str(item["execution_kind"]),
+                )
+                for item in raw_steps
+            )
+            if isinstance(raw_steps, list)
+            else ()
+        )
+        return PlanDraft(
+            plan_id=record.key,
+            run_id=str(payload["run_id"]),
+            status=record.status,
+            revision=record.revision,
+            steps=steps,
+            evidence=payload.get("evidence"),
+            error=payload.get("error"),
+        )
 
     def _validate_context_step_ids(
         self,

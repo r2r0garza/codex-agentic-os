@@ -23,6 +23,7 @@ from .runtime import (
     Agent,
     AgentRegistry,
     ClaimStaleness,
+    PlanDraft,
     ProviderMessage,
     RunCoordinator,
     RunHistoryEntry,
@@ -80,6 +81,13 @@ def _parser() -> argparse.ArgumentParser:
             "The trailing command (optionally introduced with '--') is parsed "
             "manually rather than as an argparse positional; omit it for a "
             "provider-message step."
+        ),
+    )
+    plan = run_commands.add_parser(
+        "plan",
+        help=(
+            "dispatch a run's objective through a provider adapter and persist "
+            "a durable plan draft, queuing no steps"
         ),
     )
     list_runs = run_commands.add_parser("list", help="list durable runs")
@@ -193,6 +201,22 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="persist explicit opt-in to enable container network access",
     )
+    plan.add_argument("run_id")
+    plan.add_argument("plan_id")
+    plan.add_argument(
+        "--provider", required=True, choices=[kind.value for kind in ProviderKind]
+    )
+    plan.add_argument("--model", help="optional provider model override")
+    plan.add_argument(
+        "--objective",
+        help="override objective sent for planning (defaults to the run's own objective)",
+    )
+    plan.add_argument(
+        "--temperature", type=float, help="optional non-negative sampling temperature"
+    )
+    plan.add_argument(
+        "--max-tokens", type=int, help="optional positive response token limit"
+    )
     list_runs.add_argument(
         "--status",
         action="append",
@@ -271,6 +295,7 @@ def _parser() -> argparse.ArgumentParser:
         release,
         claim_next,
         add_step,
+        plan,
         list_runs,
         reassign_claim,
         retry_step,
@@ -491,6 +516,23 @@ def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
             )
         )
     return {"run": run_data, "steps": steps}
+
+
+def _plan_draft_payload(draft: PlanDraft) -> dict[str, object]:
+    """Return a JSON-compatible, ordered view of one durable plan draft."""
+
+    payload: dict[str, object] = {
+        "plan_id": draft.plan_id,
+        "run_id": draft.run_id,
+        "status": draft.status,
+        "revision": draft.revision,
+        "steps": [asdict(step) for step in draft.steps],
+    }
+    if draft.evidence is not None:
+        payload["evidence"] = dict(draft.evidence)
+    if draft.error is not None:
+        payload["error"] = draft.error
+    return payload
 
 
 def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, object]]:
@@ -878,6 +920,21 @@ def main(argv: Sequence[str] | None = None) -> None:
                     sandbox_policy=sandbox_policy,
                 )
                 run_id = arguments.run_id
+            elif arguments.run_command == "plan":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                draft = coordinator.propose_plan(
+                    arguments.run_id,
+                    arguments.plan_id,
+                    adapter_resolver=_provider_adapter_resolver(),
+                    provider=arguments.provider,
+                    model=arguments.model,
+                    temperature=arguments.temperature,
+                    max_tokens=arguments.max_tokens,
+                    objective=arguments.objective,
+                )
+                print(json.dumps(_plan_draft_payload(draft), indent=2, sort_keys=True))
+                return
             elif arguments.run_command == "list":
                 if arguments.agent_id is not None and not arguments.agent_id.strip():
                     raise ValueError("agent id must not be empty")

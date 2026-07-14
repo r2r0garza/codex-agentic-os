@@ -12,6 +12,9 @@ from codex_agentic_os.runtime import (
     ApprovalStatus,
     ClaimStaleness,
     ContextReferencesUnresolvedError,
+    PLAN_PROPOSAL_SYSTEM_PROMPT,
+    PlanProposalError,
+    PlanStepProposal,
     ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
@@ -2874,3 +2877,202 @@ def test_agent_registration_is_atomic_across_registries(tmp_path) -> None:
         competing.register("agent-1", label="Replacement")
 
     assert AgentRegistry(StateStore(database)).list_agents() == (original,)
+
+
+def test_propose_plan_persists_draft_with_ordered_steps_and_evidence(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    requests = []
+
+    class Adapter:
+        def complete(self, request):
+            requests.append(request)
+            return ChatResponse(
+                content=(
+                    '{"steps": ['
+                    '{"objective": "Write the fix", "execution_kind": "command"}, '
+                    '{"objective": "Summarize the change", "execution_kind": "provider"}'
+                    "]}"
+                ),
+                model="served-model",
+                raw={"id": "r1"},
+            )
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    draft = coordinator.propose_plan(
+        "run-1",
+        "plan-1",
+        adapter_resolver=lambda message: Adapter(),
+        provider="ollama",
+        model="requested-model",
+        temperature=0.2,
+        max_tokens=200,
+    )
+
+    assert draft.plan_id == "plan-1"
+    assert draft.run_id == "run-1"
+    assert draft.status == "draft"
+    assert draft.revision == 1
+    assert draft.steps == (
+        PlanStepProposal(objective="Write the fix", execution_kind="command"),
+        PlanStepProposal(objective="Summarize the change", execution_kind="provider"),
+    )
+    assert draft.evidence["provider"] == "ollama"
+    assert draft.evidence["requested_model"] == "requested-model"
+    assert draft.evidence["response_model"] == "served-model"
+    assert draft.evidence["raw"] == {"id": "r1"}
+    assert draft.error is None
+
+    assert requests[0].messages[0].role == "system"
+    assert requests[0].messages[0].content == PLAN_PROPOSAL_SYSTEM_PROMPT
+    assert requests[0].messages[1] == ChatMessage("user", "Ship the feature")
+    assert requests[0].temperature == 0.2
+    assert requests[0].max_tokens == 200
+
+    # No steps are queued by a successful plan proposal.
+    assert coordinator.list_steps("run-1") == ()
+    assert coordinator.get("run-1").status is RunStatus.QUEUED
+
+    reloaded = StateStore(database).get("plan", "plan-1")
+    assert reloaded.status == "draft"
+    assert reloaded.payload["steps"] == [
+        {"objective": "Write the fix", "execution_kind": "command"},
+        {"objective": "Summarize the change", "execution_kind": "provider"},
+    ]
+
+
+def test_propose_plan_defaults_objective_to_run_objective_and_supports_override(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    sent = []
+
+    class Adapter:
+        def complete(self, request):
+            sent.append(request.messages[1].content)
+            return ChatResponse(
+                content='{"steps": [{"objective": "Do it", "execution_kind": "command"}]}'
+            )
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Run objective")
+
+    coordinator.propose_plan(
+        "run-1", "plan-default", adapter_resolver=lambda message: Adapter(), provider="ollama"
+    )
+    coordinator.propose_plan(
+        "run-1",
+        "plan-override",
+        adapter_resolver=lambda message: Adapter(),
+        provider="ollama",
+        objective="Overridden planning objective",
+    )
+
+    assert sent == ["Run objective", "Overridden planning objective"]
+
+
+@pytest.mark.parametrize(
+    ("content", "match"),
+    [
+        ("not json at all", "plan proposal is not valid JSON"),
+        ("[]", "plan proposal must be a JSON object"),
+        ("{}", "plan proposal must include a non-empty 'steps' list"),
+        ('{"steps": []}', "plan proposal must include a non-empty 'steps' list"),
+        ('{"steps": ["not-an-object"]}', "plan proposal step 0 must be a JSON object"),
+        (
+            '{"steps": [{"execution_kind": "command"}]}',
+            "plan proposal step 0 objective must be a non-empty string",
+        ),
+        (
+            '{"steps": [{"objective": "  ", "execution_kind": "command"}]}',
+            "plan proposal step 0 objective must be a non-empty string",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "branch"}]}',
+            "plan proposal step 0 execution_kind must be 'command' or 'provider'",
+        ),
+    ],
+)
+def test_propose_plan_rejects_malformed_proposals_and_preserves_raw_evidence(
+    tmp_path, content, match
+) -> None:
+    database = tmp_path / "state.sqlite3"
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(content=content, model="served-model", raw={"id": "bad"})
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    with pytest.raises(PlanProposalError, match=match):
+        coordinator.propose_plan(
+            "run-1", "plan-bad", adapter_resolver=lambda message: Adapter(), provider="ollama"
+        )
+
+    # No steps are queued when the proposal is malformed.
+    assert coordinator.list_steps("run-1") == ()
+    assert coordinator.get("run-1").status is RunStatus.QUEUED
+
+    record = StateStore(database).get("plan", "plan-bad")
+    assert record is not None
+    assert record.status == "invalid"
+    assert record.payload["evidence"]["content"] == content
+    assert record.payload["evidence"]["raw"] == {"id": "bad"}
+    assert match in record.payload["error"]
+    assert "steps" not in record.payload
+
+
+def test_propose_plan_rejects_duplicate_plan_id_without_dispatching(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    dispatch_count = 0
+
+    class Adapter:
+        def complete(self, request):
+            nonlocal dispatch_count
+            dispatch_count += 1
+            return ChatResponse(
+                content='{"steps": [{"objective": "Do it", "execution_kind": "command"}]}'
+            )
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    coordinator.propose_plan(
+        "run-1", "plan-1", adapter_resolver=lambda message: Adapter(), provider="ollama"
+    )
+
+    with pytest.raises(ValueError, match="plan already exists: plan-1"):
+        coordinator.propose_plan(
+            "run-1", "plan-1", adapter_resolver=lambda message: Adapter(), provider="ollama"
+        )
+
+    assert dispatch_count == 1
+
+
+def test_propose_plan_rejects_missing_run(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+
+    with pytest.raises(KeyError, match="run does not exist: missing"):
+        coordinator.propose_plan(
+            "missing",
+            "plan-1",
+            adapter_resolver=lambda message: (_ for _ in ()).throw(AssertionError("no dispatch")),
+            provider="ollama",
+        )
+
+
+def test_propose_plan_rejects_terminal_run_without_dispatching(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    coordinator.transition("run-1", RunStatus.CANCELLED)
+
+    with pytest.raises(ValueError, match="cannot propose a plan for terminal run: run-1"):
+        coordinator.propose_plan(
+            "run-1",
+            "plan-1",
+            adapter_resolver=lambda message: (_ for _ in ()).throw(AssertionError("no dispatch")),
+            provider="ollama",
+        )

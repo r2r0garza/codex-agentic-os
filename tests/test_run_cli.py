@@ -3026,3 +3026,157 @@ def test_cli_run_reassign_claim_produces_exactly_one_winner_under_contention(
     ]
     assert len(reassignment_entries) == 1
     assert reassignment_entries[0].agent_id == final.agent_id
+
+
+def test_cli_plan_dispatches_objective_and_persists_draft_without_queuing_steps(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    captured = {}
+    proposal_content = (
+        '{"steps": ['
+        '{"objective": "Write the fix", "execution_kind": "command"}, '
+        '{"objective": "Summarize the change", "execution_kind": "provider"}'
+        "]}"
+    )
+
+    class Adapter:
+        def complete(self, request):
+            captured["request"] = request
+            return ChatResponse(
+                content=proposal_content, model="served-model", raw={"id": "plan-1"}
+            )
+
+    def build_adapter(spec):
+        captured["spec"] = spec
+        return Adapter()
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", build_adapter)
+
+    main(
+        [
+            "run", "plan", "run-1", "draft-1",
+            "--provider", "ollama", "--model", "custom-local",
+            "--state-db", str(database),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert captured["spec"].kind.value == "ollama"
+    assert captured["spec"].model == "custom-local"
+    assert captured["request"].messages[1].content == "Ship the feature"
+    assert payload == {
+        "plan_id": "draft-1",
+        "run_id": "run-1",
+        "status": "draft",
+        "revision": 1,
+        "steps": [
+            {"objective": "Write the fix", "execution_kind": "command"},
+            {"objective": "Summarize the change", "execution_kind": "provider"},
+        ],
+        "evidence": {
+            "provider": "ollama",
+            "requested_model": "custom-local",
+            "response_model": "served-model",
+            "content": proposal_content,
+            "raw": {"id": "plan-1"},
+        },
+    }
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.list_steps("run-1") == ()
+    assert reloaded.get("run-1").status is RunStatus.QUEUED
+
+
+def test_cli_plan_defaults_objective_to_run_objective(tmp_path, monkeypatch, capsys) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Run's own objective")
+    captured = {}
+
+    class Adapter:
+        def complete(self, request):
+            captured["request"] = request
+            return ChatResponse(
+                content='{"steps": [{"objective": "Do it", "execution_kind": "command"}]}'
+            )
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+
+    main(["run", "plan", "run-1", "draft-1", "--provider", "ollama", "--state-db", str(database)])
+
+    assert captured["request"].messages[1].content == "Run's own objective"
+
+    captured.clear()
+    main(
+        [
+            "run", "plan", "run-1", "draft-2",
+            "--provider", "ollama", "--objective", "Custom planning objective",
+            "--state-db", str(database),
+        ]
+    )
+    assert captured["request"].messages[1].content == "Custom planning objective"
+
+
+def test_cli_plan_surfaces_malformed_proposal_and_preserves_evidence(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(content="not json at all", model="served-model")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "plan", "run-1", "draft-1",
+                "--provider", "ollama", "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    error_output = capsys.readouterr().err
+    assert "plan proposal is malformed" in error_output
+    assert "plan/draft-1" in error_output
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.list_steps("run-1") == ()
+    record = StateStore(database).get("plan", "draft-1")
+    assert record is not None
+    assert record.status == "invalid"
+    assert record.payload["evidence"]["content"] == "not json at all"
+
+
+def test_cli_plan_rejects_missing_run_before_dispatch(tmp_path, monkeypatch, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    def build_adapter(spec):
+        raise AssertionError("adapter must not be resolved for a missing run")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", build_adapter)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "plan", "missing-run", "draft-1",
+                "--provider", "ollama", "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "run does not exist: missing-run" in capsys.readouterr().err

@@ -342,6 +342,26 @@ nonzero exit fails both the step and run:
 step, run = runs.complete_step_from_result("step-001", result)
 ```
 
+Propose a durable plan draft for an existing run by dispatching its objective through a
+configured provider adapter. The provider must respond with a single JSON object shaped
+`{"steps": [{"objective": "...", "execution_kind": "command" or "provider"}, ...]}`; no
+steps are queued by this command, and `--objective` overrides the text sent for planning
+without changing the run's own stored objective:
+
+```bash
+codex-agentic-os run plan run-002 draft-1 --provider ollama --model llama3.1 \
+  --state-db .codex-agentic-os/state.sqlite3
+codex-agentic-os run plan run-002 draft-2 --provider ollama \
+  --objective "Re-plan after the schema change" \
+  --state-db .codex-agentic-os/state.sqlite3
+```
+
+A well-formed proposal is durably persisted as a `draft` plan awaiting an explicit
+operator acceptance decision (acceptance and rejection are not implemented yet). A
+malformed or unparseable proposal is instead persisted as an `invalid` plan carrying the
+raw provider response as evidence, and the command fails explicitly (exit code 2) naming
+the recorded plan id; the run's step queue is unchanged either way.
+
 Inspect a durable run and its ordered steps without modifying runtime state:
 
 ```bash
