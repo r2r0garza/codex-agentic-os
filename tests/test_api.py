@@ -12,8 +12,20 @@ import pytest
 
 from codex_agentic_os.api import build_server, is_loopback_bind_host, serve_until_stopped
 from codex_agentic_os.cli import main
-from codex_agentic_os.payloads import _history_payload, _run_list_payload, _run_payload
-from codex_agentic_os.runtime import ProviderMessage, RunCoordinator, RunStatus
+from codex_agentic_os.payloads import (
+    _approval_payload,
+    _history_payload,
+    _run_list_payload,
+    _run_payload,
+    _usage_payload,
+)
+from codex_agentic_os.runtime import (
+    AgentRegistry,
+    ProviderMessage,
+    RunCoordinator,
+    RunStatus,
+    StepStatus,
+)
 from codex_agentic_os.state import StateStore
 
 
@@ -74,6 +86,49 @@ def _seed_database(database) -> RunCoordinator:
         "step-2",
         objective="Summarize",
         message=ProviderMessage(provider="ollama", content="Summarize"),
+    )
+    return coordinator
+
+
+def _seed_approval_and_usage(database) -> RunCoordinator:
+    store = StateStore(database)
+    AgentRegistry(store).register("operator-1")
+    coordinator = RunCoordinator(store)
+    coordinator.create(
+        "run-evidence", objective="Inspect evidence", agent_id="operator-1"
+    )
+    coordinator.add_step(
+        "run-evidence",
+        "provider-1",
+        objective="Approved provider request",
+        message=ProviderMessage(
+            provider="ollama", content="private prompt", model="requested-model"
+        ),
+        approval_required=True,
+    )
+    coordinator.add_step(
+        "run-evidence",
+        "provider-2",
+        objective="Queued provider request",
+        message=ProviderMessage(provider="anthropic", content="another private prompt"),
+    )
+    coordinator.approve_step("provider-1", agent_id="operator-1")
+    coordinator.transition("run-evidence", RunStatus.RUNNING)
+    coordinator.transition_step("provider-1", StepStatus.RUNNING)
+    coordinator.transition_step(
+        "provider-1",
+        StepStatus.SUCCEEDED,
+        output={
+            "content": "sanitized response",
+            "model": "served-model",
+            "usage": {
+                "available": True,
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "raw": {"prompt_tokens": 7, "completion_tokens": 3},
+                "unavailable_reason": None,
+            },
+        },
     )
     return coordinator
 
@@ -168,6 +223,107 @@ def test_http_api_run_history_matches_cli_run_history_output(tmp_path, capsys) -
     assert http_payload == cli_payload
 
 
+def test_http_api_approvals_matches_shared_and_cli_contracts(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_approval_and_usage(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    main(["run", "approvals", "run-evidence", "--state-db", str(database)])
+    cli_payload = json.loads(capsys.readouterr().out)
+    with _running_server(coordinator) as port:
+        http_payload = _get_json(port, "/api/v1/runs/run-evidence/approvals")
+
+    assert http_payload == _as_json(_approval_payload(coordinator, "run-evidence"))
+    assert http_payload == cli_payload
+    assert http_payload == [
+        {
+            "approval_required": True,
+            "approval_status": "approved",
+            "deciding_agent_id": "operator-1",
+            "execution_kind": "provider",
+            "objective": "Approved provider request",
+            "position": 1,
+            "requesting_agent_id": "operator-1",
+            "run_id": "run-evidence",
+            "step_id": "provider-1",
+            "step_status": "succeeded",
+        }
+    ]
+    assert "private prompt" not in json.dumps(http_payload)
+
+
+def test_http_api_usage_matches_shared_and_cli_contracts(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_approval_and_usage(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    main(["run", "usage", "run-evidence", "--state-db", str(database)])
+    cli_payload = json.loads(capsys.readouterr().out)
+    with _running_server(coordinator) as port:
+        http_payload = _get_json(port, "/api/v1/runs/run-evidence/usage")
+
+    assert http_payload == _as_json(_usage_payload(coordinator, "run-evidence"))
+    assert http_payload == cli_payload
+    assert [step["step_id"] for step in http_payload["steps"]] == [
+        "provider-1",
+        "provider-2",
+    ]
+    assert http_payload["steps"][1]["usage"] == {
+        "available": False,
+        "input_tokens": None,
+        "output_tokens": None,
+        "raw": None,
+        "unavailable_reason": "no usage recorded for step status queued",
+    }
+    assert http_payload["aggregate"] == {
+        "steps_with_usage_available": 1,
+        "steps_with_usage_unavailable": 1,
+        "input_tokens": 7,
+        "output_tokens": 3,
+    }
+    assert "private prompt" not in json.dumps(http_payload)
+
+
+@pytest.mark.parametrize("suffix", ["approvals", "usage"])
+def test_http_api_evidence_endpoints_return_structured_unknown_run_error(
+    tmp_path, suffix
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_database(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        with pytest.raises(urllib.error.HTTPError) as error:
+            _get_json(port, f"/api/v1/runs/does-not-exist/{suffix}")
+
+    assert error.value.code == 404
+    assert json.loads(error.value.read()) == {
+        "error": "run does not exist: does-not-exist"
+    }
+
+
+def test_http_api_evidence_endpoints_do_not_mutate_state(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_approval_and_usage(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+    before = (
+        coordinator.get("run-evidence"),
+        coordinator.list_steps("run-evidence"),
+        coordinator.list_history("run-evidence"),
+    )
+
+    with _running_server(coordinator) as port:
+        _get_json(port, "/api/v1/runs/run-evidence/approvals")
+        _get_json(port, "/api/v1/runs/run-evidence/usage")
+
+    reloaded = RunCoordinator(StateStore(database, read_only=True))
+    assert (
+        reloaded.get("run-evidence"),
+        reloaded.list_steps("run-evidence"),
+        reloaded.list_history("run-evidence"),
+    ) == before
+
+
 def test_http_api_unknown_run_returns_structured_404_without_mutation(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     _seed_database(database)
@@ -247,6 +403,8 @@ def test_http_api_opens_state_database_read_only(tmp_path) -> None:
         _get_json(port, "/api/v1/runs")
         _get_json(port, "/api/v1/runs/run-1")
         _get_json(port, "/api/v1/runs/run-1/history")
+        _get_json(port, "/api/v1/runs/run-1/approvals")
+        _get_json(port, "/api/v1/runs/run-1/usage")
 
 
 def test_cli_api_serve_rejects_non_loopback_host_without_mutation(tmp_path, capsys) -> None:

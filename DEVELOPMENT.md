@@ -605,18 +605,22 @@ codex-agentic-os run watch run-002 --interval 2 --state-db /path/to/state.sqlite
 ```
 
 `codex-agentic-os api serve --port PORT` starts a local, read-only HTTP
-server that reuses the exact `run list`/`run inspect`/`run history` JSON
-contracts over loopback HTTP, so operator interfaces beyond the CLI can be
-built on stable contracts. `--host` must be an explicit loopback literal
-such as `127.0.0.1` (the default) or `::1`; a hostname like `localhost` or
-any non-loopback address is rejected before a socket is ever opened. The
-state database is opened read-only. Routes are served under a stable
-`/api/v1` base path:
+server that reuses the exact `run list`/`run inspect`/`run history`/`run
+approvals`/`run usage` JSON contracts over loopback HTTP, so operator
+interfaces beyond the CLI can be built on stable contracts. `--host` must be
+an explicit loopback literal such as `127.0.0.1` (the default) or `::1`; a
+hostname like `localhost` or any non-loopback address is rejected before a
+socket is ever opened. The state database is opened read-only. Routes are
+served under a stable `/api/v1` base path:
 
 - `GET /api/v1/runs` — the same payload as `run list`.
 - `GET /api/v1/runs/{run_id}` — the same payload as `run inspect`,
   including ordered steps.
 - `GET /api/v1/runs/{run_id}/history` — the same payload as `run history`.
+- `GET /api/v1/runs/{run_id}/approvals` — the same sanitized payload as
+  `run approvals`.
+- `GET /api/v1/runs/{run_id}/usage` — the same provider-step evidence and
+  aggregate as `run usage`, including explicitly unavailable usage.
 
 An unrecognized path or unknown run id returns a structured `{"error":
 ...}` JSON body with `404`; any non-`GET` method returns the same shape

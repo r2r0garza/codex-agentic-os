@@ -1,11 +1,11 @@
 """Local, read-only operator HTTP API over durable run inspection contracts.
 
-Serves the same JSON payloads as the CLI's ``run list``/``run inspect``/
-``run history`` commands (see ``payloads.py``) over a loopback-only HTTP
-listener, so operator interfaces beyond the CLI can be built on stable
-contracts. There are no mutation routes: every handler here only reads
-through ``RunCoordinator``, and the state database is always opened
-read-only by the caller.
+Serves the same JSON payloads as the CLI's ``run list``, ``run inspect``,
+``run history``, ``run approvals``, and ``run usage`` commands (see
+``payloads.py``) over a loopback-only HTTP listener, so operator interfaces
+beyond the CLI can be built on stable contracts. There are no mutation routes:
+every handler here only reads through ``RunCoordinator``, and the state
+database is always opened read-only by the caller.
 """
 
 from __future__ import annotations
@@ -19,7 +19,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable
 from urllib.parse import unquote, urlsplit
 
-from .payloads import _history_payload, _run_list_payload, _run_payload
+from .payloads import (
+    _approval_payload,
+    _history_payload,
+    _run_list_payload,
+    _run_payload,
+    _usage_payload,
+)
 from .runtime import RunCoordinator
 
 API_BASE_PATH = "/api/v1"
@@ -28,6 +34,10 @@ DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 _RUNS_PATH = f"{API_BASE_PATH}/runs"
 _RUN_DETAIL_PATTERN = re.compile(rf"^{re.escape(_RUNS_PATH)}/(?P<run_id>[^/]+)$")
 _RUN_HISTORY_PATTERN = re.compile(rf"^{re.escape(_RUNS_PATH)}/(?P<run_id>[^/]+)/history$")
+_RUN_APPROVALS_PATTERN = re.compile(
+    rf"^{re.escape(_RUNS_PATH)}/(?P<run_id>[^/]+)/approvals$"
+)
+_RUN_USAGE_PATTERN = re.compile(rf"^{re.escape(_RUNS_PATH)}/(?P<run_id>[^/]+)/usage$")
 
 
 def is_loopback_bind_host(host: str) -> bool:
@@ -76,6 +86,14 @@ class _ReadOnlyAPIRequestHandler(BaseHTTPRequestHandler):
         if history_match is not None:
             self._respond_history(unquote(history_match.group("run_id")))
             return
+        approvals_match = _RUN_APPROVALS_PATTERN.match(path)
+        if approvals_match is not None:
+            self._respond_approvals(unquote(approvals_match.group("run_id")))
+            return
+        usage_match = _RUN_USAGE_PATTERN.match(path)
+        if usage_match is not None:
+            self._respond_usage(unquote(usage_match.group("run_id")))
+            return
         self._respond_error(HTTPStatus.NOT_FOUND, f"unrecognized path: {self.path}")
 
     def _respond_run(self, run_id: str) -> None:
@@ -91,6 +109,18 @@ class _ReadOnlyAPIRequestHandler(BaseHTTPRequestHandler):
         self._respond(
             HTTPStatus.OK, _history_payload(self.coordinator.list_history(run_id))
         )
+
+    def _respond_approvals(self, run_id: str) -> None:
+        if self.coordinator.get(run_id) is None:
+            self._respond_error(HTTPStatus.NOT_FOUND, f"run does not exist: {run_id}")
+            return
+        self._respond(HTTPStatus.OK, _approval_payload(self.coordinator, run_id))
+
+    def _respond_usage(self, run_id: str) -> None:
+        if self.coordinator.get(run_id) is None:
+            self._respond_error(HTTPStatus.NOT_FOUND, f"run does not exist: {run_id}")
+            return
+        self._respond(HTTPStatus.OK, _usage_payload(self.coordinator, run_id))
 
     def _reject_mutation(self) -> None:
         self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
