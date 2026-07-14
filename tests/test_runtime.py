@@ -2880,6 +2880,16 @@ def test_agent_registration_is_atomic_across_registries(tmp_path) -> None:
     assert AgentRegistry(StateStore(database)).list_agents() == (original,)
 
 
+PLAN_PROPOSAL_CONTENT = (
+    '{"steps": ['
+    '{"objective": "Write the fix", "execution_kind": "command", '
+    '"command": ["pytest"], "sandbox_policy": {"kind": "docker"}}, '
+    '{"objective": "Summarize the change", "execution_kind": "provider", '
+    '"message": {"provider": "ollama", "content": "Summarize the diff"}}'
+    "]}"
+)
+
+
 def test_propose_plan_persists_draft_with_ordered_steps_and_evidence(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     requests = []
@@ -2888,12 +2898,7 @@ def test_propose_plan_persists_draft_with_ordered_steps_and_evidence(tmp_path) -
         def complete(self, request):
             requests.append(request)
             return ChatResponse(
-                content=(
-                    '{"steps": ['
-                    '{"objective": "Write the fix", "execution_kind": "command"}, '
-                    '{"objective": "Summarize the change", "execution_kind": "provider"}'
-                    "]}"
-                ),
+                content=PLAN_PROPOSAL_CONTENT,
                 model="served-model",
                 raw={"id": "r1"},
             )
@@ -2916,8 +2921,19 @@ def test_propose_plan_persists_draft_with_ordered_steps_and_evidence(tmp_path) -
     assert draft.status == "draft"
     assert draft.revision == 1
     assert draft.steps == (
-        PlanStepProposal(objective="Write the fix", execution_kind="command"),
-        PlanStepProposal(objective="Summarize the change", execution_kind="provider"),
+        PlanStepProposal(
+            step_id="plan-1-step-1",
+            objective="Write the fix",
+            execution_kind="command",
+            command=("pytest",),
+            sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+        ),
+        PlanStepProposal(
+            step_id="plan-1-step-2",
+            objective="Summarize the change",
+            execution_kind="provider",
+            message=ProviderMessage(provider="ollama", content="Summarize the diff"),
+        ),
     )
     assert draft.evidence["provider"] == "ollama"
     assert draft.evidence["requested_model"] == "requested-model"
@@ -2938,8 +2954,26 @@ def test_propose_plan_persists_draft_with_ordered_steps_and_evidence(tmp_path) -
     reloaded = StateStore(database).get("plan", "plan-1")
     assert reloaded.status == "draft"
     assert reloaded.payload["steps"] == [
-        {"objective": "Write the fix", "execution_kind": "command"},
-        {"objective": "Summarize the change", "execution_kind": "provider"},
+        {
+            "step_id": "plan-1-step-1",
+            "objective": "Write the fix",
+            "execution_kind": "command",
+            "command": ["pytest"],
+            "sandbox_policy": {
+                "kind": "docker",
+                "image": "python:3.12-slim",
+                "mounts": [],
+                "working_dir": None,
+                "env_passthrough": [],
+                "network_enabled": False,
+            },
+        },
+        {
+            "step_id": "plan-1-step-2",
+            "objective": "Summarize the change",
+            "execution_kind": "provider",
+            "message": {"provider": "ollama", "content": "Summarize the diff"},
+        },
     ]
 
 
@@ -2952,9 +2986,7 @@ def test_propose_plan_defaults_objective_to_run_objective_and_supports_override(
     class Adapter:
         def complete(self, request):
             sent.append(request.messages[1].content)
-            return ChatResponse(
-                content='{"steps": [{"objective": "Do it", "execution_kind": "command"}]}'
-            )
+            return ChatResponse(content=PLAN_PROPOSAL_CONTENT)
 
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Run objective")
@@ -2992,6 +3024,47 @@ def test_propose_plan_defaults_objective_to_run_objective_and_supports_override(
         (
             '{"steps": [{"objective": "Do it", "execution_kind": "branch"}]}',
             "plan proposal step 0 execution_kind must be 'command' or 'provider'",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "command", '
+            '"sandbox_policy": {"kind": "docker"}}]}',
+            "plan proposal step 0 command execution requires 'command'",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "command", '
+            '"command": ["pytest"]}]}',
+            "plan proposal step 0 command execution requires 'sandbox_policy'",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "command", '
+            '"command": ["pytest"], "sandbox_policy": {"kind": "docker"}, '
+            '"message": {"provider": "ollama", "content": "hi"}}]}',
+            "plan proposal step 0 command execution must not include 'message'",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "command", '
+            '"command": [], "sandbox_policy": {"kind": "docker"}}]}',
+            "plan proposal step 0 step command must not be empty",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "command", '
+            '"command": ["pytest"], "sandbox_policy": {"kind": "unknown"}}]}',
+            "plan proposal step 0 step sandbox policy kind is invalid",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "provider"}]}',
+            "plan proposal step 0 provider execution requires 'message'",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "provider", '
+            '"message": {"provider": "ollama", "content": "hi"}, '
+            '"command": ["pytest"]}]}',
+            "plan proposal step 0 provider execution must not include",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "provider", '
+            '"message": {"provider": "", "content": "hi"}}]}',
+            "plan proposal step 0 step provider must be a non-empty string",
         ),
     ],
 )
@@ -3033,9 +3106,7 @@ def test_propose_plan_rejects_duplicate_plan_id_without_dispatching(tmp_path) ->
         def complete(self, request):
             nonlocal dispatch_count
             dispatch_count += 1
-            return ChatResponse(
-                content='{"steps": [{"objective": "Do it", "execution_kind": "command"}]}'
-            )
+            return ChatResponse(content=PLAN_PROPOSAL_CONTENT)
 
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Ship the feature")
@@ -3085,12 +3156,7 @@ def test_get_plan_returns_a_reviewable_draft_in_stable_order(tmp_path) -> None:
     class Adapter:
         def complete(self, request):
             return ChatResponse(
-                content=(
-                    '{"steps": ['
-                    '{"objective": "Write the fix", "execution_kind": "command"}, '
-                    '{"objective": "Summarize the change", "execution_kind": "provider"}'
-                    "]}"
-                ),
+                content=PLAN_PROPOSAL_CONTENT,
                 model="served-model",
                 raw={"id": "r1"},
             )
@@ -3109,8 +3175,19 @@ def test_get_plan_returns_a_reviewable_draft_in_stable_order(tmp_path) -> None:
         status="draft",
         revision=1,
         steps=(
-            PlanStepProposal(objective="Write the fix", execution_kind="command"),
-            PlanStepProposal(objective="Summarize the change", execution_kind="provider"),
+            PlanStepProposal(
+                step_id="plan-1-step-1",
+                objective="Write the fix",
+                execution_kind="command",
+                command=("pytest",),
+                sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+            ),
+            PlanStepProposal(
+                step_id="plan-1-step-2",
+                objective="Summarize the change",
+                execution_kind="provider",
+                message=ProviderMessage(provider="ollama", content="Summarize the diff"),
+            ),
         ),
         evidence={
             "provider": "ollama",
@@ -3155,3 +3232,66 @@ def test_get_plan_returns_none_for_an_absent_plan(tmp_path) -> None:
     coordinator.create("run-1", objective="Ship the feature")
 
     assert coordinator.get_plan("missing") is None
+
+
+def test_propose_plan_materializes_deterministic_collision_free_step_ids(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(
+                content=(
+                    '{"steps": ['
+                    '{"objective": "First", "execution_kind": "command", '
+                    '"command": ["pytest"], "sandbox_policy": {"kind": "docker"}}, '
+                    '{"objective": "Second", "execution_kind": "provider", '
+                    '"message": {"provider": "ollama", "content": "hi"}}, '
+                    '{"objective": "Third", "execution_kind": "command", '
+                    '"command": ["ls"], "sandbox_policy": {"kind": "podman"}}'
+                    "]}"
+                )
+            )
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    draft = coordinator.propose_plan(
+        "run-1", "plan-xyz", adapter_resolver=lambda message: Adapter(), provider="ollama"
+    )
+
+    step_ids = [step.step_id for step in draft.steps]
+    assert step_ids == ["plan-xyz-step-1", "plan-xyz-step-2", "plan-xyz-step-3"]
+    # Materialized ids are unique by construction (namespaced under the unique plan id).
+    assert len(set(step_ids)) == len(step_ids)
+
+
+def test_get_plan_reconstructs_executable_payload_after_restart(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(content=PLAN_PROPOSAL_CONTENT)
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    coordinator.propose_plan(
+        "run-1", "plan-1", adapter_resolver=lambda message: Adapter(), provider="ollama"
+    )
+
+    reloaded = _RunCoordinator(StateStore(database)).get_plan("plan-1")
+
+    assert reloaded.steps == (
+        PlanStepProposal(
+            step_id="plan-1-step-1",
+            objective="Write the fix",
+            execution_kind="command",
+            command=("pytest",),
+            sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+        ),
+        PlanStepProposal(
+            step_id="plan-1-step-2",
+            objective="Summarize the change",
+            execution_kind="provider",
+            message=ProviderMessage(provider="ollama", content="Summarize the diff"),
+        ),
+    )

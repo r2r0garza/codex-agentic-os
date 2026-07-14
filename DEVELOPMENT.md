@@ -344,9 +344,19 @@ step, run = runs.complete_step_from_result("step-001", result)
 
 Propose a durable plan draft for an existing run by dispatching its objective through a
 configured provider adapter. The provider must respond with a single JSON object shaped
-`{"steps": [{"objective": "...", "execution_kind": "command" or "provider"}, ...]}`; no
-steps are queued by this command, and `--objective` overrides the text sent for planning
-without changing the run's own stored objective:
+`{"steps": [<step>, ...]}`, where each `<step>` carries the same executable materialization
+fields `add_step` requires so a later acceptance decision can pass it straight to the
+existing queued-step creation path without guessing or synthesizing execution details. A
+command step is `{"objective": "...", "execution_kind": "command", "command": [...],
+"sandbox_policy": {"kind": "docker" or "podman", ...}, "timeout": <optional>}` and must not
+include `"message"`; a provider step is `{"objective": "...", "execution_kind": "provider",
+"message": {"provider": "...", "content": "...", ...}}` and must not include `"command"`,
+`"timeout"`, or `"sandbox_policy"`. Each proposed step's `step_id` is materialized
+deterministically from the plan id and its 1-based position (e.g. `draft-1-step-1`), never
+taken from the model, so ids are collision-free within one draft by construction and
+inspectable ahead of any future acceptance decision. No steps are queued by this command,
+and `--objective` overrides the text sent for planning without changing the run's own
+stored objective:
 
 ```bash
 codex-agentic-os run plan run-002 draft-1 --provider ollama --model llama3.1 \
@@ -363,7 +373,8 @@ raw provider response as evidence, and the command fails explicitly (exit code 2
 the recorded plan id; the run's step queue is unchanged either way.
 
 Inspect a durable plan draft without modifying runtime state, showing every proposed
-step's objective and execution kind in stable order:
+step's objective, execution kind, materialized step id, and executable payload (command
+plus sandbox policy, or provider message) in stable order:
 
 ```bash
 codex-agentic-os run inspect-plan draft-1 --state-db .codex-agentic-os/state.sqlite3

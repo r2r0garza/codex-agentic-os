@@ -188,10 +188,23 @@ class ProviderMessage:
 
 @dataclass(frozen=True, slots=True)
 class PlanStepProposal:
-    """One model-proposed ordered step within a durable plan draft."""
+    """One model-proposed ordered step within a durable plan draft.
 
+    Carries the same executable materialization fields ``add_step`` requires
+    (command argv plus persisted sandbox policy, or a complete provider
+    message) so an accept decision can pass a step directly to the existing
+    queued-step creation path without guessing or synthesizing execution
+    details. ``step_id`` is a deterministic, collision-free identity derived
+    from the plan id and step position, not proposed by the model.
+    """
+
+    step_id: str
     objective: str
     execution_kind: str
+    command: tuple[str, ...] | None = None
+    timeout: float | None = None
+    sandbox_policy: SandboxPolicy | None = None
+    message: ProviderMessage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,9 +274,21 @@ class ChatAdapterResolver(Protocol):
 PLAN_PROPOSAL_SYSTEM_PROMPT = (
     "Decompose the operator objective into an ordered list of durable "
     "execution steps. Respond with a single JSON object of exactly this "
-    'shape and no other text: {"steps": [{"objective": "<step objective>", '
-    '"execution_kind": "command" or "provider"}, ...]}. Propose at least '
-    "one step."
+    'shape and no other text: {"steps": [<step>, ...]}. Propose at least '
+    "one step. Each <step> is a command step or a provider step. A command "
+    'step is {"objective": "<step objective>", "execution_kind": "command", '
+    '"command": ["<argv0>", "<argv1>", ...], "sandbox_policy": {"kind": '
+    '"docker" or "podman", "image": "<optional image, default '
+    'python:3.12-slim>", "mounts": [["<host path>", "<container path>"], '
+    '...], "working_dir": "<optional absolute path>", "env_passthrough": '
+    '["<ENV_VAR_NAME>", ...], "network_enabled": <optional boolean, default '
+    'false>}, "timeout": <optional positive number of seconds>} and must not '
+    'include "message". A provider step is {"objective": "<step '
+    'objective>", "execution_kind": "provider", "message": {"provider": '
+    '"<provider name>", "content": "<message content>", "model": "<optional '
+    'model>", "system": "<optional system prompt>", "temperature": <optional '
+    'number>, "max_tokens": <optional positive integer>}} and must not '
+    'include "command", "timeout", or "sandbox_policy".'
 )
 
 
@@ -900,7 +925,7 @@ class RunCoordinator:
             evidence["raw"] = dict(response.raw)
 
         try:
-            steps = self._parse_plan_proposal(response.content)
+            steps = self._parse_plan_proposal(response.content, plan_id)
         except ValueError as error:
             payload: dict[str, object] = {
                 "run_id": run_id,
@@ -920,10 +945,7 @@ class RunCoordinator:
         payload = {
             "run_id": run_id,
             "objective": planning_objective,
-            "steps": [
-                {"objective": step.objective, "execution_kind": step.execution_kind}
-                for step in steps
-            ],
+            "steps": [self._plan_step_proposal_payload(step) for step in steps],
             "evidence": evidence,
         }
         try:
@@ -1609,8 +1631,16 @@ class RunCoordinator:
         return {key: value for key, value in asdict(message).items() if value is not None}
 
     @staticmethod
-    def _parse_plan_proposal(content: str) -> tuple[PlanStepProposal, ...]:
-        """Validate the minimal accepted plan proposal shape, or raise ``ValueError``."""
+    def _parse_plan_proposal(content: str, plan_id: str) -> tuple[PlanStepProposal, ...]:
+        """Validate the accepted plan proposal shape, or raise ``ValueError``.
+
+        Each step's executable payload is validated with the same
+        ``_validate_command``/``_validate_sandbox_policy``/``_validate_message``
+        rules ``add_step`` enforces, so a persisted draft step is always
+        compatible with the existing queued-step creation path. ``step_id``
+        is materialized deterministically from ``plan_id`` and the step's
+        1-based position, never taken from the model.
+        """
 
         try:
             parsed = json.loads(content)
@@ -1637,23 +1667,96 @@ class RunCoordinator:
                     f"plan proposal step {index} execution_kind must be "
                     "'command' or 'provider'"
                 )
+            command = item.get("command")
+            timeout = item.get("timeout")
+            sandbox_policy = item.get("sandbox_policy")
+            message = item.get("message")
+            try:
+                if execution_kind == "command":
+                    if message is not None:
+                        raise ValueError("command execution must not include 'message'")
+                    if command is None:
+                        raise ValueError("command execution requires 'command'")
+                    if sandbox_policy is None:
+                        raise ValueError("command execution requires 'sandbox_policy'")
+                    normalized_command = RunCoordinator._validate_command(command, timeout)
+                    normalized_sandbox_policy = RunCoordinator._validate_sandbox_policy(
+                        sandbox_policy, has_command=True
+                    )
+                    normalized_message = None
+                    normalized_timeout = timeout
+                else:
+                    if command is not None or timeout is not None or sandbox_policy is not None:
+                        raise ValueError(
+                            "provider execution must not include 'command', "
+                            "'timeout', or 'sandbox_policy'"
+                        )
+                    if message is None:
+                        raise ValueError("provider execution requires 'message'")
+                    normalized_message = RunCoordinator._validate_message(message)
+                    normalized_command = None
+                    normalized_sandbox_policy = None
+                    normalized_timeout = None
+            except ValueError as error:
+                raise ValueError(f"plan proposal step {index} {error}") from error
             proposals.append(
-                PlanStepProposal(objective=step_objective, execution_kind=execution_kind)
+                PlanStepProposal(
+                    step_id=f"{plan_id}-step-{index + 1}",
+                    objective=step_objective,
+                    execution_kind=execution_kind,
+                    command=normalized_command,
+                    timeout=normalized_timeout,
+                    sandbox_policy=normalized_sandbox_policy,
+                    message=normalized_message,
+                )
             )
         return tuple(proposals)
+
+    @staticmethod
+    def _plan_step_proposal_payload(step: PlanStepProposal) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "step_id": step.step_id,
+            "objective": step.objective,
+            "execution_kind": step.execution_kind,
+        }
+        if step.command is not None:
+            payload["command"] = list(step.command)
+        if step.timeout is not None:
+            payload["timeout"] = step.timeout
+        if step.sandbox_policy is not None:
+            payload["sandbox_policy"] = RunCoordinator._sandbox_policy_payload(
+                step.sandbox_policy
+            )
+        if step.message is not None:
+            payload["message"] = RunCoordinator._message_payload(step.message)
+        return payload
+
+    @staticmethod
+    def _plan_step_proposal(item: Mapping[str, object]) -> PlanStepProposal:
+        command = item.get("command")
+        timeout = item.get("timeout")
+        message = item.get("message")
+        normalized_command = RunCoordinator._validate_command(command, timeout)
+        normalized_message = RunCoordinator._validate_message(message)
+        normalized_sandbox_policy = RunCoordinator._validate_sandbox_policy(
+            item.get("sandbox_policy"), has_command=normalized_command is not None
+        )
+        return PlanStepProposal(
+            step_id=str(item["step_id"]),
+            objective=str(item["objective"]),
+            execution_kind=str(item["execution_kind"]),
+            command=normalized_command,
+            timeout=timeout,
+            sandbox_policy=normalized_sandbox_policy,
+            message=normalized_message,
+        )
 
     @staticmethod
     def _plan_draft(record: StateRecord) -> PlanDraft:
         payload = record.payload
         raw_steps = payload.get("steps")
         steps = (
-            tuple(
-                PlanStepProposal(
-                    objective=str(item["objective"]),
-                    execution_kind=str(item["execution_kind"]),
-                )
-                for item in raw_steps
-            )
+            tuple(RunCoordinator._plan_step_proposal(item) for item in raw_steps)
             if isinstance(raw_steps, list)
             else ()
         )

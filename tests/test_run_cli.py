@@ -3028,6 +3028,49 @@ def test_cli_run_reassign_claim_produces_exactly_one_winner_under_contention(
     assert reassignment_entries[0].agent_id == final.agent_id
 
 
+PLAN_PROPOSAL_CONTENT = (
+    '{"steps": ['
+    '{"objective": "Write the fix", "execution_kind": "command", '
+    '"command": ["pytest"], "sandbox_policy": {"kind": "docker"}}, '
+    '{"objective": "Summarize the change", "execution_kind": "provider", '
+    '"message": {"provider": "ollama", "content": "Summarize the diff"}}'
+    "]}"
+)
+
+PLAN_PROPOSAL_STEPS_PAYLOAD = [
+    {
+        "step_id": "draft-1-step-1",
+        "objective": "Write the fix",
+        "execution_kind": "command",
+        "command": ["pytest"],
+        "timeout": None,
+        "sandbox_policy": {
+            "kind": "docker",
+            "image": "python:3.12-slim",
+            "mounts": [],
+            "working_dir": None,
+            "env_passthrough": [],
+            "network_enabled": False,
+        },
+    },
+    {
+        "step_id": "draft-1-step-2",
+        "objective": "Summarize the change",
+        "execution_kind": "provider",
+        "command": None,
+        "timeout": None,
+        "message": {
+            "provider": "ollama",
+            "content": "Summarize the diff",
+            "model": None,
+            "system": None,
+            "temperature": None,
+            "max_tokens": None,
+        },
+    },
+]
+
+
 def test_cli_plan_dispatches_objective_and_persists_draft_without_queuing_steps(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -3037,18 +3080,12 @@ def test_cli_plan_dispatches_objective_and_persists_draft_without_queuing_steps(
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Ship the feature")
     captured = {}
-    proposal_content = (
-        '{"steps": ['
-        '{"objective": "Write the fix", "execution_kind": "command"}, '
-        '{"objective": "Summarize the change", "execution_kind": "provider"}'
-        "]}"
-    )
 
     class Adapter:
         def complete(self, request):
             captured["request"] = request
             return ChatResponse(
-                content=proposal_content, model="served-model", raw={"id": "plan-1"}
+                content=PLAN_PROPOSAL_CONTENT, model="served-model", raw={"id": "plan-1"}
             )
 
     def build_adapter(spec):
@@ -3074,15 +3111,12 @@ def test_cli_plan_dispatches_objective_and_persists_draft_without_queuing_steps(
         "run_id": "run-1",
         "status": "draft",
         "revision": 1,
-        "steps": [
-            {"objective": "Write the fix", "execution_kind": "command"},
-            {"objective": "Summarize the change", "execution_kind": "provider"},
-        ],
+        "steps": PLAN_PROPOSAL_STEPS_PAYLOAD,
         "evidence": {
             "provider": "ollama",
             "requested_model": "custom-local",
             "response_model": "served-model",
-            "content": proposal_content,
+            "content": PLAN_PROPOSAL_CONTENT,
             "raw": {"id": "plan-1"},
         },
     }
@@ -3103,9 +3137,7 @@ def test_cli_plan_defaults_objective_to_run_objective(tmp_path, monkeypatch, cap
     class Adapter:
         def complete(self, request):
             captured["request"] = request
-            return ChatResponse(
-                content='{"steps": [{"objective": "Do it", "execution_kind": "command"}]}'
-            )
+            return ChatResponse(content=PLAN_PROPOSAL_CONTENT)
 
     monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
 
@@ -3190,17 +3222,11 @@ def test_cli_inspect_plan_prints_a_reviewable_draft_without_mutation(
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
     coordinator.create("run-1", objective="Ship the feature")
-    proposal_content = (
-        '{"steps": ['
-        '{"objective": "Write the fix", "execution_kind": "command"}, '
-        '{"objective": "Summarize the change", "execution_kind": "provider"}'
-        "]}"
-    )
 
     class Adapter:
         def complete(self, request):
             return ChatResponse(
-                content=proposal_content, model="served-model", raw={"id": "plan-1"}
+                content=PLAN_PROPOSAL_CONTENT, model="served-model", raw={"id": "plan-1"}
             )
 
     monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
@@ -3220,15 +3246,12 @@ def test_cli_inspect_plan_prints_a_reviewable_draft_without_mutation(
         "run_id": "run-1",
         "status": "draft",
         "revision": 1,
-        "steps": [
-            {"objective": "Write the fix", "execution_kind": "command"},
-            {"objective": "Summarize the change", "execution_kind": "provider"},
-        ],
+        "steps": PLAN_PROPOSAL_STEPS_PAYLOAD,
         "evidence": {
             "provider": "ollama",
             "requested_model": None,
             "response_model": "served-model",
-            "content": proposal_content,
+            "content": PLAN_PROPOSAL_CONTENT,
             "raw": {"id": "plan-1"},
         },
     }

@@ -24,6 +24,7 @@ from .runtime import (
     AgentRegistry,
     ClaimStaleness,
     PlanDraft,
+    PlanStepProposal,
     ProviderMessage,
     RunCoordinator,
     RunHistoryEntry,
@@ -536,12 +537,25 @@ def _plan_draft_payload(draft: PlanDraft) -> dict[str, object]:
         "run_id": draft.run_id,
         "status": draft.status,
         "revision": draft.revision,
-        "steps": [asdict(step) for step in draft.steps],
+        "steps": [_plan_step_proposal_payload(step) for step in draft.steps],
     }
     if draft.evidence is not None:
         payload["evidence"] = dict(draft.evidence)
     if draft.error is not None:
         payload["error"] = draft.error
+    return payload
+
+
+def _plan_step_proposal_payload(step: PlanStepProposal) -> dict[str, object]:
+    """Return the standard JSON-compatible view of one proposed plan step."""
+
+    payload = asdict(step)
+    if step.message is None:
+        payload.pop("message")
+    if step.sandbox_policy is None:
+        payload.pop("sandbox_policy")
+    else:
+        payload["sandbox_policy"]["kind"] = step.sandbox_policy.kind.value
     return payload
 
 
