@@ -40,6 +40,7 @@ DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 _REDACTED = "<redacted>"
 _REDACTED_OUTPUT_KEYS = ("stdout", "stderr", "content", "raw")
 _REDACTED_MESSAGE_KEYS = ("content", "system")
+_REDACTED_TOOL_CALL_KEYS = ("arguments", "command", "stdout", "stderr")
 
 _RUNS_PATH = f"{API_BASE_PATH}/runs"
 _RUN_DETAIL_PATTERN = re.compile(rf"^{re.escape(_RUNS_PATH)}/(?P<run_id>[^/]+)$")
@@ -102,7 +103,24 @@ def _redact_step_for_http(step_payload: dict[str, object]) -> dict[str, object]:
         for key in _REDACTED_OUTPUT_KEYS:
             if key in output:
                 output[key] = _REDACTED
+        _redact_tool_call_for_http(output.get("tool_call"))
+    declarations = step_payload.get("tool_declarations")
+    if isinstance(declarations, list):
+        for declaration in declarations:
+            if isinstance(declaration, dict) and "command" in declaration:
+                declaration["command"] = _REDACTED
+    _redact_tool_call_for_http(step_payload.get("tool_call"))
     return step_payload
+
+
+def _redact_tool_call_for_http(tool_call: object) -> None:
+    """Redact model input, command arguments, and captured terminal output in place."""
+
+    if not isinstance(tool_call, dict):
+        return
+    for key in _REDACTED_TOOL_CALL_KEYS:
+        if key in tool_call:
+            tool_call[key] = _REDACTED
 
 
 def _is_revision(value: object) -> bool:

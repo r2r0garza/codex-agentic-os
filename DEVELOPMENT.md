@@ -406,6 +406,16 @@ exactly as before. `worker run` and `run execute-next` both pass the same
 persisted sandbox resolver used for command steps; `run execute-next` only
 supplies it when the next step declares tools.
 
+`run history` records the non-sensitive tool name plus a bounded outcome for
+each durable phase: `requested`, `succeeded`, `failed`, or
+`rejected_undeclared`. It never duplicates model arguments, command argv,
+environment values, provider request bodies, stdout, or stderr. An undeclared
+request's rejection entry is atomic with the definitive step/run failure and
+remains eligible for the established failed-step retry classification. Trusted
+local CLI inspection still shows the full durable step record; the loopback
+HTTP run-detail surface redacts tool declaration commands and tool-call
+arguments, commands, stdout, and stderr under Decision 0008.
+
 ```bash
 codex-agentic-os run add-step run-002 step-002b --objective "Summarize output" \
   --capability general --message "Summarize the test output" \

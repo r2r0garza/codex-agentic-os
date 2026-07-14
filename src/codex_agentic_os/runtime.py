@@ -1132,6 +1132,8 @@ class RunCoordinator:
                     ValueError(
                         f"model requested an undeclared tool: {response.tool_call.name}"
                     ),
+                    tool_name=response.tool_call.name,
+                    tool_outcome="rejected_undeclared",
                 )
             if sandbox_resolver is None:
                 return self.fail_step_from_error(
@@ -1233,7 +1235,8 @@ class RunCoordinator:
                     RunHistoryEntry(
                         step.run_id, 0, "tool_call_requested", StepStatus.RUNNING,
                         step_id=step.step_id, agent_id=run.agent_id,
-                        execution_kind="provider",
+                        execution_kind="provider", tool_name=record.tool_name,
+                        tool_outcome="requested",
                     ),
                 ),
             )
@@ -1276,7 +1279,8 @@ class RunCoordinator:
                     RunHistoryEntry(
                         step.run_id, 0, "tool_call_executed", StepStatus.RUNNING,
                         step_id=step.step_id, agent_id=run.agent_id,
-                        execution_kind="provider",
+                        execution_kind="provider", tool_name=record.tool_name,
+                        tool_outcome=("succeeded" if result.returncode == 0 else "failed"),
                     ),
                 ),
             )
@@ -2208,7 +2212,12 @@ class RunCoordinator:
         return self._step(stored[0]), self._run(stored[1])
 
     def fail_step_from_error(
-        self, step_id: str, error: Exception
+        self,
+        step_id: str,
+        error: Exception,
+        *,
+        tool_name: str | None = None,
+        tool_outcome: str | None = None,
     ) -> tuple[RunStep, AgentRun]:
         """Fail a running provider-message step on an adapter error, without orphaning it."""
 
@@ -2222,6 +2231,8 @@ class RunCoordinator:
             raise ValueError(f"run must be running to fail a step: {run.run_id}")
         if current.status is not StepStatus.RUNNING:
             raise ValueError(f"step must be running to record a failure: {step_id}")
+        if (tool_name is None) != (tool_outcome is None):
+            raise ValueError("tool failure history requires both tool name and outcome")
 
         output: dict[str, object] = {
             "error": str(error),
@@ -2268,6 +2279,23 @@ class RunCoordinator:
                 ("run", run.run_id, run.status, run.revision),
             ),
             history=(
+                *(
+                    (
+                        RunHistoryEntry(
+                            run.run_id,
+                            0,
+                            "tool_call_rejected",
+                            StepStatus.FAILED,
+                            step_id=step_id,
+                            agent_id=run.agent_id,
+                            execution_kind="provider",
+                            tool_name=tool_name,
+                            tool_outcome=tool_outcome,
+                        ),
+                    )
+                    if tool_name is not None
+                    else ()
+                ),
                 RunHistoryEntry(
                     run.run_id, 0, "step_failed", StepStatus.FAILED,
                     step_id=step_id, agent_id=run.agent_id, execution_kind="provider",

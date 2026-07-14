@@ -44,6 +44,8 @@ class RunHistoryEntry:
     parent_run_id: str | None = None
     parent_step_id: str | None = None
     delegated_run_id: str | None = None
+    tool_name: str | None = None
+    tool_outcome: str | None = None
 
 
 class StateConflictError(ValueError):
@@ -140,6 +142,8 @@ class StateStore:
                 "parent_run_id",
                 "parent_step_id",
                 "delegated_run_id",
+                "tool_name",
+                "tool_outcome",
             ):
                 if column not in history_columns:
                     connection.execute(
@@ -238,6 +242,8 @@ class StateStore:
                         parent_run_id=entry.parent_run_id,
                         parent_step_id=entry.parent_step_id,
                         delegated_run_id=entry.delegated_run_id,
+                        tool_name=entry.tool_name,
+                        tool_outcome=entry.tool_outcome,
                     )
                 connection.commit()
         except sqlite3.IntegrityError as error:
@@ -297,6 +303,8 @@ class StateStore:
                     parent_run_id=entry.parent_run_id,
                     parent_step_id=entry.parent_step_id,
                     delegated_run_id=entry.delegated_run_id,
+                    tool_name=entry.tool_name,
+                    tool_outcome=entry.tool_outcome,
                 )
             connection.commit()
         return tuple(stored)
@@ -588,7 +596,13 @@ class StateStore:
                 "retried_step_id": step_id,
             }
             for key in (
-                "command", "timeout", "message", "sandbox_policy", "context_step_ids"
+                "command",
+                "timeout",
+                "message",
+                "sandbox_policy",
+                "context_step_ids",
+                "tools",
+                "response_artifact_name",
             ):
                 if key in step_payload:
                     new_step_payload[key] = step_payload[key]
@@ -1185,6 +1199,8 @@ class StateStore:
                     parent_run_id=entry.parent_run_id,
                     parent_step_id=entry.parent_step_id,
                     delegated_run_id=entry.delegated_run_id,
+                    tool_name=entry.tool_name,
+                    tool_outcome=entry.tool_outcome,
                 )
             connection.commit()
         return stored_plan, tuple(stored_steps)
@@ -1201,7 +1217,7 @@ class StateStore:
                        execution_kind, retried_step_id, context_step_ids, plan_id,
                        required_capability, resolved_provider, resolved_model,
                        routing_reason, artifact_name, parent_run_id, parent_step_id,
-                       delegated_run_id
+                       delegated_run_id, tool_name, tool_outcome
                 FROM run_history WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
@@ -1226,6 +1242,8 @@ class StateStore:
                 parent_run_id=row[15],
                 parent_step_id=row[16],
                 delegated_run_id=row[17],
+                tool_name=row[18],
+                tool_outcome=row[19],
             )
             for row in rows
         )
@@ -1329,6 +1347,8 @@ class StateStore:
         parent_run_id: str | None = None,
         parent_step_id: str | None = None,
         delegated_run_id: str | None = None,
+        tool_name: str | None = None,
+        tool_outcome: str | None = None,
     ) -> None:
         """Append one ordered history entry on a caller-owned run mutation transaction."""
 
@@ -1343,8 +1363,8 @@ class StateStore:
                  execution_kind, retried_step_id, context_step_ids, plan_id,
                  required_capability, resolved_provider, resolved_model,
                  routing_reason, artifact_name, parent_run_id, parent_step_id,
-                 delegated_run_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 delegated_run_id, tool_name, tool_outcome)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1365,6 +1385,8 @@ class StateStore:
                 parent_run_id,
                 parent_step_id,
                 delegated_run_id,
+                tool_name,
+                tool_outcome,
             ),
         )
 

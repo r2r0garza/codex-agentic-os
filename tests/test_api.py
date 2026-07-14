@@ -801,6 +801,47 @@ def test_http_api_run_detail_redacts_captured_terminal_and_provider_output(
     }
 
 
+def test_http_redaction_covers_tool_declarations_calls_and_nested_results() -> None:
+    payload = {
+        "tool_declarations": [
+            {"name": "inspect", "command": ["sh", "-c", "private command"]}
+        ],
+        "tool_call": {
+            "tool_name": "inspect",
+            "arguments": {"token": "private argument"},
+            "phase": "executed",
+            "command": ["docker", "private command"],
+            "exit_code": 0,
+            "stdout": "private stdout",
+            "stderr": "private stderr",
+        },
+        "output": {
+            "content": "private response",
+            "tool_call": {
+                "tool_name": "inspect",
+                "arguments": {"token": "private argument"},
+                "phase": "executed",
+                "command": ["docker", "private command"],
+                "exit_code": 0,
+                "stdout": "private stdout",
+                "stderr": "private stderr",
+            },
+        },
+    }
+
+    redacted = _redact_step_for_http(payload)
+
+    assert redacted["tool_declarations"][0]["name"] == "inspect"
+    assert redacted["tool_declarations"][0]["command"] == "<redacted>"
+    for tool_call in (redacted["tool_call"], redacted["output"]["tool_call"]):
+        assert tool_call["tool_name"] == "inspect"
+        assert tool_call["phase"] == "executed"
+        assert tool_call["exit_code"] == 0
+        for key in ("arguments", "command", "stdout", "stderr"):
+            assert tool_call[key] == "<redacted>"
+    assert "private" not in json.dumps(redacted)
+
+
 def test_http_api_run_detail_never_serializes_sensitive_raw_values(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     _seed_completed_steps_with_sensitive_output(database)

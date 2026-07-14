@@ -5485,6 +5485,18 @@ def test_execute_next_step_runs_a_declared_tool_call_end_to_end(tmp_path) -> Non
 
     reloaded = RunCoordinator(StateStore(database)).get_step("step-1")
     assert reloaded.tool_call == step.tool_call
+    activity = [
+        entry
+        for entry in RunCoordinator(StateStore(database)).list_history("run-1")
+        if entry.tool_name is not None
+    ]
+    assert [
+        (entry.transition, entry.tool_name, entry.tool_outcome)
+        for entry in activity
+    ] == [
+        ("tool_call_requested", "list_files", "requested"),
+        ("tool_call_executed", "list_files", "succeeded"),
+    ]
 
 
 def test_tool_call_request_is_durable_before_sandbox_executes(tmp_path) -> None:
@@ -5571,6 +5583,73 @@ def test_execute_next_step_fails_definitively_on_undeclared_tool_call(tmp_path) 
     assert "undeclared tool" in step.output["error"]
     assert step.tool_call is None
     assert run.status is RunStatus.FAILED
+    activity = [
+        entry
+        for entry in coordinator.list_history("run-1")
+        if entry.tool_name is not None
+    ]
+    assert [
+        (entry.transition, entry.status, entry.tool_name, entry.tool_outcome)
+        for entry in activity
+    ] == [
+        (
+            "tool_call_rejected",
+            StepStatus.FAILED,
+            "delete_everything",
+            "rejected_undeclared",
+        )
+    ]
+    assert step.retry_eligible is True
+    retried, retried_run = coordinator.retry_step(
+        "step-1",
+        "step-2",
+        expected_step_revision=step.revision,
+        expected_run_revision=run.revision,
+    )
+    assert retried.status is StepStatus.QUEUED
+    assert retried_run.status is RunStatus.QUEUED
+
+
+def test_tool_call_history_records_nonzero_sandbox_outcome_without_output(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1")
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 7, "private stdout", "private stderr")
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResponse(
+                    "",
+                    tool_call=ChatToolCall(
+                        name="list_files",
+                        arguments={"token": "private argument"},
+                    ),
+                )
+            return ChatResponse("Tool failed; no files summarized.")
+
+    coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda _: Adapter(),
+        sandbox_resolver=lambda _: Executor(),
+    )
+
+    activity = [
+        entry
+        for entry in coordinator.list_history("run-1")
+        if entry.tool_name is not None
+    ]
+    assert activity[-1].tool_outcome == "failed"
+    assert "private" not in repr(activity)
 
 
 def test_execute_next_step_fails_when_tool_call_has_no_sandbox_resolver(tmp_path) -> None:

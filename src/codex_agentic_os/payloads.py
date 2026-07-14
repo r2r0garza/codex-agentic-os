@@ -158,6 +158,8 @@ def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, objec
             "parent_run_id",
             "parent_step_id",
             "delegated_run_id",
+            "tool_name",
+            "tool_outcome",
         ):
             if getattr(entry, optional_field) is None:
                 payload.pop(optional_field)

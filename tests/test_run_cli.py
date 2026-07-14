@@ -1002,6 +1002,18 @@ def test_cli_execute_next_runs_a_declared_tool_call_end_to_end(
     assert payload["steps"][0]["tool_call"]["exit_code"] == 0
     assert payload["run"]["status"] == "succeeded"
 
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    history = json.loads(capsys.readouterr().out)
+    activity = [entry for entry in history if "tool_name" in entry]
+    assert [
+        (entry["transition"], entry["tool_name"], entry["tool_outcome"])
+        for entry in activity
+    ] == [
+        ("tool_call_requested", "list_files", "requested"),
+        ("tool_call_executed", "list_files", "succeeded"),
+    ]
+    assert "stdout" not in json.dumps(activity)
+
 
 def test_cli_add_step_without_tool_flags_has_no_tool_declarations(
     tmp_path, capsys
