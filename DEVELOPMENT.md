@@ -511,7 +511,14 @@ for a context-referencing provider step additionally carries the resolved
 For a capability-routed provider step, the same `step_started` entry carries
 `required_capability`, `resolved_provider`, `resolved_model`, and a stable
 `routing_reason`. These fields persist across restart and contain no
-credentials or request body.
+credentials or request body. `required_capability` reflects the step's
+requested capability even when routing fails to resolve a provider; when no
+configured provider (under the effective routing policy) declares the
+capability at dispatch time, the step fails definitively with an explicit
+`"no configured provider satisfies required capability: ..."` reason,
+`resolved_provider`/`resolved_model`/`routing_reason` stay `null`, and the
+parent run fails alongside it exactly as any other definite step failure.
+Fixed-provider steps are unaffected and continue to bypass routing entirely.
 Entries never include credentials, raw environment values, command arguments,
 provider request bodies, or terminal outputs:
 

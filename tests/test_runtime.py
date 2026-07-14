@@ -2257,6 +2257,114 @@ def test_execute_next_step_fixed_provider_bypasses_capability_routing(tmp_path) 
     assert started.routing_reason is None
 
 
+def test_execute_next_step_fails_definitively_when_no_provider_satisfies_capability(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    specs = (
+        ProviderSpec(
+            kind=ProviderKind.OPENAI, model="openai-model", capabilities=("general",)
+        ),
+    )
+    policy = ProviderRoutingPolicy((ProviderKind.OPENAI,))
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Route work")
+    coordinator.add_step(
+        "run-1",
+        "routed",
+        objective="Reason",
+        message=ProviderMessage(
+            provider=None,
+            content="private request body",
+            required_capability="reasoning",
+        ),
+    )
+
+    step, run = coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda message: pytest.fail("adapter must not be invoked"),
+        routing_policy=policy,
+        provider_specs=specs,
+    )
+
+    assert step.status is StepStatus.FAILED
+    assert step.output == {
+        "error": "no configured provider satisfies required capability: reasoning",
+        "error_type": "ValueError",
+    }
+    assert step.failure_kind is StepFailureKind.DEFINITE
+    assert step.retry_eligible is True
+    assert run.status is RunStatus.FAILED
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1").status is RunStatus.FAILED
+    assert reloaded.get_step("routed").status is StepStatus.FAILED
+    assert reloaded.get_step("routed").output == step.output
+
+    history = reloaded.list_history("run-1")
+    started = next(
+        entry for entry in history if entry.transition == "step_started"
+    )
+    assert started.required_capability == "reasoning"
+    assert started.resolved_provider is None
+    assert started.resolved_model is None
+    assert started.routing_reason is None
+    failed = next(entry for entry in history if entry.transition == "step_failed")
+    assert failed.step_id == "routed"
+    assert "private request body" not in repr(failed)
+
+
+def test_execute_next_step_fixed_provider_regression_alongside_capability_failure(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    specs = (
+        ProviderSpec(
+            kind=ProviderKind.OPENAI, model="openai-model", capabilities=("general",)
+        ),
+    )
+    policy = ProviderRoutingPolicy((ProviderKind.OPENAI,))
+    coordinator = RunCoordinator(StateStore(database))
+
+    coordinator.create("routed-run", objective="Route work")
+    coordinator.add_step(
+        "routed-run",
+        "routed",
+        objective="Reason",
+        message=ProviderMessage(
+            provider=None, content="route", required_capability="reasoning"
+        ),
+    )
+    failed_step, failed_run = coordinator.execute_next_step(
+        "routed-run",
+        adapter_resolver=lambda message: pytest.fail("adapter must not be invoked"),
+        routing_policy=policy,
+        provider_specs=specs,
+    )
+    assert failed_step.status is StepStatus.FAILED
+    assert failed_run.status is RunStatus.FAILED
+
+    coordinator.create("fixed-run", objective="Fixed dispatch")
+    fixed_message = ProviderMessage(provider="ollama", content="fixed request")
+    coordinator.add_step("fixed-run", "fixed", objective="Fixed", message=fixed_message)
+
+    resolved = []
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("fixed")
+
+    fixed_step, fixed_run = coordinator.execute_next_step(
+        "fixed-run",
+        adapter_resolver=lambda routed: resolved.append(routed) or Adapter(),
+        routing_policy=policy,
+        provider_specs=specs,
+    )
+    assert resolved == [fixed_message]
+    assert fixed_step.status is StepStatus.SUCCEEDED
+    assert fixed_run.status is RunStatus.SUCCEEDED
+
+
 def test_execute_next_step_sends_resolved_context_as_ordered_prior_turns(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     requests = []

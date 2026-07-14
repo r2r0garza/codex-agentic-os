@@ -739,8 +739,8 @@ class RunCoordinator:
                         context_step_ids=next_step.context_step_ids or None,
                         required_capability=(
                             None
-                            if provider_route is None
-                            else provider_route.required_capability
+                            if next_step.message is None
+                            else next_step.message.required_capability
                         ),
                         resolved_provider=(
                             None
@@ -821,19 +821,25 @@ class RunCoordinator:
             raise ValueError(f"next step has no execution input: {next_step.step_id}")
 
         provider_route = None
+        routing_error: ValueError | None = None
         if (
             next_step.message is not None
             and next_step.message.required_capability is not None
         ):
-            provider_route = routing_policy.resolve(
-                next_step.message.required_capability,
-                tuple(provider_specs),
-                model=next_step.message.model,
-            )
+            try:
+                provider_route = routing_policy.resolve(
+                    next_step.message.required_capability,
+                    tuple(provider_specs),
+                    model=next_step.message.model,
+                )
+            except ValueError as error:
+                routing_error = error
 
         running_step = self.start_next_step(run_id, provider_route=provider_route)
         if running_step is None:  # Defensive: next_step proved queued above.
             return None
+        if routing_error is not None:
+            return self.fail_step_from_error(running_step.step_id, routing_error)
         if running_step.command is not None:
             assert resolved_executor is not None
             result = resolved_executor.execute(
@@ -1256,7 +1262,7 @@ class RunCoordinator:
                 execution_kind=self._execution_kind(current),
                 context_step_ids=resolved_context_step_ids,
                 required_capability=(
-                    None if provider_route is None else provider_route.required_capability
+                    None if current.message is None else current.message.required_capability
                 ),
                 resolved_provider=(
                     None if provider_route is None else provider_route.provider.value

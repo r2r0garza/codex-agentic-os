@@ -2136,6 +2136,46 @@ def test_cli_execute_next_records_provider_failure_without_orphaned_claim(
     assert reloaded.get_step("model-1").status is StepStatus.FAILED
 
 
+def test_cli_execute_next_fails_definitively_with_no_eligible_provider(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Route durable model work")
+    coordinator.add_step(
+        "run-1",
+        "model-1",
+        objective="Reason",
+        message=ProviderMessage(
+            provider=None,
+            content="private routing request",
+            required_capability="reasoning",
+        ),
+    )
+
+    main([
+        "run",
+        "execute-next",
+        "run-1",
+        "--provider-preference",
+        "ollama",
+        "--state-db",
+        str(database),
+    ])
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["steps"][0]["status"] == "failed"
+    assert payload["steps"][0]["output"] == {
+        "error": "no configured provider satisfies required capability: reasoning",
+        "error_type": "ValueError",
+    }
+    assert payload["run"]["status"] == "failed"
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1").status is RunStatus.FAILED
+    assert reloaded.get_step("model-1").status is StepStatus.FAILED
+
+
 def test_cli_execute_next_rejects_empty_image_without_mutation(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
