@@ -674,7 +674,48 @@ a temporary mixed-run database.
 ### Running the dashboard against the API
 
 `dashboard/` is a read-only Next.js operator dashboard over the same loopback
-API. Start both processes together for a browser-based review. In one
+API. For the reproducible Sprint 18 operator review, install the committed
+frontend dependencies once, ensure Docker is running, then launch the review
+harness from the repository root:
+
+```bash
+cd dashboard
+pnpm install
+cd ..
+./scripts/dashboard-operator-review.sh
+```
+
+The harness activates the repository `.venv`, creates a fresh isolated state
+database at `/tmp/codex-agentic-os-dashboard-review.sqlite3`, and registers a
+dedicated worker. That real worker executes the first command step through a
+Docker sandbox and stops after the second, provider-backed step reaches its
+approval gate. The harness then starts the read-only API on `127.0.0.1:8080`
+and the dashboard on `127.0.0.1:3000` against that durable state. It never
+approves, rejects, cancels, retries, or otherwise mutates the run after serving
+begins.
+
+Open `http://127.0.0.1:3000`, select `dashboard-review`, and confirm all of the
+following browser-visible evidence:
+
+- The run is `running`, with `command-step` first and `succeeded` after real
+  worker execution, followed by queued `approval-step`.
+- Lifecycle history includes the run and command-step start/success transitions
+  with `dashboard-review-worker` provenance.
+- “Publish the reviewed result” appears under Pending approvals with a visible
+  `pending` badge.
+- Provider usage lists the provider step in durable order and displays
+  `unavailable` token evidence rather than fabricated zero values.
+- The only detail-view interaction is “Back to runs”; there are no
+  approve/reject/cancel/retry controls or forms.
+
+Press Ctrl-C in the harness terminal when the review is complete. It stops both
+servers and compares the state database's SHA-256 digest with the digest taken
+immediately before serving; `Read-only check passed` confirms the browser/API
+review did not change durable state. The database is recreated on the next run.
+Set `STATE_DB`, `API_PORT`, `DASHBOARD_PORT`, `SANDBOX_IMAGE`, `RUN_ID`, or
+`AGENT_ID` before the command only when a local conflict requires an override.
+
+For an existing database instead, start both processes manually. In one
 terminal, serve the API exactly as above:
 
 ```bash
