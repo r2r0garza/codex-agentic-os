@@ -34,6 +34,7 @@ from .runtime import (
     ArtifactDeclaration,
     ArtifactRecord,
     ClaimStaleness,
+    DelegationPendingError,
     DelegationSpec,
     PlanDraft,
     PlanStepProposal,
@@ -1349,10 +1350,36 @@ def main(argv: Sequence[str] | None = None) -> None:
                 step = coordinator.cancel_step(arguments.step_id)
                 run_id = step.run_id
             elif arguments.run_command == "execute-next":
+                steps = coordinator.list_steps(arguments.run_id)
+                running_delegation = next(
+                    (
+                        step
+                        for step in steps
+                        if step.status is StepStatus.RUNNING
+                        and step.delegation is not None
+                    ),
+                    None,
+                )
+                if running_delegation is not None:
+                    try:
+                        coordinator.execute_next_step(arguments.run_id)
+                    except DelegationPendingError:
+                        payload = _run_payload(coordinator, arguments.run_id)
+                        payload["execution"] = {"attempted": False}
+                        print(json.dumps(payload, indent=2, sort_keys=True))
+                        return
+                    print(
+                        json.dumps(
+                            _run_payload(coordinator, arguments.run_id),
+                            indent=2,
+                            sort_keys=True,
+                        )
+                    )
+                    return
                 next_step = next(
                     (
                         step
-                        for step in coordinator.list_steps(arguments.run_id)
+                        for step in steps
                         if step.status is StepStatus.QUEUED
                     ),
                     None,

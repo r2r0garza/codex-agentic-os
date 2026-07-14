@@ -565,3 +565,53 @@ def test_run_worker_dispatches_delegation_step_then_moves_on_without_crashing(
     assert child is not None and child.status is RunStatus.QUEUED
     ready_run = coordinator.get("run-ready")
     assert ready_run is not None and ready_run.status is RunStatus.SUCCEEDED
+
+
+def test_workers_complete_parent_after_target_agent_finishes_delegated_child(
+    tmp_path,
+) -> None:
+    from codex_agentic_os.runtime import DelegationSpec
+
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    registry.register("agent-2")
+    coordinator.create("run-parent", objective="Delegate", agent_id="agent-1")
+    coordinator.add_step(
+        "run-parent",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(
+            child_objective="Review the change", target_agent_id="agent-2"
+        ),
+    )
+    coordinator.execute_next_step("run-parent")
+    coordinator.add_step(
+        "delegate-child", "review", objective="Review", command=("true",)
+    )
+
+    child_summary = run_worker(
+        coordinator,
+        registry,
+        "agent-2",
+        heartbeat_interval=60,
+        poll_interval=1,
+        executor=_Executor(),
+        should_continue=_bounded_should_continue(3),
+    )
+    parent_summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        executor=_Executor(),
+        should_continue=_bounded_should_continue(3),
+    )
+
+    assert "review" in child_summary.executed_step_ids
+    assert coordinator.get("delegate-child").status is RunStatus.SUCCEEDED
+    assert "delegate" in parent_summary.executed_step_ids
+    assert coordinator.get_step("delegate").status is StepStatus.SUCCEEDED
+    assert coordinator.get("run-parent").status is RunStatus.SUCCEEDED

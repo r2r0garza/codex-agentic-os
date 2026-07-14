@@ -87,10 +87,10 @@ class DelegationPendingError(ValueError):
     """Raised when dispatch reaches a run whose delegation step awaits its child run.
 
     A delegation step stays ``running`` after its child run is atomically
-    spawned; it does not resolve to a terminal step outcome until a later
-    slice observes the child's terminal status. This error lets callers like
-    the worker loop distinguish that legitimate parked state from the
-    unexpected "another step is already running" conflict.
+    spawned and resolves only after its linked child reaches a terminal
+    status. This error lets callers like the worker loop distinguish that
+    legitimate parked state from the unexpected "another step is already
+    running" conflict.
     """
 
 
@@ -892,7 +892,7 @@ class RunCoordinator:
         routing_policy: ProviderRoutingPolicy = DEFAULT_PROVIDER_ROUTING_POLICY,
         provider_specs: Sequence[ProviderSpec] = DEFAULT_PROVIDER_SPECS,
     ) -> tuple[RunStep, AgentRun] | None:
-        """Execute and complete the next queued command or provider message."""
+        """Execute or reconcile the run's current command, provider, or delegation step."""
 
         run = self.get(run_id)
         if run is None:
@@ -906,10 +906,7 @@ class RunCoordinator:
         )
         if running_step is not None:
             if running_step.delegation is not None:
-                raise DelegationPendingError(
-                    "step is delegated to a pending child run: "
-                    f"{running_step.step_id} -> {running_step.delegated_run_id}"
-                )
+                return self._reconcile_delegation_step(run, running_step)
             raise ValueError(f"run already has a running step: {run_id}")
         next_step = next(
             (step for step in steps if step.status is StepStatus.QUEUED), None
@@ -1009,14 +1006,141 @@ class RunCoordinator:
             return self.fail_step_from_error(running_step.step_id, error)
         return self.complete_step_from_chat_response(running_step.step_id, response)
 
+    def _reconcile_delegation_step(
+        self, run: AgentRun, step: RunStep
+    ) -> tuple[RunStep, AgentRun]:
+        """Resolve a running delegation step from its linked child's terminal outcome."""
+
+        child_run_id = step.delegated_run_id
+        if child_run_id is None:  # Defensive: dispatched delegation steps always record it.
+            raise ValueError(
+                f"running delegation step has no linked child run: {step.step_id}"
+            )
+        child = self.get(child_run_id)
+        if child is None:
+            raise ValueError(f"delegated child run does not exist: {child_run_id}")
+        if child.status not in {
+            RunStatus.SUCCEEDED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }:
+            raise DelegationPendingError(
+                "step is delegated to a pending child run: "
+                f"{step.step_id} -> {child_run_id} ({child.status.value})"
+            )
+
+        output: dict[str, object] = {
+            "child_run_id": child.run_id,
+            "child_status": child.status.value,
+            "child_output": None if child.output is None else dict(child.output),
+        }
+        if child.agent_id is not None:
+            output["child_agent_id"] = child.agent_id
+        step_status = (
+            StepStatus.SUCCEEDED
+            if child.status is RunStatus.SUCCEEDED
+            else StepStatus.FAILED
+        )
+        step_payload: dict[str, object] = {
+            "run_id": step.run_id,
+            "position": step.position,
+            "objective": step.objective,
+            "delegation": self._delegation_payload(step.delegation),
+            "delegated_run_id": child_run_id,
+            "output": output,
+        }
+        self._add_context_step_ids_payload(step_payload, step)
+        self._add_approval_payload(step_payload, step)
+
+        superseded_step_ids = self._superseded_step_ids(run.run_id)
+        final = step_status is StepStatus.FAILED or all(
+            candidate.step_id == step.step_id
+            or candidate.status is StepStatus.SUCCEEDED
+            or candidate.step_id in superseded_step_ids
+            for candidate in self.list_steps(run.run_id)
+        )
+        if not final:
+            try:
+                stored = self.store.put_many(
+                    (("step", step.step_id, step_status, step_payload),),
+                    expected=(("step", step.step_id, step.status, step.revision),),
+                    history=(
+                        RunHistoryEntry(
+                            run.run_id,
+                            0,
+                            "step_succeeded",
+                            StepStatus.SUCCEEDED,
+                            step_id=step.step_id,
+                            agent_id=run.agent_id,
+                            execution_kind="delegation",
+                        ),
+                    ),
+                )
+            except StateConflictError as error:
+                raise ValueError(
+                    f"delegation outcome conflict: {step.step_id}"
+                ) from error
+            return self._step(stored[0]), run
+
+        run_status = (
+            RunStatus.SUCCEEDED
+            if step_status is StepStatus.SUCCEEDED
+            else RunStatus.FAILED
+        )
+        run_output: dict[str, object]
+        if run_status is RunStatus.SUCCEEDED:
+            run_output = {"completed_steps": len(self.list_steps(run.run_id))}
+        else:
+            run_output = {
+                "failed_step_id": step.step_id,
+                "child_run_id": child.run_id,
+                "child_status": child.status.value,
+                "child_output": None if child.output is None else dict(child.output),
+            }
+        run_payload = self._base_run_payload(run)
+        run_payload["output"] = run_output
+        try:
+            stored = self.store.put_many(
+                (
+                    ("step", step.step_id, step_status, step_payload),
+                    ("run", run.run_id, run_status, run_payload),
+                ),
+                expected=(
+                    ("step", step.step_id, step.status, step.revision),
+                    ("run", run.run_id, run.status, run.revision),
+                ),
+                history=(
+                    RunHistoryEntry(
+                        run.run_id,
+                        0,
+                        f"step_{step_status.value}",
+                        step_status,
+                        step_id=step.step_id,
+                        agent_id=run.agent_id,
+                        execution_kind="delegation",
+                    ),
+                    RunHistoryEntry(
+                        run.run_id,
+                        0,
+                        f"run_{run_status.value}",
+                        run_status,
+                        agent_id=run.agent_id,
+                        execution_kind="delegation",
+                    ),
+                ),
+            )
+        except StateConflictError as error:
+            raise ValueError(f"delegation outcome conflict: {step.step_id}") from error
+        return self._step(stored[0]), self._run(stored[1])
+
     def _dispatch_delegation_step(
         self, run: AgentRun, next_step: RunStep
     ) -> tuple[RunStep, AgentRun]:
         """Atomically dispatch one queued delegation step and spawn its linked child run.
 
-        Leaves the step ``running`` with its child run's id recorded; a
-        later slice completes the parent step from the child's terminal
-        outcome. Duplicate or competing dispatch of the same step is
+        Leaves the step ``running`` with its child run's id recorded; a later
+        execution reconciles the parent from the child's terminal outcome.
+        Duplicate or competing dispatch of the same step is
         prevented by the step's own compare-and-swap revision check inside
         :meth:`StateStore.dispatch_delegation_step`.
         """

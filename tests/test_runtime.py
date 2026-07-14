@@ -4707,6 +4707,175 @@ def test_execute_next_step_on_pending_delegation_step_raises_delegation_pending(
         coordinator.execute_next_step("run-1")
 
 
+@pytest.mark.parametrize("child_status", [RunStatus.QUEUED, RunStatus.RUNNING])
+def test_delegation_reconciliation_waits_for_active_child_without_mutation(
+    tmp_path, child_status
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Delegate part of the work")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(child_objective="Review the change"),
+    )
+    coordinator.execute_next_step("run-1")
+    if child_status is RunStatus.RUNNING:
+        coordinator.transition("delegate-child", RunStatus.RUNNING)
+    before_step = coordinator.get_step("delegate")
+    before_run = coordinator.get("run-1")
+
+    with pytest.raises(
+        DelegationPendingError,
+        match=rf"delegate -> delegate-child \({child_status.value}\)",
+    ):
+        coordinator.execute_next_step("run-1")
+
+    assert coordinator.get_step("delegate") == before_step
+    assert coordinator.get("run-1") == before_run
+
+
+def test_succeeded_child_completes_parent_delegation_with_durable_evidence(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Delegate part of the work", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(
+            child_objective="Review the change", target_agent_id="agent-2"
+        ),
+    )
+    coordinator.execute_next_step("run-1")
+    coordinator.transition("delegate-child", RunStatus.RUNNING)
+    coordinator.transition(
+        "delegate-child",
+        RunStatus.SUCCEEDED,
+        output={"summary": "review passed"},
+    )
+
+    step, run = coordinator.execute_next_step("run-1")
+
+    assert step.status is StepStatus.SUCCEEDED
+    assert step.output == {
+        "child_run_id": "delegate-child",
+        "child_status": "succeeded",
+        "child_output": {"summary": "review passed"},
+        "child_agent_id": "agent-2",
+    }
+    assert run.status is RunStatus.SUCCEEDED
+    assert run.output == {"completed_steps": 1}
+    assert [entry.transition for entry in coordinator.list_history("run-1")][-2:] == [
+        "step_succeeded",
+        "run_succeeded",
+    ]
+    assert all(
+        entry.execution_kind == "delegation"
+        for entry in coordinator.list_history("run-1")[-2:]
+    )
+
+
+def test_succeeded_child_advances_parent_to_its_next_queued_step(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Delegate then deliver")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(child_objective="Review the change"),
+    )
+    coordinator.add_step("run-1", "deliver", objective="Deliver", command=("true",))
+    coordinator.execute_next_step("run-1")
+    coordinator.transition("delegate-child", RunStatus.RUNNING)
+    coordinator.transition("delegate-child", RunStatus.SUCCEEDED, output={"ok": True})
+
+    step, run = coordinator.execute_next_step("run-1")
+
+    assert step.status is StepStatus.SUCCEEDED
+    assert run.status is RunStatus.RUNNING
+    assert coordinator.get_step("deliver").status is StepStatus.QUEUED
+    final_step, final_run = coordinator.execute_next_step("run-1", _StubExecutor())
+    assert final_step.status is StepStatus.SUCCEEDED
+    assert final_run.status is RunStatus.SUCCEEDED
+
+
+@pytest.mark.parametrize("child_status", [RunStatus.FAILED, RunStatus.CANCELLED])
+def test_unsuccessful_child_fails_parent_delegation_explicitly(
+    tmp_path, child_status
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Delegate part of the work")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(child_objective="Review the change"),
+    )
+    coordinator.execute_next_step("run-1")
+    if child_status is RunStatus.FAILED:
+        coordinator.transition("delegate-child", RunStatus.RUNNING)
+        coordinator.transition(
+            "delegate-child", RunStatus.FAILED, output={"reason": "review failed"}
+        )
+        expected_child_output = {"reason": "review failed"}
+    else:
+        coordinator.cancel("delegate-child")
+        expected_child_output = None
+
+    step, run = coordinator.execute_next_step("run-1")
+
+    assert step.status is StepStatus.FAILED
+    assert step.output == {
+        "child_run_id": "delegate-child",
+        "child_status": child_status.value,
+        "child_output": expected_child_output,
+    }
+    assert run.status is RunStatus.FAILED
+    assert run.output == {
+        "failed_step_id": "delegate",
+        "child_run_id": "delegate-child",
+        "child_status": child_status.value,
+        "child_output": expected_child_output,
+    }
+    assert [entry.transition for entry in coordinator.list_history("run-1")][-2:] == [
+        "step_failed",
+        "run_failed",
+    ]
+
+
+def test_delegation_outcome_reconciliation_reports_compare_and_swap_conflict(
+    tmp_path, monkeypatch
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Delegate part of the work")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(child_objective="Review the change"),
+    )
+    coordinator.execute_next_step("run-1")
+    coordinator.transition("delegate-child", RunStatus.RUNNING)
+    coordinator.transition("delegate-child", RunStatus.SUCCEEDED, output={"ok": True})
+    competing = RunCoordinator(StateStore(database))
+    real_put_many = store.put_many
+
+    def cancel_before_write(*args, **kwargs):
+        competing.cancel("run-1")
+        return real_put_many(*args, **kwargs)
+
+    monkeypatch.setattr(store, "put_many", cancel_before_write)
+
+    with pytest.raises(ValueError, match="delegation outcome conflict: delegate"):
+        coordinator.execute_next_step("run-1")
+    assert competing.get("run-1").status is RunStatus.CANCELLED
+    assert competing.get_step("delegate").status is StepStatus.CANCELLED
+
+
 def test_execute_next_step_respects_delegation_approval_gate(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Delegate part of the work")

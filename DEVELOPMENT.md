@@ -425,18 +425,23 @@ codex-agentic-os run add-step run-002 step-006 --objective "Delegate the review"
 `run execute-next` dispatches a queued delegation step atomically: it creates one new
 child run (id `{step_id}-child`) durably linked to the parent run and step, transitions
 the parent run to `running` if it was still queued, and leaves the parent step `running`
-with the child run id recorded as `delegated_run_id` — never as `succeeded`, since
-completing the parent step from the child's terminal outcome is a later slice. The child
-run appears in `run list`/`run inspect` like any other run, with `parent_run_id` and
-`parent_step_id` identifying its parent; it is claimable and executable through the
-entirely unchanged existing lifecycle, including approvals, artifacts, and history. A
-competing or repeated dispatch of the same step cannot spawn a second child: the parent
-step's own compare-and-swap revision check inside the atomic dispatch transaction rejects
-it. Calling `run execute-next` again while a delegation step is still pending its child
-reports `{"execution": {"attempted": false}}` (no queued step remains to dispatch); the
-underlying `RunCoordinator.execute_next_step` raises `DelegationPendingError` in that
-state, which the worker loop treats like an approval or context-reference gate — it moves
-on to other claimable work instead of crashing.
+with the child run id recorded as `delegated_run_id`. The child run appears in `run
+list`/`run inspect` like any other run, with `parent_run_id` and `parent_step_id`
+identifying its parent; it is claimable and executable through the entirely unchanged
+existing lifecycle, including approvals, artifacts, and history. A competing or repeated
+dispatch of the same step cannot spawn a second child: the parent step's own
+compare-and-swap revision check inside the atomic dispatch transaction rejects it.
+
+Calling `run execute-next` again reconciles the delegation. While the child is queued or
+running it reports `{"execution": {"attempted": false}}`; the underlying coordinator
+raises `DelegationPendingError`, which the worker loop treats like an approval or
+context-reference gate and moves on to other work. Once the child is terminal, the same
+call atomically records `child_run_id`, `child_status`, optional `child_agent_id`, and the
+child's terminal output on the parent step. A succeeded child succeeds the delegation
+step and either advances the parent to its next queued step or succeeds the completed
+parent run. A failed or cancelled child fails the delegation step and parent run
+explicitly. These parent history entries use `execution_kind: "delegation"`, and stale
+step/run revisions reject reconciliation without overwriting a competing transition.
 
 Record a sandbox result through the structural execution-result boundary. A zero exit
 completes the step successfully and succeeds the run when every step is complete; a

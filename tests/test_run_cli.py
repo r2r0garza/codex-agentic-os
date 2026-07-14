@@ -501,6 +501,26 @@ def test_cli_add_step_and_execute_next_dispatch_delegation_step(tmp_path, capsys
     assert child["run"]["parent_step_id"] == "delegate"
     assert child["run"]["status"] == "queued"
 
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    pending = json.loads(capsys.readouterr().out)
+    assert pending["execution"] == {"attempted": False}
+    child_coordinator = RunCoordinator(StateStore(database))
+    child_coordinator.transition("delegate-child", RunStatus.RUNNING)
+    child_coordinator.transition(
+        "delegate-child", RunStatus.SUCCEEDED, output={"summary": "review passed"}
+    )
+
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    reconciled = json.loads(capsys.readouterr().out)
+    assert reconciled["run"]["status"] == "succeeded"
+    assert reconciled["steps"][0]["status"] == "succeeded"
+    assert reconciled["steps"][0]["output"] == {
+        "child_run_id": "delegate-child",
+        "child_status": "succeeded",
+        "child_output": {"summary": "review passed"},
+        "child_agent_id": "agent-1",
+    }
+
 
 def test_cli_add_step_rejects_delegate_target_agent_without_objective(
     tmp_path, capsys
