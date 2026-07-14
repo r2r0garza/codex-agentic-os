@@ -2863,6 +2863,86 @@ def test_cli_watch_rejects_non_positive_interval_without_opening_database(
     assert not database.exists()
 
 
+def test_cli_watch_rejects_negative_cursor_without_opening_database(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "watch", "run-1", "--interval", "1",
+                "--after-sequence", "-1", "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "watch after-sequence must be a non-negative integer" in capsys.readouterr().err
+    assert not database.exists()
+
+
+def test_cli_watch_resumes_after_explicit_sequence_without_duplicates_or_gaps(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Resume observation")
+
+    def stop_first_session(seconds: float) -> None:
+        raise _StopLoop()
+
+    monkeypatch.setattr("codex_agentic_os.cli.time.sleep", stop_first_session)
+    with pytest.raises(_StopLoop):
+        main(["run", "watch", "run-1", "--interval", "1", "--state-db", str(database)])
+
+    first_session = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line
+    ]
+    assert [entry["sequence"] for entry in first_session] == [1]
+
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    coordinator.transition("run-1", RunStatus.SUCCEEDED)
+
+    main(
+        [
+            "run", "watch", "run-1", "--interval", "1",
+            "--after-sequence", "1", "--state-db", str(database),
+        ]
+    )
+
+    resumed_session = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line
+    ]
+    assert [entry["sequence"] for entry in resumed_session] == [2, 3]
+    assert [entry["status"] for entry in resumed_session] == ["running", "succeeded"]
+
+
+def test_cli_watch_cursor_resume_is_read_only(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Resume without mutation")
+    coordinator.add_step("run-1", "step-1", objective="Work", command=("true",))
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    coordinator.transition("run-1", RunStatus.FAILED, output={"reason": "stopped"})
+
+    original_run = coordinator.get("run-1")
+    original_step = coordinator.get_step("step-1")
+    original_history = coordinator.list_history("run-1")
+
+    main(
+        [
+            "run", "watch", "run-1", "--interval", "1",
+            "--after-sequence", "1", "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("step-1") == original_step
+    assert reloaded.list_history("run-1") == original_history
+
+
 def test_cli_watch_rejects_missing_run_without_mutation(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     StateStore(database).initialize()

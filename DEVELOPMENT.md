@@ -587,6 +587,10 @@ history` redaction contract — until the run reaches a terminal status or the
 operator interrupts the command (Ctrl-C or SIGTERM), at which point the
 command exits cleanly without error. A watch session tracks its own
 in-process sequence cursor, so no entry already printed this session repeats.
+Each history line includes its durable `sequence`; pass the last observed value
+back as `--after-sequence N` when restarting a watcher to emit only entries
+with a greater sequence. The cursor must be a non-negative integer and remains
+operator-provided: the watcher does not persist client state.
 When the next queued step is blocked on a pending approval, the session
 prints one `{"event": "blocked", ...}` notice identifying the blocking step;
 it is not repeated on later polls unless a different step becomes blocked.
@@ -596,6 +600,7 @@ mutates run, step, history, approval, artifact, usage, or agent state:
 
 ```bash
 codex-agentic-os run watch run-002 --interval 2
+codex-agentic-os run watch run-002 --interval 2 --after-sequence 41
 codex-agentic-os run watch run-002 --interval 2 --state-db /path/to/state.sqlite3
 ```
 

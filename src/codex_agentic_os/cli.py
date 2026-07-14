@@ -427,6 +427,12 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="positive polling interval in seconds between history checks",
     )
+    watch.add_argument(
+        "--after-sequence",
+        type=int,
+        default=0,
+        help="emit only durable history entries after this non-negative sequence",
+    )
     list_artifacts_command.add_argument(
         "--step", dest="step_id", help="only list artifacts declared or captured by one step"
     )
@@ -722,6 +728,7 @@ def _watch_run(
     run_id: str,
     *,
     interval: float,
+    after_sequence: int = 0,
     emit: Callable[[dict[str, object]], None],
     sleeper: Callable[[float], None] | None = None,
     should_continue: Callable[[], bool] = lambda: True,
@@ -737,7 +744,7 @@ def _watch_run(
 
     if sleeper is None:
         sleeper = time.sleep
-    last_sequence = 0
+    last_sequence = after_sequence
     announced_blocked_step_id: str | None = None
     while should_continue():
         for entry in coordinator.list_history(run_id):
@@ -1082,6 +1089,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         if arguments.command == "run":
             if arguments.run_command == "watch" and arguments.interval <= 0:
                 raise ValueError("watch interval must be a positive number of seconds")
+            if arguments.run_command == "watch" and arguments.after_sequence < 0:
+                raise ValueError("watch after-sequence must be a non-negative integer")
             if arguments.run_command != "create" and not arguments.state_db.is_file():
                 raise ValueError(f"state database does not exist: {arguments.state_db}")
             read_only = arguments.run_command in {
@@ -1326,6 +1335,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                         coordinator,
                         arguments.run_id,
                         interval=arguments.interval,
+                        after_sequence=arguments.after_sequence,
                         emit=lambda payload: print(json.dumps(payload, sort_keys=True)),
                         should_continue=should_continue,
                     )
