@@ -340,6 +340,22 @@ artifact. Existing normalized output, provider usage evidence, routing provenanc
 and context behavior are unchanged, and durable artifact history never includes the
 request body, raw provider envelope, credentials, or environment values.
 
+`run list-artifacts RUN_ID [--step STEP_ID]` lists one run's command-step and
+provider-response artifact records — captured, absent, and rejected — in stable
+`(step_id, name)` order, each with its producing run id, step id, name, status,
+content hash, and size, but never the resolved host path, command arguments,
+environment values, or terminal output. `run export-artifact RUN_ID --name NAME
+[--step STEP_ID] --destination PATH` writes one captured artifact's stored content
+byte-identical to an operator-chosen path; `--step` disambiguates a name declared by
+more than one step. Exporting an absent, rejected, missing, or ambiguous artifact
+fails cleanly without writing the destination or mutating durable state:
+
+```bash
+codex-agentic-os run list-artifacts run-002 --state-db .codex-agentic-os/state.sqlite3
+codex-agentic-os run export-artifact run-002 --name archive --step step-005 \
+  --destination /path/to/release.tar.gz --state-db .codex-agentic-os/state.sqlite3
+```
+
 ```bash
 codex-agentic-os run add-step run-002 step-002b --objective "Summarize output" \
   --capability general --message "Summarize the test output" \

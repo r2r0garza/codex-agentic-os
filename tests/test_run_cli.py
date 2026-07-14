@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 
@@ -3966,3 +3967,376 @@ def test_cli_rejected_plan_remains_reconstructable_with_no_executable_steps_afte
         "plan_rejected",
     ]
     assert reconstructed_history[-1]["plan_id"] == "draft-1"
+
+
+def _add_captured_and_absent_artifacts(database, host_dir) -> None:
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Produce artifacts")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "first",
+        objective="First step",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[
+            ArtifactDeclaration(name="out", path="/workspace/out.txt"),
+            ArtifactDeclaration(name="log", path="/workspace/missing.txt"),
+        ],
+    )
+    coordinator.add_step(
+        "run-1",
+        "second",
+        objective="Second step",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/second.txt")],
+    )
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "first", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "second", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+
+
+def test_cli_lists_artifacts_in_stable_order_with_provenance_and_redaction(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "out.txt").write_bytes(b"first-content")
+    (host_dir / "second.txt").write_bytes(b"second-content")
+    _add_captured_and_absent_artifacts(database, host_dir)
+
+    main(["run", "list-artifacts", "run-1", "--state-db", str(database)])
+
+    artifacts = json.loads(capsys.readouterr().out)
+    assert [(artifact["step_id"], artifact["name"]) for artifact in artifacts] == [
+        ("first", "log"),
+        ("first", "out"),
+        ("second", "out"),
+    ]
+    captured = artifacts[1]
+    assert captured["run_id"] == "run-1"
+    assert captured["status"] == "captured"
+    assert captured["source_path"] == "/workspace/out.txt"
+    assert captured["content_hash"] == hashlib.sha256(b"first-content").hexdigest()
+    assert captured["size_bytes"] == len(b"first-content")
+    absent = artifacts[0]
+    assert absent["status"] == "absent"
+    assert "content_hash" not in absent
+    assert "size_bytes" not in absent
+    for artifact in artifacts:
+        assert set(artifact) <= {
+            "run_id",
+            "step_id",
+            "artifact_id",
+            "name",
+            "status",
+            "source_path",
+            "content_hash",
+            "size_bytes",
+            "size_limit_bytes",
+        }
+
+
+def test_cli_list_artifacts_filters_by_step(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "out.txt").write_bytes(b"first-content")
+    (host_dir / "second.txt").write_bytes(b"second-content")
+    _add_captured_and_absent_artifacts(database, host_dir)
+
+    main(
+        [
+            "run", "list-artifacts", "run-1", "--step", "second",
+            "--state-db", str(database),
+        ]
+    )
+
+    artifacts = json.loads(capsys.readouterr().out)
+    assert [artifact["step_id"] for artifact in artifacts] == ["second"]
+
+
+def test_cli_list_artifacts_rejects_missing_run_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).initialize()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "list-artifacts", "missing", "--state-db", str(database)])
+
+    assert exit_info.value.code == 2
+    assert "run does not exist: missing" in capsys.readouterr().err
+
+
+def test_cli_exports_captured_artifact_content_byte_identical(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    content = b"first-content"
+    (host_dir / "out.txt").write_bytes(content)
+    (host_dir / "second.txt").write_bytes(b"second-content")
+    _add_captured_and_absent_artifacts(database, host_dir)
+    destination = tmp_path / "exported.txt"
+
+    main(
+        [
+            "run", "export-artifact", "run-1", "--name", "out", "--step", "first",
+            "--destination", str(destination), "--state-db", str(database),
+        ]
+    )
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["run_id"] == "run-1"
+    assert result["step_id"] == "first"
+    assert result["name"] == "out"
+    assert result["content_hash"] == hashlib.sha256(content).hexdigest()
+    assert result["size_bytes"] == len(content)
+    assert destination.read_bytes() == content
+
+
+def test_cli_export_artifact_rejects_absent_artifact(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "out.txt").write_bytes(b"first-content")
+    (host_dir / "second.txt").write_bytes(b"second-content")
+    _add_captured_and_absent_artifacts(database, host_dir)
+    destination = tmp_path / "exported.txt"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "export-artifact", "run-1", "--name", "log",
+                "--destination", str(destination), "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "no exportable content" in capsys.readouterr().err
+    assert not destination.exists()
+
+
+def test_cli_export_artifact_rejects_rejected_oversized_artifact(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "out.txt").write_bytes(b"0123456789")
+
+    coordinator = _RunCoordinator(
+        StateStore(database), artifact_size_limit_bytes=4
+    )
+    coordinator.create("run-1", objective="Produce artifacts")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "first",
+        objective="First step",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "first", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+    destination = tmp_path / "exported.txt"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "export-artifact", "run-1", "--name", "out",
+                "--destination", str(destination), "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "no exportable content" in capsys.readouterr().err
+    assert not destination.exists()
+
+
+def test_cli_export_artifact_rejects_unknown_name(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "out.txt").write_bytes(b"first-content")
+    (host_dir / "second.txt").write_bytes(b"second-content")
+    _add_captured_and_absent_artifacts(database, host_dir)
+    destination = tmp_path / "exported.txt"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "export-artifact", "run-1", "--name", "missing-name",
+                "--destination", str(destination), "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "artifact not found: missing-name" in capsys.readouterr().err
+    assert not destination.exists()
+
+
+def test_cli_export_artifact_rejects_ambiguous_name_and_disambiguates_with_step(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "out.txt").write_bytes(b"first-content")
+    (host_dir / "second.txt").write_bytes(b"second-content")
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Produce artifacts")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "first",
+        objective="First step",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.add_step(
+        "run-1",
+        "second",
+        objective="Second step",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/second.txt")],
+    )
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "first", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "second", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+    destination = tmp_path / "exported.txt"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "export-artifact", "run-1", "--name", "out",
+                "--destination", str(destination), "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "ambiguous artifact name across steps: out" in capsys.readouterr().err
+    assert not destination.exists()
+
+    main(
+        [
+            "run", "export-artifact", "run-1", "--name", "out", "--step", "second",
+            "--destination", str(destination), "--state-db", str(database),
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["step_id"] == "second"
+    assert destination.read_bytes() == b"second-content"
+
+
+def test_cli_export_artifact_rejects_missing_run_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).initialize()
+    destination = tmp_path / "exported.txt"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "export-artifact", "missing", "--name", "out",
+                "--destination", str(destination), "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "run does not exist: missing" in capsys.readouterr().err
+    assert not destination.exists()
+
+
+def test_cli_list_and_export_artifacts_do_not_mutate_run_or_step_state(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "out.txt").write_bytes(b"first-content")
+    (host_dir / "second.txt").write_bytes(b"second-content")
+    _add_captured_and_absent_artifacts(database, host_dir)
+    before = RunCoordinator(StateStore(database))
+    original_run = before.get("run-1")
+    original_first_step = before.get_step("first")
+    original_second_step = before.get_step("second")
+    destination = tmp_path / "exported.txt"
+
+    main(["run", "list-artifacts", "run-1", "--state-db", str(database)])
+    capsys.readouterr()
+    main(
+        [
+            "run", "export-artifact", "run-1", "--name", "out", "--step", "first",
+            "--destination", str(destination), "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("first") == original_first_step
+    assert reloaded.get_step("second") == original_second_step
+
+
+def test_cli_lists_and_exports_provider_response_artifact(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ask a model")
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Answer",
+        message=ProviderMessage(provider="ollama", content="Hello"),
+        response_artifact_name="answer",
+    )
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("Durable answer\n", model="served-model")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    capsys.readouterr()
+
+    main(["run", "list-artifacts", "run-1", "--state-db", str(database)])
+    artifacts = json.loads(capsys.readouterr().out)
+    assert len(artifacts) == 1
+    assert artifacts[0]["step_id"] == "model"
+    assert artifacts[0]["name"] == "answer"
+    assert artifacts[0]["status"] == "captured"
+
+    destination = tmp_path / "answer.txt"
+    main(
+        [
+            "run", "export-artifact", "run-1", "--name", "answer",
+            "--destination", str(destination), "--state-db", str(database),
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["step_id"] == "model"
+    assert destination.read_bytes() == "Durable answer\n".encode("utf-8")

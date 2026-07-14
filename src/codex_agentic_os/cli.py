@@ -124,6 +124,14 @@ def _parser() -> argparse.ArgumentParser:
         "usage",
         help="show one run's provider usage evidence and a token aggregate",
     )
+    list_artifacts_command = run_commands.add_parser(
+        "list-artifacts",
+        help="list one run's durable artifact records in stable order",
+    )
+    export_artifact_command = run_commands.add_parser(
+        "export-artifact",
+        help="export one captured run artifact's content to an operator-chosen path",
+    )
     reassign_claim = run_commands.add_parser(
         "reassign-claim",
         help="atomically transfer a demonstrably stale run claim to a replacement agent",
@@ -377,6 +385,8 @@ def _parser() -> argparse.ArgumentParser:
         approvals,
         staleness,
         usage_command,
+        list_artifacts_command,
+        export_artifact_command,
         inspect_step,
         approve,
         reject,
@@ -403,6 +413,23 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         required=True,
         help="positive staleness threshold in seconds compared against the owner's heartbeat",
+    )
+    list_artifacts_command.add_argument(
+        "--step", dest="step_id", help="only list artifacts declared or captured by one step"
+    )
+    export_artifact_command.add_argument(
+        "--name", required=True, help="declared or response artifact name to export"
+    )
+    export_artifact_command.add_argument(
+        "--step",
+        dest="step_id",
+        help="disambiguate an artifact name declared by more than one step",
+    )
+    export_artifact_command.add_argument(
+        "--destination",
+        type=Path,
+        required=True,
+        help="operator-chosen path to write the artifact's stored content",
     )
     recover.add_argument(
         "reason", choices=[reason.value for reason in StepRecoveryReason]
@@ -786,6 +813,18 @@ def _artifact_record_payload(artifact: ArtifactRecord) -> dict[str, object]:
     return payload
 
 
+def _artifact_listing_payload(artifacts: Sequence[ArtifactRecord]) -> list[dict[str, object]]:
+    """Return one run's redacted artifact records with explicit run/step provenance."""
+
+    payloads = []
+    for artifact in artifacts:
+        payload = _artifact_record_payload(artifact)
+        payload["run_id"] = artifact.run_id
+        payload["step_id"] = artifact.step_id
+        payloads.append(payload)
+    return payloads
+
+
 def _step_payload(
     step: RunStep,
     *,
@@ -972,6 +1011,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "approvals",
                 "staleness",
                 "usage",
+                "list-artifacts",
+                "export-artifact",
             }
             coordinator = RunCoordinator(
                 StateStore(arguments.state_db, read_only=read_only)
@@ -1220,6 +1261,54 @@ def main(argv: Sequence[str] | None = None) -> None:
                 print(
                     json.dumps(
                         _staleness_payload(evaluation), indent=2, sort_keys=True
+                    )
+                )
+                return
+            elif arguments.run_command == "list-artifacts":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                artifacts = coordinator.list_artifacts(
+                    arguments.run_id, step_id=arguments.step_id
+                )
+                print(
+                    json.dumps(
+                        _artifact_listing_payload(artifacts), indent=2, sort_keys=True
+                    )
+                )
+                return
+            elif arguments.run_command == "export-artifact":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                matches = [
+                    artifact
+                    for artifact in coordinator.list_artifacts(
+                        arguments.run_id, step_id=arguments.step_id
+                    )
+                    if artifact.name == arguments.name
+                ]
+                if not matches:
+                    raise ValueError(f"artifact not found: {arguments.name}")
+                if len(matches) > 1:
+                    raise ValueError(
+                        f"ambiguous artifact name across steps: {arguments.name}; "
+                        "disambiguate with --step"
+                    )
+                artifact = matches[0]
+                content = coordinator.read_artifact_content(artifact.artifact_id)
+                arguments.destination.write_bytes(content)
+                print(
+                    json.dumps(
+                        {
+                            "run_id": artifact.run_id,
+                            "step_id": artifact.step_id,
+                            "name": artifact.name,
+                            "artifact_id": artifact.artifact_id,
+                            "content_hash": artifact.content_hash,
+                            "size_bytes": artifact.size_bytes,
+                            "destination": str(arguments.destination),
+                        },
+                        indent=2,
+                        sort_keys=True,
                     )
                 )
                 return

@@ -649,6 +649,28 @@ class RunCoordinator:
         )
         return tuple(sorted(records, key=lambda artifact: (artifact.step_id, artifact.name)))
 
+    def read_artifact_content(self, artifact_id: str) -> bytes:
+        """Return one captured artifact's stored content bytes, read-only.
+
+        Raises ``KeyError`` when the artifact does not exist and ``ValueError``
+        when it exists but has no exportable content (absent, rejected, or
+        missing from local storage despite a captured record).
+        """
+
+        record = self.store.get("artifact", artifact_id)
+        if record is None:
+            raise KeyError(f"artifact does not exist: {artifact_id}")
+        artifact = self._artifact(record)
+        if artifact.status is not ArtifactStatus.CAPTURED:
+            raise ValueError(
+                f"artifact has no exportable content: {artifact_id} "
+                f"({artifact.status.value})"
+            )
+        content_path = self._artifact_storage_dir / artifact_id
+        if not content_path.is_file():
+            raise ValueError(f"artifact content is missing from local storage: {artifact_id}")
+        return content_path.read_bytes()
+
     def cancel(self, run_id: str) -> AgentRun:
         """Atomically cancel a run and each of its queued or running steps."""
 

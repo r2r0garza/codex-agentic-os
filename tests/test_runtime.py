@@ -4448,3 +4448,119 @@ def test_failed_provider_step_does_not_capture_response_artifact(tmp_path) -> No
     assert step.status is StepStatus.FAILED
     assert step.response_artifact_name == "answer"
     assert coordinator.list_artifacts("run-1") == ()
+
+
+def test_read_artifact_content_returns_captured_bytes(tmp_path) -> None:
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    content = b"hello artifact\n"
+    (host_dir / "out.txt").write_bytes(content)
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Produce a file",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+
+    artifact = coordinator.list_artifacts("run-1")[0]
+    assert coordinator.read_artifact_content(artifact.artifact_id) == content
+
+
+def test_read_artifact_content_rejects_unknown_artifact(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+
+    with pytest.raises(KeyError, match="artifact does not exist: missing"):
+        coordinator.read_artifact_content("missing")
+
+
+def test_read_artifact_content_rejects_absent_artifact(tmp_path) -> None:
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Produce a file",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+
+    artifact = coordinator.list_artifacts("run-1")[0]
+    assert artifact.status is ArtifactStatus.ABSENT
+    with pytest.raises(ValueError, match="no exportable content"):
+        coordinator.read_artifact_content(artifact.artifact_id)
+
+
+def test_read_artifact_content_rejects_rejected_artifact(tmp_path) -> None:
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "out.txt").write_bytes(b"0123456789")
+
+    coordinator = _RunCoordinator(
+        StateStore(tmp_path / "state.sqlite3"), artifact_size_limit_bytes=4
+    )
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Produce a file",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+
+    artifact = coordinator.list_artifacts("run-1")[0]
+    assert artifact.status is ArtifactStatus.REJECTED
+    with pytest.raises(ValueError, match="no exportable content"):
+        coordinator.read_artifact_content(artifact.artifact_id)
+
+
+def test_read_artifact_content_rejects_missing_local_storage(tmp_path) -> None:
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    content = b"hello artifact\n"
+    (host_dir / "out.txt").write_bytes(content)
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Produce a file",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+
+    artifact = coordinator.list_artifacts("run-1")[0]
+    (coordinator._artifact_storage_dir / artifact.artifact_id).unlink()
+    with pytest.raises(ValueError, match="missing from local storage"):
+        coordinator.read_artifact_content(artifact.artifact_id)
