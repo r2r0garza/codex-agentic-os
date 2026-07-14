@@ -554,13 +554,14 @@ def _parser() -> argparse.ArgumentParser:
         help="path to the runtime state database",
     )
 
-    api = commands.add_parser("api", help="run a local read-only operator HTTP API")
+    api = commands.add_parser("api", help="run a local operator HTTP API")
     api_commands = api.add_subparsers(dest="api_command", required=True)
     api_serve = api_commands.add_parser(
         "serve",
         help=(
             "start a loopback-only HTTP server exposing read-only run "
-            "listing, run detail, and run history endpoints"
+            "inspection endpoints plus approve/reject/cancel/retry "
+            "mutation endpoints"
         ),
     )
     api_serve.add_argument(

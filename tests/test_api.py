@@ -201,9 +201,65 @@ def _seed_completed_steps_with_sensitive_output(database) -> RunCoordinator:
     return coordinator
 
 
+def _seed_pending_approval(database) -> RunCoordinator:
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-approval", objective="Needs an operator decision")
+    coordinator.add_step(
+        "run-approval",
+        "step-1",
+        objective="Approve me",
+        command=("true",),
+        approval_required=True,
+    )
+    coordinator.transition("run-approval", RunStatus.RUNNING)
+    return coordinator
+
+
+def _seed_active_run_with_queued_step(database) -> RunCoordinator:
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-active", objective="Cancel me")
+    coordinator.add_step(
+        "run-active", "active-step-1", objective="Work", command=("true",)
+    )
+    coordinator.transition("run-active", RunStatus.RUNNING)
+    return coordinator
+
+
+def _seed_retry_eligible_failed_step(database) -> tuple[RunCoordinator, int, int]:
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-retry", objective="Retry durable work")
+    coordinator.add_step(
+        "run-retry", "command", objective="Run command", command=("false",), timeout=4
+    )
+    coordinator.start_next_step("run-retry")
+    failed_step, failed_run = coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "false"), 17, "", "boom")
+    )
+    return coordinator, failed_step.revision, failed_run.revision
+
+
 def _get_json(port: int, path: str) -> object:
     with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _post_json(port: int, path: str, body: object = None, *, raw_body: bytes | None = None):
+    """POST to ``path`` and return ``(status, decoded_json)``, tolerating error responses."""
+
+    data = raw_body if raw_body is not None else (
+        b"" if body is None else json.dumps(body).encode("utf-8")
+    )
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read().decode("utf-8"))
 
 
 def _as_json(payload: object) -> object:
@@ -894,10 +950,392 @@ def test_http_api_mutation_methods_rejected_on_run_scoped_routes(
 
 
 def test_http_api_route_inventory_exposes_no_mutation_handler() -> None:
-    from codex_agentic_os.api import _ReadOnlyAPIRequestHandler
+    from codex_agentic_os.api import _APIRequestHandler
 
-    mutation_methods = ("POST", "PUT", "PATCH", "DELETE", "HEAD")
-    for method in mutation_methods:
-        handler = getattr(_ReadOnlyAPIRequestHandler, f"do_{method}")
-        assert handler is _ReadOnlyAPIRequestHandler._reject_mutation
-    assert _ReadOnlyAPIRequestHandler.do_GET is not _ReadOnlyAPIRequestHandler._reject_mutation
+    unimplemented_methods = ("PUT", "PATCH", "DELETE", "HEAD")
+    for method in unimplemented_methods:
+        handler = getattr(_APIRequestHandler, f"do_{method}")
+        assert handler is _APIRequestHandler._reject_mutation
+    assert _APIRequestHandler.do_GET is not _APIRequestHandler._reject_mutation
+    assert _APIRequestHandler.do_POST is not _APIRequestHandler._reject_mutation
+    assert _APIRequestHandler.do_POST is not _APIRequestHandler.do_GET
+
+
+def test_http_api_approve_step_delegates_to_coordinator_and_returns_refreshed_run(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_pending_approval(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        before_status, before_approvals = _post_json(
+            port, "/api/v1/runs/run-approval/approvals"
+        )
+        status, body = _post_json(
+            port, "/api/v1/runs/run-approval/steps/step-1/approve"
+        )
+        approvals = _get_json(port, "/api/v1/runs/run-approval/approvals")
+
+    assert before_status == 405  # GET-only route stays GET-only under POST.
+    assert status == 200
+    assert body["steps"][0]["step_id"] == "step-1"
+    assert body["steps"][0]["status"] == "queued"
+    assert approvals[0]["approval_status"] == "approved"
+
+
+def test_http_api_reject_step_delegates_to_coordinator_and_fails_run(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_pending_approval(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(
+            port, "/api/v1/runs/run-approval/steps/step-1/reject"
+        )
+        approvals = _get_json(port, "/api/v1/runs/run-approval/approvals")
+
+    assert status == 200
+    assert body["run"]["status"] == "failed"
+    assert body["steps"][0]["status"] == "failed"
+    assert approvals[0]["approval_status"] == "rejected"
+
+
+def test_http_api_cancel_run_delegates_to_coordinator(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_active_run_with_queued_step(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(port, "/api/v1/runs/run-active/cancel")
+
+    assert status == 200
+    assert body["run"]["status"] == "cancelled"
+    assert body["steps"][0]["status"] == "cancelled"
+
+
+def test_http_api_retry_step_delegates_to_coordinator_and_creates_new_attempt(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _, step_revision, run_revision = _seed_retry_eligible_failed_step(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(
+            port,
+            "/api/v1/runs/run-retry/steps/command/retry",
+            {
+                "expected_step_revision": step_revision,
+                "expected_run_revision": run_revision,
+            },
+        )
+
+    assert status == 200
+    assert body["run"]["status"] == "queued"
+    assert len(body["steps"]) == 2
+    assert body["steps"][0]["status"] == "failed"
+    assert body["steps"][0]["retried_into_step_id"] == body["steps"][1]["step_id"]
+    assert body["steps"][1]["status"] == "queued"
+    assert body["steps"][1]["retried_from_step_id"] == "command"
+
+
+def test_http_api_approve_step_rejects_already_decided_step_without_mutation(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    seed_coordinator = _seed_pending_approval(database)
+    seed_coordinator.approve_step("step-1")
+    before = _database_snapshot(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(
+            port, "/api/v1/runs/run-approval/steps/step-1/approve"
+        )
+
+    assert status == 409
+    assert "not pending approval" in body["error"]
+    assert _database_snapshot(database) == before
+
+
+def test_http_api_cancel_rejects_terminal_run_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    seed_coordinator = _seed_active_run_with_queued_step(database)
+    seed_coordinator.cancel("run-active")
+    before = _database_snapshot(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(port, "/api/v1/runs/run-active/cancel")
+
+    assert status == 409
+    assert "invalid run transition" in body["error"]
+    assert _database_snapshot(database) == before
+
+
+def test_http_api_retry_step_rejects_stale_revision_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    seed_coordinator, step_revision, run_revision = _seed_retry_eligible_failed_step(
+        database
+    )
+    # Retry once directly through the coordinator so the run's revision the
+    # HTTP request below still carries is no longer current: a genuine CAS
+    # conflict, distinct from an eligibility failure.
+    seed_coordinator.retry_step(
+        "command",
+        "command-retry-direct",
+        expected_step_revision=step_revision,
+        expected_run_revision=run_revision,
+    )
+    before = _database_snapshot(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(
+            port,
+            "/api/v1/runs/run-retry/steps/command/retry",
+            {
+                "expected_step_revision": step_revision,
+                "expected_run_revision": run_revision,
+            },
+        )
+
+    assert status == 409
+    assert "step retry conflict" in body["error"]
+    assert _database_snapshot(database) == before
+
+
+def test_http_api_retry_step_rejects_ineligible_failed_step_without_mutation(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_pending_approval(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        reject_status, _ = _post_json(
+            port, "/api/v1/runs/run-approval/steps/step-1/reject"
+        )
+        assert reject_status == 200
+        before = _database_snapshot(database)
+        # An operator-rejected step is terminally FAILED but was never a
+        # command/provider execution failure, so it is never retry-eligible
+        # regardless of which revisions are supplied.
+        status, body = _post_json(
+            port,
+            "/api/v1/runs/run-approval/steps/step-1/retry",
+            {"expected_step_revision": 1, "expected_run_revision": 1},
+        )
+
+    assert status == 409
+    assert "not retry-eligible" in body["error"]
+    assert _database_snapshot(database) == before
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"expected_step_revision": 1},
+        {"expected_run_revision": 1},
+        {"expected_step_revision": "1", "expected_run_revision": 1},
+        {"expected_step_revision": True, "expected_run_revision": 1},
+    ],
+)
+def test_http_api_retry_step_rejects_malformed_or_missing_revisions(
+    tmp_path, body
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _, _, _ = _seed_retry_eligible_failed_step(database)
+    before = _database_snapshot(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, response_body = _post_json(
+            port, "/api/v1/runs/run-retry/steps/command/retry", body
+        )
+
+    assert status == 400
+    assert "must be integers" in response_body["error"]
+    assert _database_snapshot(database) == before
+
+
+def test_http_api_mutation_route_rejects_invalid_json_body(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_pending_approval(database)
+    before = _database_snapshot(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(
+            port,
+            "/api/v1/runs/run-approval/steps/step-1/approve",
+            raw_body=b"{not valid json",
+        )
+
+    assert status == 400
+    assert "valid JSON" in body["error"]
+    assert _database_snapshot(database) == before
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/runs/missing-run/cancel",
+        "/api/v1/runs/missing-run/steps/step-1/approve",
+        "/api/v1/runs/missing-run/steps/step-1/reject",
+        "/api/v1/runs/missing-run/steps/step-1/retry",
+    ],
+)
+def test_http_api_mutation_routes_return_structured_404_for_unknown_run(
+    tmp_path, path
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_pending_approval(database)
+    before = _database_snapshot(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(port, path)
+
+    assert status == 404
+    assert body["error"] == "run does not exist: missing-run"
+    assert _database_snapshot(database) == before
+
+
+@pytest.mark.parametrize(
+    "suffix", ["steps/missing-step/approve", "steps/missing-step/reject", "steps/missing-step/retry"]
+)
+def test_http_api_mutation_routes_return_structured_404_for_unknown_step(
+    tmp_path, suffix
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_pending_approval(database)
+    before = _database_snapshot(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(port, f"/api/v1/runs/run-approval/{suffix}")
+
+    assert status == 404
+    assert body["error"] == "step does not exist: missing-step"
+    assert _database_snapshot(database) == before
+
+
+def test_http_api_mutation_routes_reject_step_belonging_to_a_different_run(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_pending_approval(database)
+    _seed_active_run_with_queued_step(database)
+    before = _database_snapshot(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(
+            port, "/api/v1/runs/run-active/steps/step-1/approve"
+        )
+
+    assert status == 404
+    assert body["error"] == "step does not exist: step-1"
+    assert _database_snapshot(database) == before
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT", "PATCH", "DELETE"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/runs/run-approval/steps/step-1/approve",
+        "/api/v1/runs/run-approval/steps/step-1/reject",
+        "/api/v1/runs/run-approval/steps/step-1/retry",
+        "/api/v1/runs/run-approval/cancel",
+    ],
+)
+def test_http_api_mutation_routes_reject_unsupported_methods(
+    tmp_path, path, method
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_pending_approval(database)
+    before = _database_snapshot(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", method=method
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+
+    assert error.value.code == 404 if method == "GET" else error.value.code == 405
+    assert _database_snapshot(database) == before
+
+
+def test_http_api_unrecognized_mutation_shaped_path_returns_structured_404(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_pending_approval(database)
+    before = _database_snapshot(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        status, body = _post_json(
+            port, "/api/v1/runs/run-approval/steps/step-1/complete"
+        )
+
+    assert status == 404
+    assert body["error"].startswith("unrecognized path")
+    assert _database_snapshot(database) == before
+
+
+def test_http_api_mutation_response_redacts_declared_and_captured_step_fields(
+    tmp_path,
+) -> None:
+    """Decision 0008 applies identically to a successful mutation response."""
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-mixed", objective="Mixed sensitive and pending work")
+    coordinator.add_step(
+        "run-mixed",
+        "command-1",
+        objective="Run command",
+        command=("true",),
+        sandbox_policy=SandboxPolicy(
+            kind=SandboxKind.DOCKER, env_passthrough=("API_TOKEN",)
+        ),
+    )
+    coordinator.add_step(
+        "run-mixed",
+        "step-2",
+        objective="Approve me",
+        command=("true",),
+        approval_required=True,
+    )
+    coordinator.transition("run-mixed", RunStatus.RUNNING)
+    coordinator.start_next_step("run-mixed")
+    coordinator.complete_step_from_result(
+        "command-1",
+        SandboxResult(
+            (
+                "docker", "run", "--env", "API_TOKEN=runtime-only-secret",
+                "python:3.12-slim", "true",
+            ),
+            0,
+            "private stdout",
+            "private stderr",
+        ),
+    )
+    read_coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(read_coordinator) as port:
+        status, body = _post_json(
+            port, "/api/v1/runs/run-mixed/steps/step-2/approve"
+        )
+
+    assert status == 200
+    command_step = next(step for step in body["steps"] if step["step_id"] == "command-1")
+    assert command_step["command"] == "<redacted>"
+    assert command_step["output"]["stdout"] == "<redacted>"
+    assert command_step["output"]["stderr"] == "<redacted>"
