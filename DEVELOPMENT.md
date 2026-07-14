@@ -283,13 +283,22 @@ persisted. Per-invocation sandbox flags are rejected
 when the next command step has a persisted policy; command steps without one retain
 the legacy `run execute-next --sandbox ...` path.
 
-Append a provider-message step with no trailing command. The provider and message are
-required together; model, system, temperature, and token limit are optional:
+Append a provider-message step with no trailing command. The message is required
+together with exactly one of `--provider` (a fixed dispatch target) or `--capability`
+(a required capability resolved to a provider at dispatch time); declaring both, or
+declaring a capability no default provider spec declares, fails before the step is
+written. Model, system, temperature, and token limit are optional:
 
 ```bash
 codex-agentic-os run add-step run-002 step-002 --objective "Summarize output" \
   --provider ollama --message "Summarize the test output" --model llama3.1 \
   --system "Be concise" --temperature 0.2 --max-tokens 256 \
+  --state-db .codex-agentic-os/state.sqlite3
+```
+
+```bash
+codex-agentic-os run add-step run-002 step-002b --objective "Summarize output" \
+  --capability general --message "Summarize the test output" \
   --state-db .codex-agentic-os/state.sqlite3
 ```
 
@@ -350,8 +359,9 @@ existing queued-step creation path without guessing or synthesizing execution de
 command step is `{"objective": "...", "execution_kind": "command", "command": [...],
 "sandbox_policy": {"kind": "docker" or "podman", ...}, "timeout": <optional>}` and must not
 include `"message"`; a provider step is `{"objective": "...", "execution_kind": "provider",
-"message": {"provider": "...", "content": "...", ...}}` and must not include `"command"`,
-`"timeout"`, or `"sandbox_policy"`. Each proposed step's `step_id` is materialized
+"message": {"content": "...", ..., "provider": "..."} or {"content": "...", ...,
+"required_capability": "..."}}` (exactly one of `"provider"` or `"required_capability"`)
+and must not include `"command"`, `"timeout"`, or `"sandbox_policy"`. Each proposed step's `step_id` is materialized
 deterministically from the plan id and its 1-based position (e.g. `draft-1-step-1`), never
 taken from the model, so ids are collision-free within one draft by construction and
 inspectable ahead of any future acceptance decision. No steps are queued by this command,

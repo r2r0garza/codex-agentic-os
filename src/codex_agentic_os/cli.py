@@ -161,6 +161,13 @@ def _parser() -> argparse.ArgumentParser:
     add_step.add_argument("--objective", required=True, help="objective for the queued step")
     add_step.add_argument("--timeout", type=float, help="positive command timeout in seconds")
     add_step.add_argument("--provider", help="provider name for a model step")
+    add_step.add_argument(
+        "--capability",
+        help=(
+            "required capability for a capability-routed model step; "
+            "mutually exclusive with --provider"
+        ),
+    )
     add_step.add_argument("--message", help="user content for a model step")
     add_step.add_argument("--model", help="optional provider model override")
     add_step.add_argument("--system", help="optional system instruction")
@@ -916,6 +923,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     value is not None
                     for value in (
                         arguments.provider,
+                        arguments.capability,
                         arguments.message,
                         arguments.model,
                         arguments.system,
@@ -924,12 +932,13 @@ def main(argv: Sequence[str] | None = None) -> None:
                     )
                 ):
                     message = ProviderMessage(
-                        provider=arguments.provider or "",
+                        provider=arguments.provider,
                         content=arguments.message or "",
                         model=arguments.model,
                         system=arguments.system,
                         temperature=arguments.temperature,
                         max_tokens=arguments.max_tokens,
+                        required_capability=arguments.capability,
                     )
                 sandbox_policy = None
                 if any(

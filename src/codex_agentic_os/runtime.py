@@ -10,6 +10,7 @@ import posixpath
 from typing import Callable, Mapping, Protocol, Sequence
 
 from .chat import ChatAdapter, ChatMessage, ChatRequest, ChatResponse
+from .providers import DEFAULT_PROVIDER_SPECS
 from .sandboxes import SandboxKind
 
 from .state import RunHistoryEntry, StateConflictError, StateRecord, StateStore
@@ -174,16 +175,29 @@ class RunStep:
         return self.failure_kind is StepFailureKind.DEFINITE
 
 
+# Capability names declared by ``DEFAULT_PROVIDER_SPECS``, checked against a
+# step's ``required_capability`` before any state mutation. There is no
+# operator-configured provider registry beyond these defaults yet.
+_KNOWN_PROVIDER_CAPABILITIES: frozenset[str] = frozenset(
+    capability for spec in DEFAULT_PROVIDER_SPECS for capability in spec.capabilities
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderMessage:
-    """Provider-neutral input for one durable model-backed step."""
+    """Provider-neutral input for one durable model-backed step.
 
-    provider: str
+    Exactly one of ``provider`` (a fixed dispatch target) or
+    ``required_capability`` (resolved to a provider at dispatch time) is set.
+    """
+
+    provider: str | None
     content: str
     model: str | None = None
     system: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    required_capability: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,10 +299,11 @@ PLAN_PROPOSAL_SYSTEM_PROMPT = (
     '["<ENV_VAR_NAME>", ...], "network_enabled": <optional boolean, default '
     'false>}, "timeout": <optional positive number of seconds>} and must not '
     'include "message". A provider step is {"objective": "<step '
-    'objective>", "execution_kind": "provider", "message": {"provider": '
-    '"<provider name>", "content": "<message content>", "model": "<optional '
-    'model>", "system": "<optional system prompt>", "temperature": <optional '
-    'number>, "max_tokens": <optional positive integer>}} and must not '
+    'objective>", "execution_kind": "provider", "message": {"content": '
+    '"<message content>", "model": "<optional model>", "system": "<optional '
+    'system prompt>", "temperature": <optional number>, "max_tokens": '
+    '<optional positive integer>, and exactly one of "provider": "<provider '
+    'name>" or "required_capability": "<capability name>"}} and must not '
     'include "command", "timeout", or "sandbox_policy".'
 )
 
@@ -1987,7 +2002,15 @@ class RunCoordinator:
         if isinstance(message, ProviderMessage):
             values = asdict(message)
         elif isinstance(message, Mapping):
-            allowed = {"provider", "content", "model", "system", "temperature", "max_tokens"}
+            allowed = {
+                "provider",
+                "content",
+                "model",
+                "system",
+                "temperature",
+                "max_tokens",
+                "required_capability",
+            }
             if set(message) - allowed:
                 raise ValueError("step provider message has unknown fields")
             values = dict(message)
@@ -1999,8 +2022,26 @@ class RunCoordinator:
         system = values.get("system")
         temperature = values.get("temperature")
         max_tokens = values.get("max_tokens")
-        if not isinstance(provider, str) or not provider.strip():
+        required_capability = values.get("required_capability")
+        if provider is not None and (not isinstance(provider, str) or not provider.strip()):
             raise ValueError("step provider must be a non-empty string")
+        if required_capability is not None and (
+            not isinstance(required_capability, str) or not required_capability.strip()
+        ):
+            raise ValueError("step required capability must be a non-empty string")
+        if (provider is None) == (required_capability is None):
+            raise ValueError(
+                "step provider message requires exactly one of provider or "
+                "required_capability"
+            )
+        if (
+            required_capability is not None
+            and required_capability not in _KNOWN_PROVIDER_CAPABILITIES
+        ):
+            raise ValueError(
+                "step required capability is not declared by any configured "
+                f"provider: {required_capability}"
+            )
         if not isinstance(content, str) or not content.strip():
             raise ValueError("step message content must be a non-empty string")
         if model is not None and (not isinstance(model, str) or not model.strip()):
@@ -2024,6 +2065,7 @@ class RunCoordinator:
             system=system,
             temperature=temperature,
             max_tokens=max_tokens,
+            required_capability=required_capability,
         )
 
     @staticmethod

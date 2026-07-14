@@ -54,26 +54,54 @@ class ProviderSpec:
     api_key_env: str | None = None
     supports_tools: bool = True
     supports_streaming: bool = True
+    capabilities: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
 
         data = asdict(self)
         data["kind"] = self.kind.value
+        data["capabilities"] = list(self.capabilities)
         return data
 
 
 DEFAULT_PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
-    ProviderSpec(kind=ProviderKind.OPENAI, model="gpt-5.5", api_key_env="OPENAI_API_KEY"),
-    ProviderSpec(kind=ProviderKind.ANTHROPIC, model="claude-sonnet-4", api_key_env="ANTHROPIC_API_KEY"),
-    ProviderSpec(kind=ProviderKind.GOOGLE, model="gemini-2.5-pro", api_key_env="GOOGLE_API_KEY"),
+    ProviderSpec(
+        kind=ProviderKind.OPENAI,
+        model="gpt-5.5",
+        api_key_env="OPENAI_API_KEY",
+        capabilities=("general", "reasoning", "tool_use", "vision"),
+    ),
+    ProviderSpec(
+        kind=ProviderKind.ANTHROPIC,
+        model="claude-sonnet-4",
+        api_key_env="ANTHROPIC_API_KEY",
+        capabilities=("general", "reasoning", "tool_use", "vision"),
+    ),
+    ProviderSpec(
+        kind=ProviderKind.GOOGLE,
+        model="gemini-2.5-pro",
+        api_key_env="GOOGLE_API_KEY",
+        capabilities=("general", "reasoning", "tool_use", "vision"),
+    ),
     ProviderSpec(
         kind=ProviderKind.OPENROUTER,
         model="openrouter/auto",
         base_url=OPENROUTER_DEFAULT_BASE_URL,
         api_key_env="OPENROUTER_API_KEY",
+        capabilities=("general", "tool_use"),
     ),
-    ProviderSpec(kind=ProviderKind.LM_STUDIO, model="local-model", base_url=LM_STUDIO_DEFAULT_BASE_URL),
-    ProviderSpec(kind=ProviderKind.OLLAMA, model="llama3.1", base_url=OLLAMA_DEFAULT_BASE_URL),
+    ProviderSpec(
+        kind=ProviderKind.LM_STUDIO,
+        model="local-model",
+        base_url=LM_STUDIO_DEFAULT_BASE_URL,
+        capabilities=("general",),
+    ),
+    ProviderSpec(
+        kind=ProviderKind.OLLAMA,
+        model="llama3.1",
+        base_url=OLLAMA_DEFAULT_BASE_URL,
+        capabilities=("general",),
+    ),
     ProviderSpec(kind=ProviderKind.OPENAI_COMPATIBLE, model="custom-model"),
 )

@@ -23,7 +23,12 @@ def test_cli_provider_list_matches_registry_order_and_fields(capsys) -> None:
             "api_key_env",
             "supports_tools",
             "supports_streaming",
+            "capabilities",
         }
+    assert [entry["capabilities"] for entry in payload] == [
+        list(spec.capabilities) for spec in DEFAULT_PROVIDER_SPECS
+    ]
+    assert any(entry["capabilities"] for entry in payload)
 
 
 def test_cli_provider_list_never_prints_credential_values(monkeypatch, capsys) -> None:

@@ -407,7 +407,75 @@ def test_cli_adds_and_inspects_provider_message_step(tmp_path, capsys) -> None:
         "system": "Be concise",
         "temperature": 0.25,
         "max_tokens": 321,
+        "required_capability": None,
     }
+
+
+def test_cli_adds_and_inspects_capability_routed_provider_message_step(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    RunCoordinator(StateStore(database)).create("run-1", objective="Ask any capable model")
+
+    main(
+        [
+            "run", "add-step", "run-1", "model", "--objective", "Summarize",
+            "--capability", "general", "--message", "Summarize this change",
+            "--state-db", str(database),
+        ]
+    )
+    created = json.loads(capsys.readouterr().out)
+
+    main(["run", "inspect-step", "model", "--state-db", str(database)])
+    inspected = json.loads(capsys.readouterr().out)
+    assert inspected == created["steps"][0]
+    assert inspected["message"] == {
+        "provider": None,
+        "content": "Summarize this change",
+        "model": None,
+        "system": None,
+        "temperature": None,
+        "max_tokens": None,
+        "required_capability": "general",
+    }
+
+
+def test_cli_add_step_rejects_provider_and_capability_together_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    RunCoordinator(StateStore(database)).create("run-1", objective="Ask a model")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "add-step", "run-1", "model", "--objective", "Summarize",
+                "--provider", "ollama", "--capability", "general",
+                "--message", "Summarize this change", "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "exactly one of provider or required_capability" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).list_steps("run-1") == ()
+
+
+def test_cli_add_step_rejects_unknown_capability_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    RunCoordinator(StateStore(database)).create("run-1", objective="Ask a model")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "add-step", "run-1", "model", "--objective", "Summarize",
+                "--capability", "telekinesis", "--message", "Summarize this change",
+                "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "not declared by any configured provider" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).list_steps("run-1") == ()
 
 
 def test_cli_inspects_only_declared_provider_context_step_ids(tmp_path, capsys) -> None:
@@ -3066,6 +3134,7 @@ PLAN_PROPOSAL_STEPS_PAYLOAD = [
             "system": None,
             "temperature": None,
             "max_tokens": None,
+            "required_capability": None,
         },
     },
 ]

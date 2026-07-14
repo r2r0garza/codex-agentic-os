@@ -820,6 +820,94 @@ def test_provider_message_step_round_trips_across_restart(tmp_path) -> None:
     assert RunCoordinator(StateStore(database)).get_step("model") == created
 
 
+def test_provider_message_step_with_required_capability_round_trips_across_restart(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ask any capable model")
+    message = ProviderMessage(
+        provider=None, content="Summarize the change", required_capability="general"
+    )
+
+    created = coordinator.add_step(
+        "run-1", "model", objective="Summarize", message=message
+    )
+
+    assert created.message == message
+    assert created.message.provider is None
+    assert created.message.required_capability == "general"
+    assert RunCoordinator(StateStore(database)).get_step("model") == created
+
+
+def test_add_step_rejects_provider_message_with_both_provider_and_capability(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model")
+
+    with pytest.raises(ValueError, match="exactly one of provider or required_capability"):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize",
+            message=ProviderMessage(
+                provider="ollama", content="hi", required_capability="general"
+            ),
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_add_step_rejects_provider_message_with_neither_provider_nor_capability(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model")
+
+    with pytest.raises(ValueError, match="exactly one of provider or required_capability"):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize",
+            message=ProviderMessage(provider=None, content="hi"),
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_add_step_rejects_unknown_required_capability_without_mutation(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model")
+
+    with pytest.raises(ValueError, match="not declared by any configured provider"):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize",
+            message=ProviderMessage(
+                provider=None, content="hi", required_capability="telekinesis"
+            ),
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_fixed_provider_message_step_still_omits_required_capability(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model")
+
+    created = coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Summarize",
+        message=ProviderMessage(provider="ollama", content="hi"),
+    )
+
+    assert created.message.provider == "ollama"
+    assert created.message.required_capability is None
+
+
 def test_provider_context_step_ids_round_trip_in_declared_order(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))
@@ -3076,6 +3164,25 @@ def test_propose_plan_defaults_objective_to_run_objective_and_supports_override(
             '"message": {"provider": "", "content": "hi"}}]}',
             "plan proposal step 0 step provider must be a non-empty string",
         ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "provider", '
+            '"message": {"provider": "ollama", "required_capability": "general", '
+            '"content": "hi"}}]}',
+            "plan proposal step 0 step provider message requires exactly one of "
+            "provider or required_capability",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "provider", '
+            '"message": {"content": "hi"}}]}',
+            "plan proposal step 0 step provider message requires exactly one of "
+            "provider or required_capability",
+        ),
+        (
+            '{"steps": [{"objective": "Do it", "execution_kind": "provider", '
+            '"message": {"required_capability": "telekinesis", "content": "hi"}}]}',
+            "plan proposal step 0 step required capability is not declared by any "
+            "configured provider: telekinesis",
+        ),
     ],
 )
 def test_propose_plan_rejects_malformed_proposals_and_preserves_raw_evidence(
@@ -3339,6 +3446,44 @@ def test_accept_plan_atomically_materializes_ordered_steps_with_provenance(
     assert decision.status == "accepted"
     assert decision.plan_id == "plan-1"
     assert decision.agent_id == "agent-1"
+
+
+def test_plan_proposal_with_required_capability_parses_and_materializes(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    content = (
+        '{"steps": ['
+        '{"objective": "Summarize the change", "execution_kind": "provider", '
+        '"message": {"required_capability": "general", "content": "Summarize the diff"}}'
+        "]}"
+    )
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(content=content)
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    draft = coordinator.propose_plan(
+        "run-1", "plan-capability", adapter_resolver=lambda message: Adapter(), provider="ollama"
+    )
+
+    assert draft.steps == (
+        PlanStepProposal(
+            step_id="plan-capability-step-1",
+            objective="Summarize the change",
+            execution_kind="provider",
+            message=ProviderMessage(
+                provider=None, content="Summarize the diff", required_capability="general"
+            ),
+        ),
+    )
+
+    accepted, steps = coordinator.accept_plan("plan-capability", expected_revision=1)
+
+    assert steps[0].message.provider is None
+    assert steps[0].message.required_capability == "general"
+    assert RunCoordinator(StateStore(database)).get_step(steps[0].step_id) == steps[0]
 
 
 def test_reject_plan_records_provenance_and_materializes_no_steps(tmp_path) -> None:
