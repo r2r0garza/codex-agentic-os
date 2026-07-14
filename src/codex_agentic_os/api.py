@@ -33,6 +33,7 @@ DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 
 _REDACTED = "<redacted>"
 _REDACTED_OUTPUT_KEYS = ("stdout", "stderr", "content", "raw")
+_REDACTED_MESSAGE_KEYS = ("content", "system")
 
 _RUNS_PATH = f"{API_BASE_PATH}/runs"
 _RUN_DETAIL_PATTERN = re.compile(rf"^{re.escape(_RUNS_PATH)}/(?P<run_id>[^/]+)$")
@@ -58,21 +59,28 @@ def is_loopback_bind_host(host: str) -> bool:
 
 
 def _redact_step_for_http(step_payload: dict[str, object]) -> dict[str, object]:
-    """Strip a completed step's captured terminal/provider output for HTTP.
+    """Strip a step's declared input and captured output for HTTP.
 
     ``_step_payload`` (shared with the CLI's ``run inspect``/``inspect-step``)
-    keeps a completed step's captured stdout/stderr and provider response
-    text/raw envelope, because a local operator invoking the CLI directly
-    already has that trust level. The loopback HTTP API is a broader surface
-    reachable by any co-resident process, so it redacts those specific
-    captured-result values before serving a run's step detail. Declared step
-    inputs (command argv and provider message content) stay visible over
-    HTTP exactly as the CLI shows them: they are operator-authored intent
-    the operator already knows, not captured execution results, and
-    command argv never carries resolved secret values (only passthrough
-    names survive dispatch-time substitution).
+    keeps a step's declared command argv, declared provider message
+    content/system, and a completed step's captured stdout/stderr and
+    provider response text/raw envelope, because a local operator invoking
+    the CLI directly already has that trust level. The loopback HTTP API is
+    a broader surface reachable by any co-resident process, so it redacts
+    both categories before serving a run's step detail: declared input
+    (command argv, provider ``message.content``/``system``) and captured
+    execution results (``output.stdout``/``stderr``/``content``/``raw``).
+    Non-sensitive metadata — provider name, model, status, temperature,
+    ``max_tokens`` — stays visible.
     """
 
+    if step_payload.get("command") is not None:
+        step_payload["command"] = _REDACTED
+    message = step_payload.get("message")
+    if isinstance(message, dict):
+        for key in _REDACTED_MESSAGE_KEYS:
+            if key in message:
+                message[key] = _REDACTED
     output = step_payload.get("output")
     if isinstance(output, dict):
         for key in _REDACTED_OUTPUT_KEYS:

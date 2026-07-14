@@ -615,12 +615,14 @@ served under a stable `/api/v1` base path:
 
 - `GET /api/v1/runs` — the same payload as `run list`.
 - `GET /api/v1/runs/{run_id}` — the same payload as `run inspect`,
-  including ordered steps, except that a completed step's captured
-  terminal output (`stdout`/`stderr`) and provider response
-  (`content`/`raw`) are each replaced with `"<redacted>"`. Declared step
-  input (command argv, provider `message.content`/`system`) is shown
-  exactly as `run inspect` shows it. See Decision 0008 for why the HTTP
-  surface redacts captured output that the CLI does not.
+  including ordered steps, except that a step's declared command argv,
+  declared provider `message.content`/`system`, and a completed step's
+  captured terminal output (`stdout`/`stderr`) and provider response
+  (`content`/`raw`) are each replaced with `"<redacted>"`. Non-sensitive
+  metadata (provider, model, status, the sanitized sandbox invocation
+  command) is shown exactly as `run inspect` shows it. See Decision 0008
+  for why the HTTP surface redacts declared input and captured output that
+  the CLI does not.
 - `GET /api/v1/runs/{run_id}/history` — the same payload as `run history`.
 - `GET /api/v1/runs/{run_id}/approvals` — the same sanitized payload as
   `run approvals`.
@@ -660,8 +662,9 @@ curl http://127.0.0.1:8080/api/v1/runs/RUN_ID/usage
 ```
 
 The responses are JSON, steps remain in durable order, pending approvals and
-available or unavailable usage are explicit, and captured terminal/provider
-output is `"<redacted>"`. Requests use only `127.0.0.1`; comparing `run
+available or unavailable usage are explicit, and declared command
+argv/provider request content plus captured terminal/provider output are
+each `"<redacted>"`. Requests use only `127.0.0.1`; comparing `run
 inspect` and `run history` before and after the review should show no durable
 change. Press Ctrl-C in the server terminal and confirm it exits without a
 traceback. The consolidated offline regression in `tests/test_api.py` performs

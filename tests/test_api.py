@@ -12,7 +12,12 @@ import urllib.request
 
 import pytest
 
-from codex_agentic_os.api import build_server, is_loopback_bind_host, serve_until_stopped
+from codex_agentic_os.api import (
+    _redact_step_for_http,
+    build_server,
+    is_loopback_bind_host,
+    serve_until_stopped,
+)
 from codex_agentic_os.chat import ChatResponse, ChatUsage
 from codex_agentic_os.cli import main
 from codex_agentic_os.payloads import (
@@ -256,12 +261,17 @@ def test_http_api_run_detail_matches_run_payload_contract(tmp_path) -> None:
     with _running_server(coordinator) as port:
         body = _get_json(port, "/api/v1/runs/run-1")
 
-    assert body == _as_json(_run_payload(coordinator, "run-1"))
+    expected = _as_json(_run_payload(coordinator, "run-1"))
+    expected["steps"] = [_redact_step_for_http(step) for step in expected["steps"]]
+    assert body == expected
     assert body["run"]["run_id"] == "run-1"
     assert [step["step_id"] for step in body["steps"]] == ["step-1"]
+    assert body["steps"][0]["command"] == "<redacted>"
 
 
-def test_http_api_run_detail_matches_cli_run_inspect_output(tmp_path, capsys) -> None:
+def test_http_api_run_detail_matches_cli_run_inspect_output_except_redacted_fields(
+    tmp_path, capsys
+) -> None:
     database = tmp_path / "state.sqlite3"
     _seed_database(database)
     coordinator = RunCoordinator(StateStore(database, read_only=True))
@@ -272,7 +282,11 @@ def test_http_api_run_detail_matches_cli_run_inspect_output(tmp_path, capsys) ->
     with _running_server(coordinator) as port:
         http_payload = _get_json(port, "/api/v1/runs/run-2")
 
-    assert http_payload == cli_payload
+    expected = json.loads(json.dumps(cli_payload))
+    expected["steps"] = [_redact_step_for_http(step) for step in expected["steps"]]
+    assert http_payload == expected
+    assert cli_payload["steps"][0]["message"]["content"] == "Summarize"
+    assert http_payload["steps"][0]["message"]["content"] == "<redacted>"
 
 
 def test_http_api_run_history_matches_history_payload_contract(tmp_path) -> None:
@@ -596,6 +610,100 @@ def test_cli_api_serve_stops_cleanly_on_shutdown_signal(
     assert isinstance(payload["port"], int)
 
 
+def test_http_api_run_detail_redacts_declared_input_across_lifecycle_states(
+    tmp_path,
+) -> None:
+    """Declared command argv and provider content/system are redacted regardless
+    of a step's lifecycle status (queued, running, or failed); succeeded-step
+    coverage lives in the captured-output redaction tests below."""
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+
+    coordinator.create("run-queued", objective="Queued lifecycle")
+    coordinator.add_step(
+        "run-queued", "command-queued", objective="Run", command=("echo", "queued-secret")
+    )
+    coordinator.add_step(
+        "run-queued",
+        "provider-queued",
+        objective="Ask",
+        message=ProviderMessage(
+            provider="ollama",
+            content="queued-secret-prompt",
+            system="queued-secret-system",
+        ),
+    )
+
+    coordinator.create("run-running", objective="Running lifecycle")
+    coordinator.add_step(
+        "run-running", "command-running", objective="Run", command=("echo", "running-secret")
+    )
+    coordinator.transition("run-running", RunStatus.RUNNING)
+    coordinator.start_next_step("run-running")
+
+    coordinator.create("run-failed-command", objective="Failed command lifecycle")
+    coordinator.add_step(
+        "run-failed-command",
+        "command-failed",
+        objective="Run",
+        command=("false", "failed-command-secret"),
+    )
+    coordinator.transition("run-failed-command", RunStatus.RUNNING)
+    coordinator.start_next_step("run-failed-command")
+    coordinator.complete_step_from_result(
+        "command-failed", SandboxResult(("false",), 1, "", "boom")
+    )
+
+    coordinator.create("run-failed-provider", objective="Failed provider lifecycle")
+    coordinator.add_step(
+        "run-failed-provider",
+        "provider-failed",
+        objective="Ask",
+        message=ProviderMessage(
+            provider="ollama",
+            content="failed-provider-secret-prompt",
+            system="failed-provider-secret-system",
+        ),
+    )
+    coordinator.transition("run-failed-provider", RunStatus.RUNNING)
+    coordinator.start_next_step("run-failed-provider")
+    coordinator.fail_step_from_error("provider-failed", RuntimeError("boom"))
+
+    read_only_coordinator = RunCoordinator(StateStore(database, read_only=True))
+    run_ids = [
+        "run-queued",
+        "run-running",
+        "run-failed-command",
+        "run-failed-provider",
+    ]
+    raw_bodies = []
+    with _running_server(read_only_coordinator) as port:
+        for run_id in run_ids:
+            body = _get_json(port, f"/api/v1/runs/{run_id}")
+            raw_bodies.append(json.dumps(body))
+            for step in body["steps"]:
+                if step.get("command") is not None:
+                    assert step["command"] == "<redacted>"
+                message = step.get("message")
+                if message is not None:
+                    assert message["content"] == "<redacted>"
+                    if "system" in message:
+                        assert message["system"] == "<redacted>"
+
+    combined = "\n".join(raw_bodies)
+    for secret in (
+        "queued-secret",
+        "queued-secret-prompt",
+        "queued-secret-system",
+        "running-secret",
+        "failed-command-secret",
+        "failed-provider-secret-prompt",
+        "failed-provider-secret-system",
+    ):
+        assert secret not in combined
+
+
 def test_http_api_run_detail_redacts_captured_terminal_and_provider_output(
     tmp_path,
 ) -> None:
@@ -614,13 +722,15 @@ def test_http_api_run_detail_redacts_captured_terminal_and_provider_output(
     assert command_output["command"] == [
         "docker", "run", "--env", "API_TOKEN", "python:3.12-slim", "true",
     ]
-    assert steps["command-1"]["command"] == ["true"]
+    # Declared step input (command argv) is redacted; the captured
+    # sandbox-invocation command above is a separate, already-sanitized field.
+    assert steps["command-1"]["command"] == "<redacted>"
 
     provider_step = steps["provider-1"]
-    # Declared step input (the prompt the operator authored) stays visible,
-    # matching the CLI, exactly like command argv above.
-    assert provider_step["message"]["content"] == "private request prompt"
-    assert provider_step["message"]["system"] == "private system prompt"
+    # Declared provider request content/system is redacted; provider
+    # metadata (dispatch target) stays visible.
+    assert provider_step["message"]["content"] == "<redacted>"
+    assert provider_step["message"]["system"] == "<redacted>"
     assert provider_step["message"]["provider"] == "ollama"
     # Captured provider response output is redacted.
     assert provider_step["output"]["content"] == "<redacted>"
@@ -652,23 +762,23 @@ def test_http_api_run_detail_never_serializes_sensitive_raw_values(tmp_path) -> 
         "private response text",
         "private raw envelope",
         "runtime-only-secret",
+        "private request prompt",
+        "private system prompt",
     ):
         assert sensitive_value not in raw_body
-    # Declared step input is expected to be visible, matching the CLI.
-    assert "private request prompt" in raw_body
 
 
-def test_cli_run_inspect_shows_full_detail_while_http_redacts_captured_output(
+def test_cli_run_inspect_shows_full_detail_while_http_redacts_declared_and_captured(
     tmp_path, capsys
 ) -> None:
     """The CLI keeps full local-operator detail; only the HTTP surface redacts it.
 
     This is a deliberate divergence from exact CLI/HTTP contract parity,
     recorded in .decisions/0008: the HTTP loopback API is a broader
-    co-resident-process surface than the interactive CLI, so it redacts a
-    completed step's captured terminal/provider output that the CLI still
-    shows. Declared step input (command argv, provider message content)
-    stays visible on both surfaces.
+    co-resident-process surface than the interactive CLI, so it redacts both
+    a step's declared input (command argv, provider message content/system)
+    and a completed step's captured terminal/provider output, all of which
+    the CLI still shows in full.
     """
 
     database = tmp_path / "state.sqlite3"
@@ -678,20 +788,19 @@ def test_cli_run_inspect_shows_full_detail_while_http_redacts_captured_output(
     main(["run", "inspect", "run-sensitive", "--state-db", str(database)])
     cli_payload = json.loads(capsys.readouterr().out)
     cli_steps = {step["step_id"]: step for step in cli_payload["steps"]}
+    assert cli_steps["command-1"]["command"] == ["true"]
     assert cli_steps["command-1"]["output"]["stdout"] == "private stdout"
+    assert cli_steps["provider-1"]["message"]["content"] == "private request prompt"
     assert cli_steps["provider-1"]["output"]["content"] == "private response text"
 
     with _running_server(coordinator) as port:
         http_payload = _get_json(port, "/api/v1/runs/run-sensitive")
 
     http_steps = {step["step_id"]: step for step in http_payload["steps"]}
+    assert http_steps["command-1"]["command"] == "<redacted>"
     assert http_steps["command-1"]["output"]["stdout"] == "<redacted>"
+    assert http_steps["provider-1"]["message"]["content"] == "<redacted>"
     assert http_steps["provider-1"]["output"]["content"] == "<redacted>"
-    # Declared input matches exactly between the two surfaces.
-    assert (
-        http_steps["provider-1"]["message"]
-        == cli_steps["provider-1"]["message"]
-    )
     assert http_payload != cli_payload
 
 
