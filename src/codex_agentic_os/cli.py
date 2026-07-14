@@ -28,6 +28,8 @@ from .providers import (
 from .runtime import (
     Agent,
     AgentRegistry,
+    ArtifactDeclaration,
+    ArtifactRecord,
     ClaimStaleness,
     PlanDraft,
     PlanStepProposal,
@@ -223,6 +225,17 @@ def _parser() -> argparse.ArgumentParser:
         "--network",
         action="store_true",
         help="persist explicit opt-in to enable container network access",
+    )
+    add_step.add_argument(
+        "--artifact",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help=(
+            "declare a named workspace artifact path to capture after a "
+            "successful command; the path must resolve within a persisted "
+            "sandbox mount; repeat for multiple artifacts"
+        ),
     )
     plan.add_argument("run_id")
     plan.add_argument("plan_id")
@@ -525,6 +538,18 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_artifacts(values: Sequence[str]) -> tuple[ArtifactDeclaration, ...]:
+    """Parse strict NAME=PATH declared artifact arguments."""
+
+    declarations = []
+    for value in values:
+        name, separator, path = value.partition("=")
+        if not separator or not name or not path:
+            raise ValueError("artifact must be NAME=PATH with non-empty name and path")
+        declarations.append(ArtifactDeclaration(name=name, path=path))
+    return tuple(declarations)
+
+
 def _parse_mounts(values: Sequence[str]) -> tuple[tuple[str, str], ...]:
     """Parse strict HOST:CONTAINER bind mount arguments."""
 
@@ -575,6 +600,7 @@ def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
                 step,
                 retried_from_step_id=retried_from.get(step.step_id),
                 retried_into_step_id=retry_lineage.get(step.step_id),
+                artifacts=coordinator.list_artifacts(run_id, step_id=step.step_id),
             )
         )
     return {"run": run_data, "steps": steps}
@@ -624,6 +650,7 @@ def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, objec
             "resolved_provider",
             "resolved_model",
             "routing_reason",
+            "artifact_name",
         ):
             if getattr(entry, optional_field) is None:
                 payload.pop(optional_field)
@@ -736,11 +763,30 @@ def _staleness_payload(evaluation: ClaimStaleness) -> dict[str, object]:
     return asdict(evaluation)
 
 
+def _artifact_record_payload(artifact: ArtifactRecord) -> dict[str, object]:
+    """Return the standard JSON-compatible, redacted view of one artifact record."""
+
+    payload: dict[str, object] = {
+        "artifact_id": artifact.artifact_id,
+        "name": artifact.name,
+        "status": artifact.status.value,
+        "source_path": artifact.source_path,
+    }
+    if artifact.content_hash is not None:
+        payload["content_hash"] = artifact.content_hash
+    if artifact.size_bytes is not None:
+        payload["size_bytes"] = artifact.size_bytes
+    if artifact.size_limit_bytes is not None:
+        payload["size_limit_bytes"] = artifact.size_limit_bytes
+    return payload
+
+
 def _step_payload(
     step: RunStep,
     *,
     retried_from_step_id: str | None = None,
     retried_into_step_id: str | None = None,
+    artifacts: Sequence[ArtifactRecord] = (),
 ) -> dict[str, object]:
     """Return the standard JSON-compatible view of one durable step."""
 
@@ -756,6 +802,10 @@ def _step_payload(
         payload.pop("sandbox_policy")
     else:
         payload["sandbox_policy"]["kind"] = step.sandbox_policy.kind.value
+    if not step.artifact_declarations:
+        payload.pop("artifact_declarations")
+    if artifacts:
+        payload["artifacts"] = [_artifact_record_payload(artifact) for artifact in artifacts]
     payload["status"] = step.status.value
     if step.status is StepStatus.FAILED:
         payload["failure_kind"] = (
@@ -1019,6 +1069,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     context_step_ids=arguments.context_step,
                     approval_required=arguments.approval_required,
                     sandbox_policy=sandbox_policy,
+                    artifacts=_parse_artifacts(arguments.artifact) or None,
                 )
                 run_id = arguments.run_id
             elif arguments.run_command == "plan":
@@ -1112,6 +1163,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                             step,
                             retried_from_step_id=retried_from_step_id,
                             retried_into_step_id=retried_into_step_id,
+                            artifacts=coordinator.list_artifacts(
+                                step.run_id, step_id=step.step_id
+                            ),
                         ),
                         indent=2,
                         sort_keys=True,

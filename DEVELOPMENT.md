@@ -293,6 +293,29 @@ persisted. Per-invocation sandbox flags are rejected
 when the next command step has a persisted policy; command steps without one retain
 the legacy `run execute-next --sandbox ...` path.
 
+Declare named workspace artifacts on a command step with `--artifact NAME=PATH`. Each
+path must be an absolute path that resolves within one of the step's persisted sandbox
+mounts (`--mount HOST:CONTAINER`); declaring an artifact without a persisted mount, or
+with a path outside every mount, fails before mutation:
+
+```bash
+codex-agentic-os run add-step run-002 step-005 --objective "Build the release archive" \
+  --sandbox docker --mount /path/to/repository:/workspace --workdir /workspace \
+  --artifact archive=/workspace/dist/release.tar.gz \
+  --state-db .codex-agentic-os/state.sqlite3 -- python build.py
+```
+
+After a successful command execution (`exit_code` zero), each declared file is read
+from its resolved host-side mount path and captured into local durable artifact
+storage keyed by content hash and byte size, alongside the producing run and step
+identity. A declared file absent after execution is recorded as an explicit `absent`
+artifact without turning a succeeded command step into a failed one, and a declared
+file over the configured size limit is recorded `rejected` with its actual size rather
+than being read into memory. `run inspect` and `run inspect-step` show each step's
+`artifact_declarations` and, once execution completes, an `artifacts` list with each
+record's name, status, content hash, and size — never the resolved host path, command
+arguments, or environment values.
+
 Append a provider-message step with no trailing command. The message is required
 together with exactly one of `--provider` (a fixed dispatch target) or `--capability`
 (a required capability resolved to a provider at dispatch time); declaring both, or

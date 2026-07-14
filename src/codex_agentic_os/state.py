@@ -40,6 +40,7 @@ class RunHistoryEntry:
     resolved_provider: str | None = None
     resolved_model: str | None = None
     routing_reason: str | None = None
+    artifact_name: str | None = None
 
 
 class StateConflictError(ValueError):
@@ -49,7 +50,7 @@ class StateConflictError(ValueError):
 class StateStore:
     """Persist runtime state in a repository-local SQLite database."""
 
-    KINDS = frozenset({"plan", "decision", "run", "step", "agent"})
+    KINDS = frozenset({"plan", "decision", "run", "step", "agent", "artifact"})
     _CREATE_TABLE = """
         CREATE TABLE {clause} state_records (
             kind TEXT NOT NULL,
@@ -58,7 +59,7 @@ class StateStore:
             payload TEXT NOT NULL,
             revision INTEGER NOT NULL,
             PRIMARY KEY (kind, key),
-            CHECK (kind IN ('plan', 'decision', 'run', 'step', 'agent')),
+            CHECK (kind IN ('plan', 'decision', 'run', 'step', 'agent', 'artifact')),
             CHECK (revision > 0)
         )
     """
@@ -95,7 +96,7 @@ class StateStore:
                 table = connection.execute(
                     "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'state_records'"
                 ).fetchone()
-            if table is None or "'step'" not in str(table[0]):
+            if table is None or "'step'" not in str(table[0]) or "'artifact'" not in str(table[0]):
                 raise ValueError(f"state database has an incompatible schema: {self.path}")
             return
 
@@ -105,7 +106,7 @@ class StateStore:
             schema = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'state_records'"
             ).fetchone()[0]
-            if "'step'" not in schema:
+            if "'step'" not in schema or "'artifact'" not in schema:
                 connection.execute("ALTER TABLE state_records RENAME TO state_records_old")
                 connection.execute(self._CREATE_TABLE.format(clause=""))
                 connection.execute(
@@ -132,6 +133,7 @@ class StateStore:
                 "resolved_provider",
                 "resolved_model",
                 "routing_reason",
+                "artifact_name",
             ):
                 if column not in history_columns:
                     connection.execute(
@@ -182,6 +184,7 @@ class StateStore:
         *,
         status: str,
         payload: Mapping[str, object],
+        history: Sequence[RunHistoryEntry] = (),
     ) -> StateRecord:
         """Insert a new document at revision one, rejecting an existing identity."""
 
@@ -208,6 +211,24 @@ class StateStore:
                         status=status,
                         agent_id=payload.get("agent_id"),
                         execution_kind=None,
+                    )
+                for entry in history:
+                    self._append_run_history(
+                        connection,
+                        entry.run_id,
+                        transition=entry.transition,
+                        status=entry.status,
+                        step_id=entry.step_id,
+                        agent_id=entry.agent_id,
+                        execution_kind=entry.execution_kind,
+                        retried_step_id=entry.retried_step_id,
+                        context_step_ids=entry.context_step_ids,
+                        plan_id=entry.plan_id,
+                        required_capability=entry.required_capability,
+                        resolved_provider=entry.resolved_provider,
+                        resolved_model=entry.resolved_model,
+                        routing_reason=entry.routing_reason,
+                        artifact_name=entry.artifact_name,
                     )
                 connection.commit()
         except sqlite3.IntegrityError as error:
@@ -263,6 +284,7 @@ class StateStore:
                     resolved_provider=entry.resolved_provider,
                     resolved_model=entry.resolved_model,
                     routing_reason=entry.routing_reason,
+                    artifact_name=entry.artifact_name,
                 )
             connection.commit()
         return tuple(stored)
@@ -996,6 +1018,7 @@ class StateStore:
                     resolved_provider=entry.resolved_provider,
                     resolved_model=entry.resolved_model,
                     routing_reason=entry.routing_reason,
+                    artifact_name=entry.artifact_name,
                 )
             connection.commit()
         return stored_plan, tuple(stored_steps)
@@ -1011,7 +1034,7 @@ class StateStore:
                 SELECT run_id, sequence, transition, status, step_id, agent_id,
                        execution_kind, retried_step_id, context_step_ids, plan_id,
                        required_capability, resolved_provider, resolved_model,
-                       routing_reason
+                       routing_reason, artifact_name
                 FROM run_history WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
@@ -1032,6 +1055,7 @@ class StateStore:
                 resolved_provider=row[11],
                 resolved_model=row[12],
                 routing_reason=row[13],
+                artifact_name=row[14],
             )
             for row in rows
         )
@@ -1131,6 +1155,7 @@ class StateStore:
         resolved_provider: str | None = None,
         resolved_model: str | None = None,
         routing_reason: str | None = None,
+        artifact_name: str | None = None,
     ) -> None:
         """Append one ordered history entry on a caller-owned run mutation transaction."""
 
@@ -1144,8 +1169,8 @@ class StateStore:
                 (run_id, sequence, transition, status, step_id, agent_id,
                  execution_kind, retried_step_id, context_step_ids, plan_id,
                  required_capability, resolved_provider, resolved_model,
-                 routing_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 routing_reason, artifact_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1162,6 +1187,7 @@ class StateStore:
                 resolved_provider,
                 resolved_model,
                 routing_reason,
+                artifact_name,
             ),
         )
 

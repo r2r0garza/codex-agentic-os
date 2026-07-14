@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import hashlib
 
 import pytest
 
@@ -11,6 +12,8 @@ from codex_agentic_os.runtime import (
     AgentRun,
     ApprovalRequiredError,
     ApprovalStatus,
+    ArtifactDeclaration,
+    ArtifactStatus,
     ClaimStaleness,
     ContextReferencesUnresolvedError,
     PLAN_PROPOSAL_SYSTEM_PROMPT,
@@ -3889,3 +3892,354 @@ def test_plan_decision_rejects_missing_invalid_and_already_decided_drafts(
     coordinator.reject_plan("plan-1", expected_revision=1)
     with pytest.raises(ValueError, match="plan is not a reviewable draft: plan-1"):
         method("plan-1", expected_revision=2)
+
+
+def test_add_step_persists_artifact_declarations_across_restart(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+
+    created = coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Produce a file",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+
+    assert created.artifact_declarations == (
+        ArtifactDeclaration(name="out", path="/workspace/out.txt"),
+    )
+    reloaded = RunCoordinator(StateStore(database)).get_step("command")
+    assert reloaded is not None
+    assert reloaded.artifact_declarations == created.artifact_declarations
+
+
+def test_artifact_declarations_require_a_persisted_sandbox_policy(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    run = coordinator.create("run-1", objective="Build feature")
+
+    with pytest.raises(ValueError, match="require a persisted sandbox policy"):
+        coordinator.add_step(
+            "run-1",
+            "command",
+            objective="Produce a file",
+            command=("true",),
+            artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+        )
+
+    assert coordinator.get("run-1") == run
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_artifact_declarations_require_at_least_one_mount(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+
+    with pytest.raises(ValueError, match="at least one persisted sandbox mount"):
+        coordinator.add_step(
+            "run-1",
+            "command",
+            objective="Produce a file",
+            command=("true",),
+            sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER, working_dir="/workspace"),
+            artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/etc/passwd", "/workspace/../secrets", "/workspace-other/out.txt"],
+)
+def test_artifact_declaration_path_must_resolve_within_a_mount(tmp_path, path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+
+    with pytest.raises(
+        ValueError, match="does not resolve within a persisted sandbox mount"
+    ):
+        coordinator.add_step(
+            "run-1",
+            "command",
+            objective="Produce a file",
+            command=("true",),
+            sandbox_policy=policy,
+            artifacts=[ArtifactDeclaration(name="out", path=path)],
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+@pytest.mark.parametrize(
+    ("declarations", "message"),
+    [
+        ([{"name": "", "path": "/workspace/out.txt"}], "non-empty identifier-safe string"),
+        ([{"name": "bad name", "path": "/workspace/out.txt"}], "identifier-safe string"),
+        (
+            [
+                {"name": "out", "path": "/workspace/a.txt"},
+                {"name": "out", "path": "/workspace/b.txt"},
+            ],
+            "name must be unique: out",
+        ),
+        ([{"name": "out", "path": "relative/out.txt"}], "non-empty absolute path"),
+        (
+            [{"unexpected": "field", "name": "out", "path": "/workspace/out.txt"}],
+            "unknown fields",
+        ),
+    ],
+)
+def test_artifact_declaration_validation_rejects_invalid_input_without_mutation(
+    tmp_path, declarations, message
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+
+    with pytest.raises(ValueError, match=message):
+        coordinator.add_step(
+            "run-1",
+            "command",
+            objective="Produce a file",
+            command=("true",),
+            sandbox_policy=policy,
+            artifacts=declarations,
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_artifact_declarations_are_rejected_for_provider_message_steps(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model")
+
+    with pytest.raises(ValueError, match="require a persisted sandbox policy"):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize",
+            message=ProviderMessage(provider="local", content="Hello"),
+            artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_successful_command_captures_declared_artifact_with_hash_and_size(tmp_path) -> None:
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    content = b"hello artifact\n"
+    (host_dir / "out.txt").write_bytes(content)
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Produce a file",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.start_next_step("run-1")
+
+    step, run = coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+
+    assert step.status is StepStatus.SUCCEEDED
+    assert run.status is RunStatus.SUCCEEDED
+    artifacts = coordinator.list_artifacts("run-1")
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.run_id == "run-1"
+    assert artifact.step_id == "command"
+    assert artifact.name == "out"
+    assert artifact.source_path == "/workspace/out.txt"
+    assert artifact.status is ArtifactStatus.CAPTURED
+    assert artifact.content_hash == hashlib.sha256(content).hexdigest()
+    assert artifact.size_bytes == len(content)
+    assert artifact.size_limit_bytes is None
+    stored = coordinator._artifact_storage_dir / artifact.artifact_id
+    assert stored.read_bytes() == content
+
+
+def test_missing_declared_artifact_is_recorded_absent_without_failing_step(tmp_path) -> None:
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Produce a file",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.start_next_step("run-1")
+
+    step, _ = coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+
+    assert step.status is StepStatus.SUCCEEDED
+    artifact = coordinator.list_artifacts("run-1")[0]
+    assert artifact.status is ArtifactStatus.ABSENT
+    assert artifact.content_hash is None
+    assert artifact.size_bytes is None
+
+
+def test_oversized_declared_artifact_is_rejected_without_streaming_content(tmp_path) -> None:
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    content = b"0123456789"
+    (host_dir / "out.txt").write_bytes(content)
+
+    coordinator = _RunCoordinator(
+        StateStore(tmp_path / "state.sqlite3"), artifact_size_limit_bytes=4
+    )
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Produce a file",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.start_next_step("run-1")
+
+    step, _ = coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+
+    assert step.status is StepStatus.SUCCEEDED
+    artifact = coordinator.list_artifacts("run-1")[0]
+    assert artifact.status is ArtifactStatus.REJECTED
+    assert artifact.content_hash is None
+    assert artifact.size_bytes == len(content)
+    assert artifact.size_limit_bytes == 4
+    assert list(coordinator._artifact_storage_dir.glob("*")) == []
+
+
+def test_failed_command_step_does_not_capture_artifacts(tmp_path) -> None:
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "out.txt").write_bytes(b"data")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Produce a file",
+        command=("false",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.start_next_step("run-1")
+
+    step, _ = coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "false"), 1, "", "boom")
+    )
+
+    assert step.status is StepStatus.FAILED
+    assert coordinator.list_artifacts("run-1") == ()
+
+
+def test_artifact_capture_records_redacted_history(tmp_path) -> None:
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "out.txt").write_bytes(b"data")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "command",
+        objective="Produce a file",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "command", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+
+    entries = [
+        entry
+        for entry in coordinator.list_history("run-1")
+        if entry.transition == "artifact_captured"
+    ]
+    assert len(entries) == 1
+    assert entries[0].step_id == "command"
+    assert entries[0].artifact_name == "out"
+    assert entries[0].status == "captured"
+
+
+def test_artifact_declarations_and_sandbox_policy_survive_second_step_dispatch(
+    tmp_path,
+) -> None:
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    (host_dir / "second.txt").write_bytes(b"second-content")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1", "first", objective="First", command=("true",), sandbox_policy=policy,
+    )
+    coordinator.add_step(
+        "run-1",
+        "second",
+        objective="Second",
+        command=("true",),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/second.txt")],
+    )
+
+    coordinator.start_next_step("run-1")
+    coordinator.complete_step_from_result(
+        "first", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+
+    dispatched_second = coordinator.start_next_step("run-1")
+    assert dispatched_second is not None
+    assert dispatched_second.sandbox_policy == policy
+    assert dispatched_second.artifact_declarations == (
+        ArtifactDeclaration(name="out", path="/workspace/second.txt"),
+    )
+
+    step, _ = coordinator.complete_step_from_result(
+        "second", SandboxResult(("docker", "run", "true"), 0, "", "")
+    )
+    assert step.status is StepStatus.SUCCEEDED
+    artifacts = coordinator.list_artifacts("run-1", step_id="second")
+    assert len(artifacts) == 1
+    assert artifacts[0].status is ArtifactStatus.CAPTURED
+
+
+def test_list_artifacts_requires_an_existing_run(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+
+    with pytest.raises(KeyError, match="run does not exist: missing"):
+        coordinator.list_artifacts("missing")
+
+
+def test_run_coordinator_rejects_non_positive_artifact_size_limit(tmp_path) -> None:
+    with pytest.raises(ValueError, match="artifact size limit must be positive"):
+        _RunCoordinator(StateStore(tmp_path / "state.sqlite3"), artifact_size_limit_bytes=0)

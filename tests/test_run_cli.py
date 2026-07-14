@@ -8,6 +8,7 @@ import pytest
 from codex_agentic_os.cli import main
 from codex_agentic_os.runtime import (
     AgentRegistry,
+    ArtifactDeclaration,
     ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
@@ -669,6 +670,133 @@ def test_cli_add_step_without_sandbox_flags_has_no_sandbox_policy(
 
     payload = json.loads(capsys.readouterr().out)
     assert "sandbox_policy" not in payload["steps"][0]
+
+
+def test_cli_adds_command_step_with_artifact_declarations_and_matches_inspection(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Sandboxed command",
+            "--sandbox", "docker", "--mount", "/host/data:/workspace",
+            "--artifact", "out=/workspace/out.txt",
+            "--artifact", "log=/workspace/log.txt",
+            "--state-db", str(database), "--", "python", "-c", "print('hello')",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"][0]["artifact_declarations"] == [
+        {"name": "out", "path": "/workspace/out.txt"},
+        {"name": "log", "path": "/workspace/log.txt"},
+    ]
+
+    main(["run", "inspect-step", "step-1", "--state-db", str(database)])
+    assert json.loads(capsys.readouterr().out) == payload["steps"][0]
+
+
+def test_cli_add_step_without_artifact_flags_has_no_artifact_declarations(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Plain command",
+            "--state-db", str(database), "--", "printf", "hi",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "artifact_declarations" not in payload["steps"][0]
+
+
+@pytest.mark.parametrize(
+    ("extra_arguments", "message"),
+    [
+        (
+            ["--sandbox", "docker", "--artifact", "badformat"],
+            "artifact must be NAME=PATH with non-empty name and path",
+        ),
+        (
+            ["--sandbox", "docker", "--artifact", "=/workspace/out.txt"],
+            "artifact must be NAME=PATH with non-empty name and path",
+        ),
+        (
+            ["--artifact", "out=/workspace/out.txt"],
+            "require a persisted sandbox policy",
+        ),
+        (
+            [
+                "--sandbox", "docker", "--artifact", "out=/etc/passwd",
+                "--mount", "/host/data:/workspace",
+            ],
+            "does not resolve within a persisted sandbox mount",
+        ),
+    ],
+)
+def test_cli_add_step_rejects_invalid_artifact_declarations_without_mutation(
+    tmp_path, capsys, extra_arguments, message
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Original")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "add-step", "run-1", "step-1", "--objective", "Work",
+                *extra_arguments, "--state-db", str(database), "--", "printf", "hi",
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.list_steps("run-1") == ()
+
+
+def test_cli_execute_next_captures_declared_artifact_from_mounted_workspace(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Execute durable work")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=((str(host_dir), "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "step-1",
+        objective="Produce a file",
+        command=("sh", "-c", "echo hello > /workspace/out.txt"),
+        sandbox_policy=policy,
+        artifacts=[ArtifactDeclaration(name="out", path="/workspace/out.txt")],
+    )
+
+    def execute(self, argv, *, timeout=None):
+        (host_dir / "out.txt").write_bytes(b"hello\n")
+        return SandboxResult(("docker", *argv), 0, "", "")
+
+    monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
+
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"][0]["status"] == "succeeded"
+    artifacts = payload["steps"][0]["artifacts"]
+    assert len(artifacts) == 1
+    assert artifacts[0]["name"] == "out"
+    assert artifacts[0]["status"] == "captured"
+    assert artifacts[0]["size_bytes"] == len(b"hello\n")
+    assert "content_hash" in artifacts[0]
 
 
 @pytest.mark.parametrize(
