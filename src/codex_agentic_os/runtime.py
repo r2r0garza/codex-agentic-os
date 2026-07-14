@@ -12,7 +12,13 @@ import posixpath
 import re
 from typing import Callable, Mapping, Protocol, Sequence
 
-from .chat import ChatAdapter, ChatMessage, ChatRequest, ChatResponse
+from .chat import (
+    ChatAdapter,
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    ChatToolDeclaration,
+)
 from .providers import (
     DEFAULT_PROVIDER_ROUTING_POLICY,
     DEFAULT_PROVIDER_SPECS,
@@ -1068,6 +1074,14 @@ class RunCoordinator:
                 messages,
                 temperature=running_step.message.temperature,
                 max_tokens=running_step.message.max_tokens,
+                tools=tuple(
+                    ChatToolDeclaration(
+                        name=tool.name,
+                        description=tool.description,
+                        parameters=tool.parameters,
+                    )
+                    for tool in running_step.tool_declarations
+                ),
             )
             response = adapter.complete(request)
         except (ValueError, RuntimeError, NotImplementedError) as error:

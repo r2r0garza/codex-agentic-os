@@ -2119,6 +2119,49 @@ def test_execute_next_step_sends_provider_message_and_persists_response(tmp_path
     assert RunCoordinator(StateStore(database)).get_step("manual") == step
 
 
+def test_execute_next_step_passes_command_free_tool_declarations_to_adapter(
+    tmp_path,
+) -> None:
+    requests = []
+
+    class Adapter:
+        def complete(self, request):
+            requests.append(request)
+            return ChatResponse("Durable answer")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Use a declared tool")
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Search notes",
+        message=ProviderMessage(provider="local", content="Find release notes"),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+        tools=[
+            ToolDeclaration(
+                name="search_notes",
+                command=("search", "{query}"),
+                description="Search durable notes",
+                parameters={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                },
+            )
+        ],
+    )
+
+    coordinator.execute_next_step("run-1", adapter_resolver=lambda _: Adapter())
+
+    assert len(requests) == 1
+    assert requests[0].tools[0].name == "search_notes"
+    assert requests[0].tools[0].description == "Search durable notes"
+    assert requests[0].tools[0].parameters == {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+    }
+    assert not hasattr(requests[0].tools[0], "command")
+
+
 def test_execute_next_step_routes_capability_by_policy_and_reconstructs_provenance(
     tmp_path,
 ) -> None:

@@ -6,6 +6,7 @@ from codex_agentic_os.chat import (
     AnthropicAdapter,
     ChatMessage,
     ChatRequest,
+    ChatToolDeclaration,
     GoogleAdapter,
     OpenAICompatibleAdapter,
     adapter_for,
@@ -317,6 +318,166 @@ def test_google_adapter_posts_native_payload_and_reads_text_parts(monkeypatch: p
     }
     assert response.content == "hello there"
     assert response.model == "gemini-test-001"
+
+
+_CHAT_TOOLS = (
+    ChatToolDeclaration(
+        name="search_notes",
+        description="Search durable notes",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    ),
+    ChatToolDeclaration(name="list_notes"),
+)
+
+
+def test_openai_compatible_adapter_maps_native_function_tools() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured.update(headers=headers, body=json.loads(body))
+        return json.dumps({"choices": [{"message": {"content": "final"}}]}).encode()
+
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(
+            ProviderKind.OPENAI_COMPATIBLE,
+            model="test-model",
+            base_url="http://localhost:9000/v1",
+        ),
+        transport=transport,
+    )
+    adapter.complete(ChatRequest((ChatMessage("user", "Search"),), tools=_CHAT_TOOLS))
+
+    assert captured["headers"] == {"Content-Type": "application/json"}
+    assert captured["body"]["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_notes",
+                "description": "Search durable notes",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_notes",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+
+
+def test_anthropic_adapter_maps_native_tools() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured.update(headers=headers, body=json.loads(body))
+        return json.dumps({"content": [{"type": "text", "text": "final"}]}).encode()
+
+    adapter = AnthropicAdapter(
+        ProviderSpec(ProviderKind.ANTHROPIC, model="claude-test"),
+        transport=transport,
+    )
+    adapter.complete(ChatRequest((ChatMessage("user", "Search"),), tools=_CHAT_TOOLS))
+
+    assert captured["headers"] == {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
+    assert captured["body"]["tools"] == [
+        {
+            "name": "search_notes",
+            "description": "Search durable notes",
+            "input_schema": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "list_notes",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+    ]
+
+
+def test_google_adapter_maps_native_function_declarations() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured.update(headers=headers, body=json.loads(body))
+        return json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": "final"}]}}]}
+        ).encode()
+
+    adapter = GoogleAdapter(
+        ProviderSpec(ProviderKind.GOOGLE, model="gemini-test"), transport=transport
+    )
+    adapter.complete(ChatRequest((ChatMessage("user", "Search"),), tools=_CHAT_TOOLS))
+
+    assert captured["headers"] == {"Content-Type": "application/json"}
+    assert captured["body"]["tools"] == [
+        {
+            "functionDeclarations": [
+                {
+                    "name": "search_notes",
+                    "description": "Search durable notes",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+                {
+                    "name": "list_notes",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            ]
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "adapter",
+    [
+        OpenAICompatibleAdapter(
+            ProviderSpec(
+                ProviderKind.OPENAI_COMPATIBLE,
+                model="test-model",
+                base_url="http://localhost:9000/v1",
+            ),
+            transport=lambda *_: b"{}",
+        ),
+        AnthropicAdapter(
+            ProviderSpec(ProviderKind.ANTHROPIC, model="claude-test"),
+            transport=lambda *_: b"{}",
+        ),
+        GoogleAdapter(
+            ProviderSpec(ProviderKind.GOOGLE, model="gemini-test"),
+            transport=lambda *_: b"{}",
+        ),
+    ],
+)
+def test_adapters_reject_non_object_tool_schema_before_transport(adapter) -> None:
+    with pytest.raises(ValueError, match="must describe an object"):
+        adapter.complete(
+            ChatRequest(
+                (ChatMessage("user", "Search"),),
+                tools=(
+                    ChatToolDeclaration(
+                        name="search_notes", parameters={"type": "array"}
+                    ),
+                ),
+            )
+        )
 
 
 def test_adapter_factory_selects_native_adapters() -> None:

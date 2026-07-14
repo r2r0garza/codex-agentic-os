@@ -33,12 +33,22 @@ class ChatMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatToolDeclaration:
+    """Command-free tool metadata exposed to a model provider."""
+
+    name: str
+    description: str | None = None
+    parameters: Mapping[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ChatRequest:
     """The provider-independent portion of a model call."""
 
     messages: tuple[ChatMessage, ...]
     temperature: float | None = None
     max_tokens: int | None = None
+    tools: tuple[ChatToolDeclaration, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +136,66 @@ def _google_usage(raw: Mapping[str, object]) -> ChatUsage:
     return ChatUsage(available=True, input_tokens=input_tokens, output_tokens=output_tokens, raw=dict(usage))
 
 
+def _tool_parameters(tool: ChatToolDeclaration) -> dict[str, object]:
+    """Return a deterministic object-input schema common to all adapters."""
+
+    parameters = (
+        {"type": "object", "properties": {}}
+        if tool.parameters is None
+        else dict(tool.parameters)
+    )
+    schema_type = parameters.get("type")
+    if schema_type is not None and schema_type != "object":
+        raise ValueError(
+            f"tool {tool.name!r} parameters must describe an object for provider mapping"
+        )
+    properties = parameters.get("properties")
+    if properties is not None and not isinstance(properties, Mapping):
+        raise ValueError(
+            f"tool {tool.name!r} parameters properties must be a JSON object"
+        )
+    return parameters
+
+
+def _openai_tools(tools: tuple[ChatToolDeclaration, ...]) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for tool in tools:
+        function: dict[str, object] = {
+            "name": tool.name,
+            "parameters": _tool_parameters(tool),
+        }
+        if tool.description is not None:
+            function["description"] = tool.description
+        result.append({"type": "function", "function": function})
+    return result
+
+
+def _anthropic_tools(tools: tuple[ChatToolDeclaration, ...]) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for tool in tools:
+        mapped: dict[str, object] = {
+            "name": tool.name,
+            "input_schema": _tool_parameters(tool),
+        }
+        if tool.description is not None:
+            mapped["description"] = tool.description
+        result.append(mapped)
+    return result
+
+
+def _google_tools(tools: tuple[ChatToolDeclaration, ...]) -> list[dict[str, object]]:
+    declarations: list[dict[str, object]] = []
+    for tool in tools:
+        mapped: dict[str, object] = {
+            "name": tool.name,
+            "parameters": _tool_parameters(tool),
+        }
+        if tool.description is not None:
+            mapped["description"] = tool.description
+        declarations.append(mapped)
+    return [{"functionDeclarations": declarations}]
+
+
 class OpenAICompatibleAdapter:
     """Adapter for providers exposing ``POST /chat/completions``."""
 
@@ -150,6 +220,8 @@ class OpenAICompatibleAdapter:
             payload["temperature"] = request.temperature
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
+        if request.tools:
+            payload["tools"] = _openai_tools(request.tools)
 
         provider_default = _COMPATIBLE_DEFAULT_BASE_URLS.get(self.spec.kind)
         base_url = (self.spec.base_url or provider_default or "https://api.openai.com/v1").rstrip("/")
@@ -204,6 +276,8 @@ class AnthropicAdapter:
             payload["system"] = "\n\n".join(system_messages)
         if request.temperature is not None:
             payload["temperature"] = request.temperature
+        if request.tools:
+            payload["tools"] = _anthropic_tools(request.tools)
 
         base_url = (self.spec.base_url or "https://api.anthropic.com").rstrip("/")
         headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
@@ -260,6 +334,8 @@ class GoogleAdapter:
             generation_config["maxOutputTokens"] = request.max_tokens
         if generation_config:
             payload["generationConfig"] = generation_config
+        if request.tools:
+            payload["tools"] = _google_tools(request.tools)
 
         base_url = (self.spec.base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
         model = self.spec.model.removeprefix("models/")

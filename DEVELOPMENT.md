@@ -377,9 +377,14 @@ codex-agentic-os run add-step run-002 step-007 --objective "Summarize with a too
 `run inspect` and `run inspect-step` show each step's `tool_declarations` (name,
 command, optional description, optional parameters) and, when present, its
 `sandbox_policy`; a provider step declaring no tools omits both keys exactly as
-before. Only the declaration is persisted here — dispatch does not yet map these
-tools into an adapter's native tool/function request shape or execute a
-model-requested tool call; both are a later sprint slice.
+before. At dispatch, the provider-neutral request carries only the tool name,
+optional description, and object-input schema — never the sandbox command template.
+OpenAI-compatible adapters emit `tools` with function definitions, Anthropic emits
+native tools with `input_schema`, and Google emits `functionDeclarations`. Omitting
+tools leaves every prior adapter payload unchanged. A missing parameters schema maps
+deterministically to an empty object schema; a schema whose root is explicitly
+non-object is rejected before transport. Executing a model-requested tool call remains
+a later sprint slice.
 
 ```bash
 codex-agentic-os run add-step run-002 step-002b --objective "Summarize output" \
