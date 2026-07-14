@@ -1,5 +1,17 @@
 # Automation Memory
 
+- Run: 2026-07-14T11:02:47Z — implementation run (scheduled).
+- Active milestone: Sprint 16 "Live run observation" (#16). Selected #103 (priority:3), the sole open/`agent-ready` issue; its stated dependencies #101/#102 were closed.
+- Completed: finalized the `run watch` redaction/approval-blocked output contract. No runtime or CLI behavior changed — `RunHistoryEntry` (Plans 0060/0062) never stored raw command arguments, resolved environment values, provider request bodies, or terminal output, and `_watch_blocked_step` (Plan 0095) only ever surfaces `step_id`/`position`/`objective`/`reason`, so the redaction guarantee was already structural. Added the regression the milestone's acceptance criteria required: a focused test drives a command step with sensitive command arguments and `SandboxPolicy.env_passthrough`, a completed step's captured terminal output, and a pending-approval provider step with a sensitive message body through `run watch`, then asserts none of those values appear anywhere in watch output and that every emitted `history`/`blocked` entry's keys stay within the documented allowlist. Added Plan 0097.
+- Tests: focused watch suite `12 passed` (up from 11, +1 net); full suite `672 passed` (up from 671, +1 net).
+- Verification: activated `.venv`; rebuilt and checked the index (24 files, 1012 symbols, 5966 relationships); `git diff --check` clean; live CLI UAT created a run with a pending-approval command step, watched it, confirmed the single redacted `blocked` notice with no command/env data, and interrupted the watcher cleanly with SIGINT.
+- Durable state: implementation commit `2edcbb9` pushed to `origin/main`; #103 closed with commit and verification evidence.
+- Blocked review: repository-wide open `blocked` search is empty. Sprint 16 now has 0 open issues (#101-#103 all closed) — ready for a retrospective run.
+- Roadmap horizon: 13 ordered open milestones before and after this run (Sprint 16 through Sprint 28), above the three-sprint threshold; no planning handoff or roadmap issue was created.
+- Next eligible action: run Sprint 16's retrospective (all issues closed, exit criteria ready for end-to-end review) — do not select a new implementation issue until the retrospective closes or remediates the milestone. Final target `main`; worktree dirty only for this MEMORY update before its durable handoff commit.
+
+---
+
 - Run: 2026-07-14T10:33:01Z — implementation run (scheduled).
 - Active milestone: Sprint 16 "Live run observation" (#16). Selected #102 (priority:2), the sole unblocked `agent-ready` issue; its stated dependency #101 was closed.
 - Completed: added `run watch --after-sequence N`, a non-negative operator-provided durable history cursor. The existing read-only polling loop initializes its in-process sequence from N and emits only history entries with sequence greater than N, so a watcher stopped after entry N can restart without duplicates or gaps. Validation occurs before the state database is opened; no automatic watcher state, persistence, subscription, or transport was added. Durable sequence was already present in each machine-readable history line. Added Plan 0096 and DEVELOPMENT.md guidance.
@@ -44,15 +56,3 @@
 - Blocked review: repository-wide open `blocked` search found none. Sprint 15 now has 0 open issues (#97-#99 all closed) — ready for a retrospective run.
 - Roadmap horizon: 14 ordered open milestones before and after this run (Sprint 15 through Sprint 28), above the three-sprint threshold; no planning handoff or roadmap issue was created.
 - Next eligible action: run Sprint 15's retrospective (all issues closed, exit criteria ready for end-to-end review) — do not select a new implementation issue until the retrospective closes or remediates the milestone. Final target `main`; worktree dirty only for this MEMORY update before its durable handoff commit.
-
----
-
-- Run: 2026-07-14T08:37:10Z — implementation run (scheduled).
-- Active milestone: Sprint 15 "Durable step artifacts with provenance" (#15). Selected #98 (priority:2), the sole unblocked `agent-ready` issue; #99 was blocked on it.
-- Completed: added `RunStep.response_artifact_name`, `RunCoordinator.add_step(..., response_artifact_name=...)`, and `run add-step --response-artifact NAME`, validated before mutation and persisted across restart and every lifecycle payload rewrite. On a successful provider response, normalized `response.content` is UTF-8 encoded and captured through the same shared artifact persistence helper used by command files: local content storage, sha256, byte size, run/step/name identity, configured size-limit rejection, read-only inspection, and durable history with `execution_kind=provider`; rejected oversize content does not change the provider step's success, while adapter/routing failures capture nothing. Existing normalized output (including raw envelope), usage evidence, context resolution, capability routing, and fixed-provider behavior remain compatible. Added Plan 0093 and DEVELOPMENT guidance.
-- Tests: full suite `644 passed` (up from 634, +10 net), covering declaration validation/no mutation, restart round-trip, command rejection, shared capture/hash/bytes, context + capability routing + usage compatibility on a non-final step, redacted provider history, size rejection without step failure, no capture on adapter failure, and CLI creation/inspection/rejection.
-- Verification: activated `.venv`; rebuilt and checked the index (24 files, 972 symbols, 5631 relationships); `git diff --check` clean.
-- Durable state: implementation commit `1958757` pushed to `origin/main`; #98 closed with commit and verification evidence.
-- Blocked review: repository-wide open `blocked` search found #99 in Sprint 15. Its dependencies #97/#98 are now closed, so `blocked` was removed and `agent-ready` added with an evidence comment. Sprint 15 now has one open/ready issue: #99 (priority:3). The sprint is not yet retrospective-eligible because #99 remains open.
-- Roadmap horizon: 14 ordered open milestones before and after this run (Sprint 15 through Sprint 28), above the three-sprint threshold; no planning handoff or roadmap issue was created.
-- Next eligible action: implement #99 (stable read-only artifact listing and byte-identical export for command/provider artifacts), then run Sprint 15's retrospective in a later run after all milestone issues close. Final target `main`; worktree dirty only for this MEMORY update before its durable handoff commit.
