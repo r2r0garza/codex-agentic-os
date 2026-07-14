@@ -24,3 +24,37 @@ export async function proxyReadOnlyGet(path: string): Promise<Response> {
     },
   })
 }
+
+/**
+ * Forward one JSON request body to a `POST` mutation route on the backend.
+ * Only called for the explicitly enumerated mutation paths in
+ * `runs/[...segments]/route.ts`; every other path stays on
+ * `proxyReadOnlyGet`.
+ */
+export async function proxyMutationPost(
+  path: string,
+  body: unknown
+): Promise<Response> {
+  const backendBaseUrl = getBackendBaseUrl()
+  let response: Response
+  try {
+    response = await fetch(`${backendBaseUrl}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    })
+  } catch {
+    return Response.json(
+      { error: `unable to reach the API at ${backendBaseUrl}` },
+      { status: 502 }
+    )
+  }
+  const responseBody = await response.text()
+  return new Response(responseBody, {
+    status: response.status,
+    headers: {
+      "content-type":
+        response.headers.get("content-type") ?? "application/json",
+    },
+  })
+}

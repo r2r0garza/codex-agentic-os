@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { RunDetail } from "@/components/run-detail"
@@ -104,21 +104,73 @@ function responseForUrl(bundle: RunDetailBundle, url: string): Response {
   return jsonResponse(bundle.detail)
 }
 
+function withFailedSteps(bundle: RunDetailBundle): RunDetailBundle {
+  return {
+    ...bundle,
+    detail: {
+      ...bundle.detail,
+      steps: [
+        ...bundle.detail.steps,
+        {
+          step_id: "step-failed-eligible",
+          run_id: "run-001",
+          position: 3,
+          objective: "flaky step",
+          status: "failed",
+          revision: 1,
+          command: "<redacted>",
+          output: { error: "<redacted>" },
+          failure_kind: "execution_error",
+          retry_eligible: true,
+        },
+        {
+          step_id: "step-failed-ineligible",
+          run_id: "run-001",
+          position: 4,
+          objective: "unretryable step",
+          status: "failed",
+          revision: 1,
+          command: "<redacted>",
+          output: { error: "<redacted>" },
+          failure_kind: "timeout",
+          retry_eligible: false,
+        },
+      ],
+    },
+  }
+}
+
+/** Routes GET requests to `bundle` and POST mutations to `postHandlers`, keyed by URL suffix. */
+function stubDashboardFetch(
+  bundle: RunDetailBundle,
+  postHandlers: Record<string, () => Response> = {}
+) {
+  const fetchImpl = vi
+    .fn()
+    .mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        const entry = Object.entries(postHandlers).find(([suffix]) =>
+          url.endsWith(suffix)
+        )
+        if (entry === undefined) {
+          throw new Error(`unexpected POST ${url}`)
+        }
+        return Promise.resolve(entry[1]())
+      }
+      return Promise.resolve(responseForUrl(bundle, url))
+    })
+  vi.stubGlobal("fetch", fetchImpl)
+  return fetchImpl
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
 
 describe("RunDetail", () => {
-  it("renders ordered steps, history, pending approvals, and usage without mutation controls", async () => {
+  it("renders ordered steps, history, pending approvals, and usage", async () => {
     const bundle = detailBundle()
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockImplementation((url: string) =>
-          Promise.resolve(responseForUrl(bundle, url))
-        )
-    )
+    stubDashboardFetch(bundle)
 
     render(<RunDetail runId="run-001" onBack={vi.fn()} />)
 
@@ -133,9 +185,143 @@ describe("RunDetail", () => {
     expect(screen.getAllByText("summarize input").length).toBeGreaterThan(0)
     expect(screen.getByText("Provider usage")).toBeInTheDocument()
     expect(screen.getByText("demo-model")).toBeInTheDocument()
+  })
+
+  it("offers approve/reject only for a pending approval and cancel only for an active run", async () => {
+    const bundle = detailBundle("running")
+    stubDashboardFetch(bundle)
+
+    render(<RunDetail runId="run-001" onBack={vi.fn()} />)
+    await waitFor(() =>
+      expect(screen.getByTestId("run-detail")).toBeInTheDocument()
+    )
+
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument()
     expect(
-      screen.queryByRole("button", { name: /approve|reject|cancel|retry/i })
+      screen.getByRole("button", { name: "Cancel run" })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Retry" })
     ).not.toBeInTheDocument()
+  })
+
+  it("hides the cancel control once a run reaches a terminal state", async () => {
+    const bundle = detailBundle("succeeded")
+    stubDashboardFetch({ ...bundle, approvals: [] })
+
+    render(<RunDetail runId="run-001" onBack={vi.fn()} />)
+    await waitFor(() =>
+      expect(screen.getByTestId("run-detail")).toBeInTheDocument()
+    )
+
+    expect(
+      screen.queryByRole("button", { name: "Cancel run" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("offers retry only for a retry-eligible failed step", async () => {
+    const bundle = withFailedSteps(detailBundle())
+    stubDashboardFetch(bundle)
+
+    render(<RunDetail runId="run-001" onBack={vi.fn()} />)
+    await waitFor(() =>
+      expect(screen.getByTestId("run-detail")).toBeInTheDocument()
+    )
+    expect(screen.getByText("flaky step")).toBeInTheDocument()
+    expect(screen.getByText("unretryable step")).toBeInTheDocument()
+
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1)
+  })
+
+  it("requires an explicit confirmation before an approve mutation is sent", async () => {
+    const bundle = detailBundle()
+    const fetchImpl = stubDashboardFetch(bundle, {
+      "/approve": () => jsonResponse(bundle.detail),
+    })
+
+    render(<RunDetail runId="run-001" onBack={vi.fn()} />)
+    await waitFor(() =>
+      expect(screen.getByTestId("run-detail")).toBeInTheDocument()
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }))
+    expect(
+      await screen.findByText("Approve this step?")
+    ).toBeInTheDocument()
+    expect(
+      fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST")
+    ).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }))
+
+    await waitFor(() =>
+      expect(
+        fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST")
+      ).toHaveLength(1)
+    )
+  })
+
+  it("refreshes durable state from the API after a successful mutation", async () => {
+    const bundle = detailBundle()
+    let getCalls = 0
+    const fetchImpl = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return Promise.resolve(jsonResponse(bundle.detail))
+      }
+      getCalls += 1
+      return Promise.resolve(responseForUrl(bundle, url))
+    })
+    vi.stubGlobal("fetch", fetchImpl)
+
+    render(<RunDetail runId="run-001" onBack={vi.fn()} pollIntervalMs={100_000} />)
+    await waitFor(() =>
+      expect(screen.getByTestId("run-detail")).toBeInTheDocument()
+    )
+    const getCallsBeforeMutation = getCalls
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }))
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm approve" })
+    )
+
+    await waitFor(() => expect(getCalls).toBeGreaterThan(getCallsBeforeMutation))
+    expect(
+      screen.queryByTestId("run-detail-mutation-error")
+    ).not.toBeInTheDocument()
+  })
+
+  it("shows a clean failure message and still refreshes durable state on a stale/ineligible mutation", async () => {
+    const bundle = detailBundle()
+    const fetchImpl = stubDashboardFetch(bundle, {
+      "/approve": () =>
+        Response.json(
+          { error: "step is not pending approval: step-provider" },
+          { status: 409 }
+        ),
+    })
+
+    render(<RunDetail runId="run-001" onBack={vi.fn()} />)
+    await waitFor(() =>
+      expect(screen.getByTestId("run-detail")).toBeInTheDocument()
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }))
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm approve" })
+    )
+
+    expect(
+      await screen.findByTestId("run-detail-mutation-error")
+    ).toHaveTextContent("step is not pending approval: step-provider")
+    await waitFor(() =>
+      expect(
+        fetchImpl.mock.calls.some(
+          ([url, init]) =>
+            init?.method !== "POST" && typeof url === "string" && url.endsWith("/run-001")
+        )
+      ).toBe(true)
+    )
   })
 
   it("refreshes the rendered run state by non-overlapping polling", async () => {

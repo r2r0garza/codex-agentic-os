@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { ApiError, fetchRunDetailBundle, fetchRunList } from "@/lib/api"
-import type { RunDetailBundle, RunSummary } from "@/lib/api"
+import {
+  ApiError,
+  approveStep,
+  cancelRun,
+  fetchRunDetailBundle,
+  fetchRunList,
+  rejectStep,
+  retryStep,
+} from "@/lib/api"
+import type { RunDetail, RunDetailBundle, RunSummary } from "@/lib/api"
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -126,5 +134,128 @@ describe("fetchRunDetailBundle", () => {
       ],
       ["http://dashboard.test/api/v1/runs/run%2F001/usage", { method: "GET" }],
     ])
+  })
+})
+
+const mutationOutcome: RunDetail = {
+  run: {
+    run_id: "run-001",
+    objective: "observe a mixed run",
+    status: "running",
+    revision: 4,
+    agent_id: "agent-1",
+    output: null,
+  },
+  steps: [],
+}
+
+describe("mutation requests", () => {
+  it("approveStep POSTs an empty body to the step approve route", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(mutationOutcome))
+
+    const result = await approveStep(
+      "run/001",
+      "step/1",
+      "http://dashboard.test",
+      fetchImpl
+    )
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://dashboard.test/api/v1/runs/run%2F001/steps/step%2F1/approve",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }
+    )
+    expect(result).toEqual(mutationOutcome)
+  })
+
+  it("rejectStep POSTs an empty body to the step reject route", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(mutationOutcome))
+
+    await rejectStep("run-001", "step-1", "http://dashboard.test", fetchImpl)
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://dashboard.test/api/v1/runs/run-001/steps/step-1/reject",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }
+    )
+  })
+
+  it("cancelRun POSTs an empty body to the run cancel route", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(mutationOutcome))
+
+    await cancelRun("run-001", "http://dashboard.test", fetchImpl)
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://dashboard.test/api/v1/runs/run-001/cancel",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }
+    )
+  })
+
+  it("retryStep POSTs the expected step and run revisions to the retry route", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(mutationOutcome))
+
+    await retryStep(
+      "run-001",
+      "step-1",
+      2,
+      3,
+      "http://dashboard.test",
+      fetchImpl
+    )
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://dashboard.test/api/v1/runs/run-001/steps/step-1/retry",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expected_step_revision: 2,
+          expected_run_revision: 3,
+        }),
+      }
+    )
+  })
+
+  it("raises an ApiError carrying the structured 409 body on a stale/ineligible mutation", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ error: "step is not pending approval: step-1" }, { status: 409 })
+      )
+
+    await expect(
+      approveStep("run-001", "step-1", "http://dashboard.test", fetchImpl)
+    ).rejects.toThrow(
+      new ApiError("step is not pending approval: step-1")
+    )
+  })
+
+  it("raises an ApiError when the mutation proxy is unreachable", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed"))
+
+    await expect(
+      cancelRun("run-001", "http://dashboard.test", fetchImpl)
+    ).rejects.toThrow(ApiError)
+  })
+
+  it("defaults every mutation to a same-origin relative request", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(mutationOutcome))
+
+    await approveStep("run-001", "step-1", undefined, fetchImpl)
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/v1/runs/run-001/steps/step-1/approve",
+      expect.objectContaining({ method: "POST" })
+    )
   })
 })

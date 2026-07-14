@@ -47,7 +47,7 @@ export function RunList({
   pollIntervalMs?: number
 }) {
   const load = React.useCallback(() => fetchRunList(), [])
-  const state = usePollingLoad(load, pollIntervalMs)
+  const { state } = usePollingLoad(load, pollIntervalMs)
 
   if (state.kind === "loading") {
     return (

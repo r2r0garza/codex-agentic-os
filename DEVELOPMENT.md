@@ -704,10 +704,12 @@ a temporary mixed-run database.
 
 ### Running the dashboard against the API
 
-`dashboard/` is a read-only Next.js operator dashboard over the same loopback
-API. For the reproducible Sprint 18 operator review, install the committed
-frontend dependencies once, ensure Docker is running, then launch the review
-harness from the repository root:
+`dashboard/` is a Next.js operator dashboard over the same loopback API. Run
+detail offers contextual, confirmed mutation controls (approve/reject a
+pending approval, cancel an active run, retry a retry-eligible failed step);
+see "Dashboard mutation controls" below. For the reproducible Sprint 18
+operator review, install the committed frontend dependencies once, ensure
+Docker is running, then launch the review harness from the repository root:
 
 ```bash
 cd dashboard
@@ -720,10 +722,10 @@ The harness activates the repository `.venv`, creates a fresh isolated state
 database at `/tmp/codex-agentic-os-dashboard-review.sqlite3`, and registers a
 dedicated worker. That real worker executes the first command step through a
 Docker sandbox and stops after the second, provider-backed step reaches its
-approval gate. The harness then starts the read-only API on `127.0.0.1:8080`
-and the dashboard on `127.0.0.1:3000` against that durable state. It never
-approves, rejects, cancels, retries, or otherwise mutates the run after serving
-begins.
+approval gate. The harness then starts the API on `127.0.0.1:8080` and the
+dashboard on `127.0.0.1:3000` against that durable state. The harness itself
+never approves, rejects, cancels, retries, or otherwise mutates the run after
+serving begins — it only observes what the browser shows.
 
 Open `http://127.0.0.1:3000`, select `dashboard-review`, and confirm all of the
 following browser-visible evidence:
@@ -733,11 +735,15 @@ following browser-visible evidence:
 - Lifecycle history includes the run and command-step start/success transitions
   with `dashboard-review-worker` provenance.
 - “Publish the reviewed result” appears under Pending approvals with a visible
-  `pending` badge.
+  `pending` badge and Approve/Reject controls; a Cancel run control appears
+  next to the running status badge; no Retry control appears anywhere, since
+  no step has failed.
 - Provider usage lists the provider step in durable order and displays
   `unavailable` token evidence rather than fabricated zero values.
-- The only detail-view interaction is “Back to runs”; there are no
-  approve/reject/cancel/retry controls or forms.
+- Clicking Approve, Reject, or Cancel run opens an explicit confirmation
+  dialog before sending anything; closing it via "Back" leaves the run
+  untouched. Do not confirm any of them during this read-only review — #119
+  covers a scripted end-to-end demonstration of confirming one.
 
 Press Ctrl-C in the harness terminal when the review is complete. It stops both
 servers and compares the state database's SHA-256 digest with the digest taken
@@ -755,8 +761,7 @@ codex-agentic-os api serve --host 127.0.0.1 --port 8080 --state-db /tmp/codex-ag
 
 In a second terminal, point the dashboard at that loopback base URL and start
 its dev server. `dashboard/.env.example` documents `API_BASE_URL` (defaulting
-to `http://127.0.0.1:8080`), read only by the dashboard's server-side proxy
-routes:
+to `http://127.0.0.1:8080`), read by the dashboard's server-side proxy routes:
 
 ```bash
 cd dashboard
@@ -767,18 +772,41 @@ pnpm dev
 
 Open `http://localhost:3000`. The browser only ever calls the dashboard's own
 same-origin `/api/v1/runs` and `/api/v1/runs/{run_id}[/history|/approvals|/usage]`
+`GET` routes, plus `/api/v1/runs/{run_id}/cancel` and
+`/api/v1/runs/{run_id}/steps/{step_id}/{approve,reject,retry}` `POST` mutation
 routes (`app/api/v1/runs/route.ts`, `app/api/v1/runs/[...segments]/route.ts`);
-those routes forward each `GET` to `API_BASE_URL` server-side, where the
+those routes forward each request to `API_BASE_URL` server-side, where the
 browser's CORS policy does not apply. Confirm the run list, ordered steps,
 lifecycle history, pending approvals, and provider usage render from the
 API's JSON exactly, that declared command argv and provider
 `message.content`/`system`/`stdout`/`stderr`/`content`/`raw` never appear as
 plaintext in the rendered page (the dashboard has no code path that
-reconstructs a redacted field from other local state), and that there are no
-approve/reject/cancel/retry controls anywhere in the UI. `pnpm test` in
-`dashboard/` includes a regression that renders a run whose fields carry
-sentinel values in every field the Sprint 17 API contract redacts and asserts
-none of them appear in the rendered output.
+reconstructs a redacted field from other local state), and that approve/reject
+appear only for a pending approval, cancel only for an active run, and retry
+only for a retry-eligible failed step — each behind an explicit confirmation
+dialog, with no bare form or unconfirmed action anywhere in the UI. `pnpm
+test` in `dashboard/` includes a regression that renders a run whose fields
+carry sentinel values in every field the Sprint 17 API contract redacts and
+asserts none of them appear in the rendered output, plus coverage for
+contextual mutation-control visibility, confirmation gating, and durable-state
+refresh after a mutation succeeds or fails.
+
+#### Dashboard mutation controls
+
+Run detail (`components/run-detail.tsx`) renders each control only when the
+durable state it last polled makes the action eligible: approve/reject next to
+a pending approval, cancel next to an active (`queued`/`running`) run's status
+badge, and retry in a failed step's row only when the API's `retry_eligible`
+field is `true`. Every control requires an explicit confirmation dialog before
+it calls `lib/api.ts`'s `approveStep`/`rejectStep`/`cancelRun`/`retryStep`,
+which `POST` through the dashboard's own same-origin proxy
+(`app/api/v1/runs/[...segments]/route.ts`) to the four mutation routes #117
+added. After every attempt — success or failure — the run detail bundle is
+reloaded from the API immediately (`usePollingLoad`'s `refresh()`) rather than
+guessing the outcome locally, so a stale or competing decision (another
+dashboard session or the CLI already acted) surfaces the API's structured
+error message and the actually-current durable state, with no control shown
+for an action that is no longer eligible after the refresh.
 
 Show one run's provider usage evidence in durable step order plus a
 run-level token aggregate. Each provider step reports its status, provider,

@@ -9,17 +9,27 @@ export type LoadState<T> =
   | { kind: "error"; message: string }
   | { kind: "ready"; data: T }
 
+export interface PollingLoad<T> {
+  state: LoadState<T>
+  /** Trigger an immediate reload outside the regular polling cadence. */
+  refresh: () => void
+}
+
 export function usePollingLoad<T>(
   load: () => Promise<T>,
   intervalMs: number
-): LoadState<T> {
+): PollingLoad<T> {
   const [state, setState] = React.useState<LoadState<T>>({ kind: "loading" })
+  const pollNowRef = React.useRef<() => void>(() => {})
 
   React.useEffect(() => {
     let cancelled = false
     let timeout: ReturnType<typeof setTimeout> | undefined
 
     async function poll() {
+      if (timeout !== undefined) {
+        clearTimeout(timeout)
+      }
       try {
         const data = await load()
         if (!cancelled) {
@@ -40,6 +50,7 @@ export function usePollingLoad<T>(
       }
     }
 
+    pollNowRef.current = () => void poll()
     void poll()
     return () => {
       cancelled = true
@@ -49,5 +60,9 @@ export function usePollingLoad<T>(
     }
   }, [intervalMs, load])
 
-  return state
+  const refresh = React.useCallback(() => {
+    pollNowRef.current()
+  }, [])
+
+  return { state, refresh }
 }
