@@ -2845,6 +2845,108 @@ def test_cli_watch_surfaces_pending_approval_once_without_repeating(
     assert reloaded.get_step("gate").approval_status.value == "pending"
 
 
+def test_cli_watch_output_omits_command_env_provider_and_terminal_secrets(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Regression: watch never surfaces raw command/env/provider/terminal secrets.
+
+    ``run watch`` only ever calls ``list_history``/``list_steps`` and emits the
+    same durable ``RunHistoryEntry`` fields (plus a minimal blocked-step
+    notice), neither of which stores raw command arguments, resolved
+    environment values, provider request bodies, or captured terminal output.
+    This proves that structural guarantee end to end through the public CLI.
+    """
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Observe redaction")
+    coordinator.add_step(
+        "run-1",
+        "fetch-secret",
+        objective="Fetch secret",
+        command=("curl", "--header", "Authorization: Bearer super-secret-token"),
+        sandbox_policy=SandboxPolicy(
+            kind=SandboxKind.DOCKER, env_passthrough=("DATABASE_PASSWORD",)
+        ),
+    )
+    coordinator.transition_step("fetch-secret", StepStatus.RUNNING)
+    coordinator.transition_step(
+        "fetch-secret",
+        StepStatus.SUCCEEDED,
+        output={"stdout": "leaked-terminal-credential-abc123", "exit_code": 0},
+    )
+    coordinator.add_step(
+        "run-1",
+        "call-model",
+        objective="Call model",
+        message=ProviderMessage(
+            provider="fixed-provider",
+            content="provider request body with credential xyz789",
+        ),
+        approval_required=True,
+    )
+
+    sleep_calls: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        raise _StopLoop()
+
+    monkeypatch.setattr("codex_agentic_os.cli.time.sleep", fake_sleep)
+
+    with pytest.raises(_StopLoop):
+        main(["run", "watch", "run-1", "--interval", "1", "--state-db", str(database)])
+
+    raw_output = capsys.readouterr().out
+    for forbidden in (
+        "curl",
+        "Authorization",
+        "super-secret-token",
+        "DATABASE_PASSWORD",
+        "leaked-terminal-credential-abc123",
+        "provider request body with credential xyz789",
+        "xyz789",
+    ):
+        assert forbidden not in raw_output
+
+    lines = [json.loads(line) for line in raw_output.splitlines() if line]
+    history_events = [entry for entry in lines if entry["event"] == "history"]
+    assert history_events
+    for entry in history_events:
+        assert set(entry) <= {
+            "event",
+            "run_id",
+            "sequence",
+            "transition",
+            "status",
+            "agent_id",
+            "execution_kind",
+            "step_id",
+            "retried_step_id",
+            "context_step_ids",
+            "plan_id",
+            "required_capability",
+            "resolved_provider",
+            "resolved_model",
+            "routing_reason",
+            "artifact_name",
+        }
+    blocked_events = [entry for entry in lines if entry["event"] == "blocked"]
+    assert len(blocked_events) == 1
+    assert blocked_events[0] == {
+        "event": "blocked",
+        "run_id": "run-1",
+        "step_id": "call-model",
+        "position": 2,
+        "objective": "Call model",
+        "reason": "approval_pending",
+    }
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get_step("fetch-secret").status is StepStatus.SUCCEEDED
+    assert reloaded.get_step("call-model").approval_status.value == "pending"
+
+
 def test_cli_watch_rejects_non_positive_interval_without_opening_database(
     tmp_path, capsys
 ) -> None:
