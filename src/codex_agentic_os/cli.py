@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Sequence
@@ -690,6 +691,34 @@ def _provider_adapter_resolver() -> Callable[[ProviderMessage], object]:
     return resolve
 
 
+def _install_worker_shutdown_signals() -> tuple[Callable[[], bool], Callable[[], None]]:
+    """Request a clean worker stop on SIGINT/SIGTERM instead of raising.
+
+    Returns a ``should_continue`` callable for ``run_worker`` that flips to
+    ``False`` once either signal arrives, so the worker's own loop stops at
+    its existing between-step boundary rather than being torn down mid-call,
+    plus a ``restore`` callable the caller must invoke once the worker loop
+    returns to put the process's prior signal disposition back.
+    """
+
+    stop_requested = False
+
+    def _request_stop(signum: int, frame: object) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+
+    previous_handlers = {
+        sig: signal.signal(sig, _request_stop)
+        for sig in (signal.SIGINT, signal.SIGTERM)
+    }
+
+    def restore() -> None:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+
+    return (lambda: not stop_requested), restore
+
+
 def _persisted_sandbox_resolver() -> Callable[[SandboxPolicy], ContainerSandbox]:
     """Build a sandbox resolver that only trusts a step's persisted policy."""
 
@@ -1180,16 +1209,21 @@ def main(argv: Sequence[str] | None = None) -> None:
             store = StateStore(arguments.state_db)
             coordinator = RunCoordinator(store)
             registry = AgentRegistry(store)
-            summary = run_worker(
-                coordinator,
-                registry,
-                arguments.agent_id,
-                heartbeat_interval=arguments.heartbeat_interval,
-                poll_interval=arguments.poll_interval,
-                sandbox_resolver=_persisted_sandbox_resolver(),
-                adapter_resolver=_provider_adapter_resolver(),
-                label=arguments.label,
-            )
+            should_continue, restore_shutdown_signals = _install_worker_shutdown_signals()
+            try:
+                summary = run_worker(
+                    coordinator,
+                    registry,
+                    arguments.agent_id,
+                    heartbeat_interval=arguments.heartbeat_interval,
+                    poll_interval=arguments.poll_interval,
+                    sandbox_resolver=_persisted_sandbox_resolver(),
+                    adapter_resolver=_provider_adapter_resolver(),
+                    label=arguments.label,
+                    should_continue=should_continue,
+                )
+            finally:
+                restore_shutdown_signals()
             print(
                 json.dumps(
                     {

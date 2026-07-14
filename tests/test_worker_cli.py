@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 
 import pytest
 
 from codex_agentic_os.cli import main
-from codex_agentic_os.runtime import AgentRegistry, RunCoordinator, RunStatus, SandboxPolicy
+from codex_agentic_os.runtime import (
+    AgentRegistry,
+    ProviderMessage,
+    RunCoordinator,
+    RunStatus,
+    SandboxPolicy,
+    StepStatus,
+)
 from codex_agentic_os.sandboxes import SandboxKind, SandboxResult
 from codex_agentic_os.state import StateStore
 from codex_agentic_os.worker import WorkerRunSummary
@@ -340,3 +349,197 @@ def test_cli_worker_run_resolves_persisted_env_passthrough_by_name_only(
     assert payload["steps"][0]["sandbox_policy"]["env_passthrough"] == [
         "WORKER_WIDGET_TOKEN"
     ]
+
+
+@pytest.mark.parametrize("target_signal", [signal.SIGINT, signal.SIGTERM])
+def test_cli_worker_run_stops_cleanly_on_shutdown_signal(
+    monkeypatch, tmp_path, capsys, target_signal
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Deliver")
+    coordinator.add_step(
+        "run-1",
+        "first",
+        objective="First",
+        command=("true",),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+    )
+    coordinator.add_step(
+        "run-1",
+        "second",
+        objective="Second",
+        command=("true",),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+    )
+
+    def fake_execute(self, argv, *, timeout=None):
+        os.kill(os.getpid(), target_signal)
+        return SandboxResult(tuple(argv), 0, "ok", "")
+
+    monkeypatch.setattr(
+        "codex_agentic_os.sandboxes.ContainerSandbox.execute", fake_execute
+    )
+
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    main(
+        [
+            "worker",
+            "run",
+            "--agent-id",
+            "agent-1",
+            "--heartbeat-interval",
+            "60",
+            "--poll-interval",
+            "1",
+            "--state-db",
+            str(database),
+        ]
+    )
+    summary_payload = json.loads(capsys.readouterr().out)
+
+    # `worker run` must restore the process's prior signal disposition once
+    # it stops, regardless of which signal it was asked to shut down on.
+    assert signal.getsignal(signal.SIGINT) is previous_sigint
+    assert signal.getsignal(signal.SIGTERM) is previous_sigterm
+
+    assert summary_payload == {
+        "agent_id": "agent-1",
+        "claimed_run_ids": ["run-1"],
+        "executed_step_ids": ["first"],
+    }
+
+    reloaded = RunCoordinator(StateStore(database))
+    reloaded_run = reloaded.get("run-1")
+    assert reloaded_run is not None and reloaded_run.status is RunStatus.RUNNING
+    steps = {step.step_id: step for step in reloaded.list_steps("run-1")}
+    assert steps["first"].status is StepStatus.SUCCEEDED
+    assert steps["second"].status is StepStatus.QUEUED
+
+
+def test_cli_worker_run_rejects_leftover_running_step_without_duplicating_or_completing(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    AgentRegistry(store).register("agent-1")
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Deliver", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1",
+        "stuck",
+        objective="Stuck",
+        command=("true",),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+    )
+    # Simulates a worker process that was killed (e.g. SIGKILL) after
+    # marking the step running but before recording its result.
+    coordinator.start_next_step("run-1")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "worker",
+                "run",
+                "--agent-id",
+                "agent-1",
+                "--heartbeat-interval",
+                "60",
+                "--poll-interval",
+                "1",
+                "--state-db",
+                str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "run already has a running step: run-1" in capsys.readouterr().err
+
+    reloaded = RunCoordinator(StateStore(database))
+    reloaded_run = reloaded.get("run-1")
+    assert reloaded_run is not None and reloaded_run.status is RunStatus.RUNNING
+    stuck_step = reloaded.get_step("stuck")
+    assert stuck_step is not None and stuck_step.status is StepStatus.RUNNING
+
+    main(["run", "recover", "stuck", "interrupted", "--state-db", str(database)])
+    recovered_payload = json.loads(capsys.readouterr().out)
+    assert recovered_payload["run"]["status"] == "failed"
+    assert recovered_payload["steps"][0]["status"] == "failed"
+    assert recovered_payload["steps"][0]["output"]["recovery_reason"] == "interrupted"
+
+
+def test_cli_worker_run_delegates_mixed_command_and_provider_run_end_to_end(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Deliver a summarized report")
+    coordinator.add_step(
+        "run-1",
+        "gather",
+        objective="Gather data",
+        command=("true",),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+    )
+    coordinator.add_step(
+        "run-1",
+        "summarize",
+        objective="Summarize the gathered data",
+        message=ProviderMessage(provider="ollama", content="Summarize the output"),
+    )
+
+    def fake_execute(self, argv, *, timeout=None):
+        return SandboxResult(tuple(argv), 0, "gathered-data", "")
+
+    monkeypatch.setattr(
+        "codex_agentic_os.sandboxes.ContainerSandbox.execute", fake_execute
+    )
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("Here is the summary.", model="served-model")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+
+    def fake_sleep(seconds):
+        raise _StopLoop()
+
+    monkeypatch.setattr("codex_agentic_os.worker.time.sleep", fake_sleep)
+
+    with pytest.raises(_StopLoop):
+        main(
+            [
+                "worker",
+                "run",
+                "--agent-id",
+                "agent-1",
+                "--heartbeat-interval",
+                "60",
+                "--poll-interval",
+                "1",
+                "--state-db",
+                str(database),
+            ]
+        )
+
+    # Every remaining assertion is driven by a fresh CLI invocation reading
+    # only durable state back from disk, never the objects created above,
+    # and none of them is `run execute-next` -- the full run was delegated
+    # to and completed entirely by `worker run`.
+    main(["run", "inspect", "run-1", "--state-db", str(database)])
+    inspect_payload = json.loads(capsys.readouterr().out)
+    assert inspect_payload["run"]["status"] == "succeeded"
+    assert inspect_payload["run"]["agent_id"] == "agent-1"
+    assert inspect_payload["steps"][0]["status"] == "succeeded"
+    assert inspect_payload["steps"][1]["status"] == "succeeded"
+    assert inspect_payload["steps"][1]["output"]["content"] == "Here is the summary."
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    history_payload = json.loads(capsys.readouterr().out)
+    transitions = [entry["transition"] for entry in history_payload]
+    assert transitions.count("step_succeeded") == 2
+    assert "run_succeeded" in transitions

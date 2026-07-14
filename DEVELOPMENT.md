@@ -566,8 +566,21 @@ loop. If no other eligible work exists, the worker idles for exactly one
 `poll-interval` sleep before re-checking, so a step that was blocked only because
 an earlier step hadn't finished, or an operator decision was still pending, is
 retried automatically on a later poll cycle once state changes out of band (for
-example, `run approve`). The worker does not yet handle interruption
-cleanly; that remains tracked as follow-up Sprint 12 work.
+example, `run approve`).
+
+`worker run` installs SIGINT and SIGTERM handlers around its loop instead of
+letting either signal raise: receiving either sets an internal flag that the
+worker's own `should_continue` check consults at its existing between-step
+boundary, so the process exits with the normal JSON summary and status 0 —
+never a raw traceback — and never corrupts the state database. A step already
+executing when the signal arrives still runs to completion and is recorded
+durably before the worker stops; the worker never force-completes or
+re-dispatches a step. If a step is ever left `running` because its owning
+worker process was killed outright (for example `SIGKILL`, which cannot be
+caught), a later `worker run` or `run execute-next` on that run raises rather
+than silently completing or duplicating the step, and an operator reconciles
+it explicitly with `run recover` or transfers ownership with `run
+reassign-claim`, exactly as for any other uncertain running step.
 
 Inspect declared capabilities:
 
