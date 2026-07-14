@@ -671,6 +671,43 @@ traceback. The consolidated offline regression in `tests/test_api.py` performs
 the same five-endpoint, redaction, loopback-only, and no-mutation review against
 a temporary mixed-run database.
 
+### Running the dashboard against the API
+
+`dashboard/` is a read-only Next.js operator dashboard over the same loopback
+API. Start both processes together for a browser-based review. In one
+terminal, serve the API exactly as above:
+
+```bash
+codex-agentic-os api serve --host 127.0.0.1 --port 8080 --state-db /tmp/codex-agentic-os-uat.sqlite3
+```
+
+In a second terminal, point the dashboard at that loopback base URL and start
+its dev server. `dashboard/.env.example` documents `API_BASE_URL` (defaulting
+to `http://127.0.0.1:8080`), read only by the dashboard's server-side proxy
+routes:
+
+```bash
+cd dashboard
+cp .env.example .env
+pnpm install
+pnpm dev
+```
+
+Open `http://localhost:3000`. The browser only ever calls the dashboard's own
+same-origin `/api/v1/runs` and `/api/v1/runs/{run_id}[/history|/approvals|/usage]`
+routes (`app/api/v1/runs/route.ts`, `app/api/v1/runs/[...segments]/route.ts`);
+those routes forward each `GET` to `API_BASE_URL` server-side, where the
+browser's CORS policy does not apply. Confirm the run list, ordered steps,
+lifecycle history, pending approvals, and provider usage render from the
+API's JSON exactly, that declared command argv and provider
+`message.content`/`system`/`stdout`/`stderr`/`content`/`raw` never appear as
+plaintext in the rendered page (the dashboard has no code path that
+reconstructs a redacted field from other local state), and that there are no
+approve/reject/cancel/retry controls anywhere in the UI. `pnpm test` in
+`dashboard/` includes a regression that renders a run whose fields carry
+sentinel values in every field the Sprint 17 API contract redacts and asserts
+none of them appear in the rendered output.
+
 Show one run's provider usage evidence in durable step order plus a
 run-level token aggregate. Each provider step reports its status, provider,
 resolved model, and a `usage` block (`available`, `input_tokens`,

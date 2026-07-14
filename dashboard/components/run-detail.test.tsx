@@ -172,6 +172,94 @@ describe("RunDetail", () => {
     expect(detailRequests).toBeGreaterThanOrEqual(2)
   })
 
+  it("never renders declared command/message input, captured output, or raw usage envelopes even when the API response carries them", async () => {
+    const sentinel = "SHOULD-NEVER-RENDER-a1b2c3"
+    const poisonedBundle = {
+      detail: {
+        run: {
+          run_id: "run-002",
+          objective: "review a sensitive mixed run",
+          status: "succeeded",
+          revision: 1,
+          agent_id: "agent-1",
+          output: null,
+        },
+        steps: [
+          {
+            step_id: "step-command",
+            run_id: "run-002",
+            position: 1,
+            objective: "run a command",
+            status: "succeeded",
+            revision: 1,
+            command: sentinel,
+            output: { stdout: sentinel, stderr: sentinel },
+          },
+          {
+            step_id: "step-provider",
+            run_id: "run-002",
+            position: 2,
+            objective: "summarize input",
+            status: "succeeded",
+            revision: 1,
+            message: {
+              provider: "openai-compatible",
+              model: "demo-model",
+              content: sentinel,
+              system: sentinel,
+            },
+            output: { content: sentinel, raw: sentinel },
+          },
+        ],
+      },
+      history: [],
+      approvals: [],
+      usage: {
+        run_id: "run-002",
+        steps: [
+          {
+            step_id: "step-provider",
+            position: 2,
+            status: "succeeded",
+            provider: "openai-compatible",
+            model: "demo-model",
+            usage: {
+              available: true,
+              input_tokens: 7,
+              output_tokens: 3,
+              raw: sentinel,
+              unavailable_reason: null,
+            },
+          },
+        ],
+        aggregate: {
+          steps_with_usage_available: 1,
+          steps_with_usage_unavailable: 0,
+          input_tokens: 7,
+          output_tokens: 3,
+        },
+      },
+    } as unknown as RunDetailBundle
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockImplementation((url: string) =>
+          Promise.resolve(responseForUrl(poisonedBundle, url))
+        )
+    )
+
+    render(<RunDetail runId="run-002" onBack={vi.fn()} />)
+
+    await waitFor(() =>
+      expect(screen.getByTestId("run-detail")).toBeInTheDocument()
+    )
+    expect(screen.getByText("Provider usage")).toBeInTheDocument()
+    expect(screen.queryByText(sentinel)).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain(sentinel)
+  })
+
   it("replaces stale detail with an explicit error after a failed refresh", async () => {
     const bundle = detailBundle()
     let requests = 0
