@@ -948,6 +948,61 @@ def test_cli_adds_provider_step_with_tool_declaration_and_matches_inspection(
     assert json.loads(capsys.readouterr().out) == payload["steps"][0]
 
 
+def test_cli_execute_next_runs_a_declared_tool_call_end_to_end(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatToolCall
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ask a model to use a tool")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Summarize with a tool",
+            "--provider", "ollama", "--message", "Hello",
+            "--sandbox", "docker", "--mount", "/host/data:/workspace",
+            "--tool", json.dumps({"name": "list_files", "command": ["ls", "-la"]}),
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    execute_calls = []
+
+    def execute(self, argv, *, timeout=None):
+        execute_calls.append(tuple(argv))
+        return SandboxResult(("docker", *argv), 0, "3 files\n", "")
+
+    monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                from codex_agentic_os.chat import ChatResponse
+
+                return ChatResponse("", tool_call=ChatToolCall(name="list_files", arguments={}))
+            from codex_agentic_os.chat import ChatResponse
+
+            return ChatResponse("Found 3 files.")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert execute_calls == [("ls", "-la")]
+    assert payload["steps"][0]["status"] == "succeeded"
+    assert payload["steps"][0]["output"]["content"] == "Found 3 files."
+    assert payload["steps"][0]["tool_call"]["phase"] == "executed"
+    assert payload["steps"][0]["tool_call"]["exit_code"] == 0
+    assert payload["run"]["status"] == "succeeded"
+
+
 def test_cli_add_step_without_tool_flags_has_no_tool_declarations(
     tmp_path, capsys
 ) -> None:

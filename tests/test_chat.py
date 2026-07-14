@@ -6,6 +6,7 @@ from codex_agentic_os.chat import (
     AnthropicAdapter,
     ChatMessage,
     ChatRequest,
+    ChatToolCall,
     ChatToolDeclaration,
     GoogleAdapter,
     OpenAICompatibleAdapter,
@@ -693,3 +694,253 @@ def test_google_adapter_maps_resolved_context_into_ordered_native_contents() -> 
         {"role": "model", "parts": [{"text": "Earlier result"}]},
         {"role": "user", "parts": [{"text": "Current objective"}]},
     ]
+
+
+def test_openai_compatible_adapter_parses_tool_call_response() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "search_notes",
+                                        "arguments": '{"query": "release"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ).encode()
+
+    adapter = OpenAICompatibleAdapter(ProviderSpec(ProviderKind.OPENAI, model="gpt"), transport=transport)
+    response = adapter.complete(ChatRequest((ChatMessage("user", "Search"),), tools=_CHAT_TOOLS))
+
+    assert response.content == ""
+    assert response.tool_call == ChatToolCall(
+        name="search_notes", arguments={"query": "release"}, call_id="call_1"
+    )
+
+
+def test_openai_compatible_adapter_maps_tool_call_and_result_followup_turns() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["body"] = json.loads(body)
+        return json.dumps({"choices": [{"message": {"content": "final"}}]}).encode()
+
+    adapter = OpenAICompatibleAdapter(ProviderSpec(ProviderKind.OPENAI, model="gpt"), transport=transport)
+    tool_call = ChatToolCall(name="search_notes", arguments={"query": "release"}, call_id="call_1")
+    adapter.complete(
+        ChatRequest(
+            (
+                ChatMessage("user", "Search"),
+                ChatMessage("assistant", "", tool_call=tool_call),
+                ChatMessage("tool", '{"exit_code": 0}', tool_result_for="call_1"),
+            ),
+            tools=_CHAT_TOOLS,
+        )
+    )
+
+    assert captured["body"]["messages"] == [
+        {"role": "user", "content": "Search"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search_notes", "arguments": '{"query": "release"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"exit_code": 0}'},
+    ]
+
+
+def test_openai_compatible_adapter_rejects_multiple_tool_calls() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {"id": "1", "function": {"name": "a", "arguments": "{}"}},
+                                {"id": "2", "function": {"name": "b", "arguments": "{}"}},
+                            ]
+                        }
+                    }
+                ]
+            }
+        ).encode()
+
+    adapter = OpenAICompatibleAdapter(ProviderSpec(ProviderKind.OPENAI, model="gpt"), transport=transport)
+    with pytest.raises(RuntimeError, match="unsupported number of tool calls"):
+        adapter.complete(ChatRequest((ChatMessage("user", "Search"),), tools=_CHAT_TOOLS))
+
+
+def test_anthropic_adapter_parses_tool_call_response() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps(
+            {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "search_notes",
+                        "input": {"query": "release"},
+                    }
+                ]
+            }
+        ).encode()
+
+    adapter = AnthropicAdapter(ProviderSpec(ProviderKind.ANTHROPIC, model="claude-test"), transport=transport)
+    response = adapter.complete(ChatRequest((ChatMessage("user", "Search"),), tools=_CHAT_TOOLS))
+
+    assert response.content == ""
+    assert response.tool_call == ChatToolCall(
+        name="search_notes", arguments={"query": "release"}, call_id="toolu_1"
+    )
+
+
+def test_anthropic_adapter_maps_tool_call_and_result_followup_turns() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["body"] = json.loads(body)
+        return json.dumps({"content": [{"type": "text", "text": "final"}]}).encode()
+
+    adapter = AnthropicAdapter(ProviderSpec(ProviderKind.ANTHROPIC, model="claude-test"), transport=transport)
+    tool_call = ChatToolCall(name="search_notes", arguments={"query": "release"}, call_id="toolu_1")
+    adapter.complete(
+        ChatRequest(
+            (
+                ChatMessage("user", "Search"),
+                ChatMessage("assistant", "", tool_call=tool_call),
+                ChatMessage("tool", '{"exit_code": 0}', tool_result_for="toolu_1"),
+            ),
+            tools=_CHAT_TOOLS,
+        )
+    )
+
+    assert captured["body"]["messages"] == [
+        {"role": "user", "content": "Search"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "search_notes", "input": {"query": "release"}}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": '{"exit_code": 0}'}
+            ],
+        },
+    ]
+
+
+def test_anthropic_adapter_rejects_multiple_tool_calls() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps(
+            {
+                "content": [
+                    {"type": "tool_use", "id": "1", "name": "a", "input": {}},
+                    {"type": "tool_use", "id": "2", "name": "b", "input": {}},
+                ]
+            }
+        ).encode()
+
+    adapter = AnthropicAdapter(ProviderSpec(ProviderKind.ANTHROPIC, model="claude-test"), transport=transport)
+    with pytest.raises(RuntimeError, match="unsupported number of tool calls"):
+        adapter.complete(ChatRequest((ChatMessage("user", "Search"),), tools=_CHAT_TOOLS))
+
+
+def test_google_adapter_parses_tool_call_response() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps(
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"functionCall": {"name": "search_notes", "args": {"query": "release"}}}
+                            ]
+                        }
+                    }
+                ]
+            }
+        ).encode()
+
+    adapter = GoogleAdapter(ProviderSpec(ProviderKind.GOOGLE, model="gemini-test"), transport=transport)
+    response = adapter.complete(ChatRequest((ChatMessage("user", "Search"),), tools=_CHAT_TOOLS))
+
+    assert response.content == ""
+    assert response.tool_call == ChatToolCall(
+        name="search_notes", arguments={"query": "release"}, call_id=None
+    )
+
+
+def test_google_adapter_maps_tool_call_and_result_followup_turns() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["body"] = json.loads(body)
+        return json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": "final"}]}}]}
+        ).encode()
+
+    adapter = GoogleAdapter(ProviderSpec(ProviderKind.GOOGLE, model="gemini-test"), transport=transport)
+    tool_call = ChatToolCall(name="search_notes", arguments={"query": "release"}, call_id=None)
+    adapter.complete(
+        ChatRequest(
+            (
+                ChatMessage("user", "Search"),
+                ChatMessage("assistant", "", tool_call=tool_call),
+                ChatMessage("tool", '{"exit_code": 0}', tool_result_for="search_notes"),
+            ),
+            tools=_CHAT_TOOLS,
+        )
+    )
+
+    assert captured["body"]["contents"] == [
+        {"role": "user", "parts": [{"text": "Search"}]},
+        {"role": "model", "parts": [{"functionCall": {"name": "search_notes", "args": {"query": "release"}}}]},
+        {
+            "role": "user",
+            "parts": [
+                {"functionResponse": {"name": "search_notes", "response": {"content": '{"exit_code": 0}'}}}
+            ],
+        },
+    ]
+
+
+def test_google_adapter_rejects_multiple_tool_calls() -> None:
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        return json.dumps(
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"functionCall": {"name": "a", "args": {}}},
+                                {"functionCall": {"name": "b", "args": {}}},
+                            ]
+                        }
+                    }
+                ]
+            }
+        ).encode()
+
+    adapter = GoogleAdapter(ProviderSpec(ProviderKind.GOOGLE, model="gemini-test"), transport=transport)
+    with pytest.raises(RuntimeError, match="unsupported number of tool calls"):
+        adapter.complete(ChatRequest((ChatMessage("user", "Search"),), tools=_CHAT_TOOLS))

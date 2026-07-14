@@ -4,7 +4,7 @@ import hashlib
 
 import pytest
 
-from codex_agentic_os.chat import ChatMessage, ChatResponse, ChatUsage
+from codex_agentic_os.chat import ChatMessage, ChatResponse, ChatToolCall, ChatUsage
 from codex_agentic_os.providers import ProviderKind, ProviderRoutingPolicy, ProviderSpec
 from codex_agentic_os.runtime import (
     Agent,
@@ -30,6 +30,7 @@ from codex_agentic_os.runtime import (
     StepFailureKind,
     StepRecoveryReason,
     StepStatus,
+    ToolCallPhase,
     ToolDeclaration,
 )
 from codex_agentic_os.sandboxes import SandboxKind, SandboxResult
@@ -5408,3 +5409,285 @@ class _StubExecutor:
         from codex_agentic_os.sandboxes import SandboxResult
 
         return SandboxResult(tuple(argv), 0, "ok", "")
+
+
+def _add_tool_step(
+    coordinator,
+    run_id: str,
+    step_id: str,
+    *,
+    sandbox_policy: SandboxPolicy | None = None,
+) -> None:
+    coordinator.add_step(
+        run_id,
+        step_id,
+        objective="Summarize with a tool",
+        message=ProviderMessage(provider="local", content="List files"),
+        sandbox_policy=sandbox_policy or SandboxPolicy(kind=SandboxKind.DOCKER),
+        tools=[ToolDeclaration(name="list_files", command=("ls", "-la"))],
+    )
+
+
+def test_execute_next_step_runs_a_declared_tool_call_end_to_end(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1")
+
+    execute_calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            execute_calls.append(tuple(argv))
+            return SandboxResult(tuple(argv), 0, "3 files\n", "")
+
+    requests = []
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            requests.append(request)
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResponse(
+                    "",
+                    tool_call=ChatToolCall(
+                        name="list_files", arguments={"path": "."}, call_id="call_1"
+                    ),
+                )
+            return ChatResponse("Found 3 files.")
+
+    step, run = coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda _: Adapter(),
+        sandbox_resolver=lambda _: Executor(),
+    )
+
+    assert execute_calls == [("ls", "-la")]
+    assert len(requests) == 2
+    assert requests[1].messages[-2] == ChatMessage(
+        "assistant", "", tool_call=ChatToolCall(name="list_files", arguments={"path": "."}, call_id="call_1")
+    )
+    assert requests[1].messages[-1].role == "tool"
+    assert requests[1].messages[-1].tool_result_for == "call_1"
+
+    assert step.status is StepStatus.SUCCEEDED
+    assert step.tool_call.tool_name == "list_files"
+    assert step.tool_call.phase is ToolCallPhase.EXECUTED
+    assert step.tool_call.exit_code == 0
+    assert step.tool_call.stdout == "3 files\n"
+    assert step.tool_call.command == ("ls", "-la")
+    assert step.output["content"] == "Found 3 files."
+    assert step.output["tool_call"]["exit_code"] == 0
+    assert run.status is RunStatus.SUCCEEDED
+
+    reloaded = RunCoordinator(StateStore(database)).get_step("step-1")
+    assert reloaded.tool_call == step.tool_call
+
+
+def test_tool_call_request_is_durable_before_sandbox_executes(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1")
+
+    observed_phases = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            fresh = RunCoordinator(StateStore(database)).get_step("step-1")
+            observed_phases.append(fresh.tool_call.phase)
+            return SandboxResult(tuple(argv), 0, "", "")
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResponse("", tool_call=ChatToolCall(name="list_files", arguments={}))
+            return ChatResponse("done")
+
+    coordinator.execute_next_step(
+        "run-1", adapter_resolver=lambda _: Adapter(), sandbox_resolver=lambda _: Executor()
+    )
+
+    assert observed_phases == [ToolCallPhase.REQUESTED]
+
+
+def test_tool_call_result_redacts_env_passthrough_values(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(
+        coordinator,
+        "run-1",
+        "step-1",
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER, env_passthrough=("TOKEN",)),
+    )
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(("docker", "run", "--env", "TOKEN=secret", *argv), 0, "ok", "")
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResponse("", tool_call=ChatToolCall(name="list_files", arguments={}))
+            return ChatResponse("done")
+
+    step, _run = coordinator.execute_next_step(
+        "run-1", adapter_resolver=lambda _: Adapter(), sandbox_resolver=lambda _: Executor()
+    )
+
+    assert step.tool_call.command == ("docker", "run", "--env", "TOKEN", "ls", "-la")
+    assert "secret" not in step.tool_call.command
+
+
+def test_execute_next_step_fails_definitively_on_undeclared_tool_call(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1")
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            raise AssertionError("must not execute an undeclared tool")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("", tool_call=ChatToolCall(name="delete_everything", arguments={}))
+
+    step, run = coordinator.execute_next_step(
+        "run-1", adapter_resolver=lambda _: Adapter(), sandbox_resolver=lambda _: Executor()
+    )
+
+    assert step.status is StepStatus.FAILED
+    assert "undeclared tool" in step.output["error"]
+    assert step.tool_call is None
+    assert run.status is RunStatus.FAILED
+
+
+def test_execute_next_step_fails_when_tool_call_has_no_sandbox_resolver(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("", tool_call=ChatToolCall(name="list_files", arguments={}))
+
+    step, run = coordinator.execute_next_step("run-1", adapter_resolver=lambda _: Adapter())
+
+    assert step.status is StepStatus.FAILED
+    assert "sandbox resolver" in step.output["error"]
+    assert step.tool_call is None
+    assert run.status is RunStatus.FAILED
+
+
+def test_execute_next_step_fails_on_second_tool_call_in_followup(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1")
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "", "")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("", tool_call=ChatToolCall(name="list_files", arguments={}))
+
+    step, run = coordinator.execute_next_step(
+        "run-1", adapter_resolver=lambda _: Adapter(), sandbox_resolver=lambda _: Executor()
+    )
+
+    assert step.status is StepStatus.FAILED
+    assert "second tool call" in step.output["error"]
+    assert step.tool_call.phase is ToolCallPhase.EXECUTED
+    assert run.status is RunStatus.FAILED
+
+
+def test_recovery_after_requested_phase_does_not_reexecute_tool(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1")
+
+    execute_calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            execute_calls.append(tuple(argv))
+            raise TimeoutError("sandbox command timed out after 5 seconds")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("", tool_call=ChatToolCall(name="list_files", arguments={}))
+
+    with pytest.raises(TimeoutError):
+        coordinator.execute_next_step(
+            "run-1", adapter_resolver=lambda _: Adapter(), sandbox_resolver=lambda _: Executor()
+        )
+
+    running = coordinator.get_step("step-1")
+    assert running.status is StepStatus.RUNNING
+    assert running.tool_call.phase is ToolCallPhase.REQUESTED
+
+    step, run = coordinator.recover_running_step("step-1", StepRecoveryReason.INTERRUPTED)
+
+    assert step.status is StepStatus.FAILED
+    assert step.output["recovery_reason"] == "interrupted"
+    assert step.tool_call.phase is ToolCallPhase.REQUESTED
+    assert step.output["tool_call"]["phase"] == "requested"
+    assert run.status is RunStatus.FAILED
+    assert execute_calls == [("ls", "-la")]
+
+    with pytest.raises(ValueError, match="terminal run"):
+        coordinator.execute_next_step("run-1", adapter_resolver=lambda _: Adapter())
+
+
+def test_recovery_after_executed_phase_does_not_reexecute_tool(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1")
+
+    execute_calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            execute_calls.append(tuple(argv))
+            return SandboxResult(tuple(argv), 0, "3 files\n", "")
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResponse("", tool_call=ChatToolCall(name="list_files", arguments={}))
+            raise TimeoutError("provider request timed out")
+
+    with pytest.raises(TimeoutError):
+        coordinator.execute_next_step(
+            "run-1", adapter_resolver=lambda _: Adapter(), sandbox_resolver=lambda _: Executor()
+        )
+
+    running = coordinator.get_step("step-1")
+    assert running.status is StepStatus.RUNNING
+    assert running.tool_call.phase is ToolCallPhase.EXECUTED
+    assert running.tool_call.exit_code == 0
+
+    step, run = coordinator.recover_running_step("step-1", StepRecoveryReason.INTERRUPTED)
+
+    assert step.status is StepStatus.FAILED
+    assert step.tool_call.phase is ToolCallPhase.EXECUTED
+    assert step.tool_call.exit_code == 0
+    assert step.tool_call.stdout == "3 files\n"
+    assert run.status is RunStatus.FAILED
+    assert execute_calls == [("ls", "-la")]

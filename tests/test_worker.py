@@ -526,6 +526,66 @@ def test_run_worker_command_step_without_persisted_policy_fails_without_ad_hoc_e
     assert step is not None and step.status is StepStatus.QUEUED
 
 
+def test_run_worker_executes_a_declared_tool_call_from_queued_run(tmp_path) -> None:
+    from codex_agentic_os.chat import ChatToolCall
+    from codex_agentic_os.runtime import SandboxPolicy, ToolDeclaration
+    from codex_agentic_os.sandboxes import SandboxKind
+
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-1", objective="Summarize files", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1",
+        "only",
+        objective="Summarize",
+        message=ProviderMessage(provider="local", content="List files"),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+        tools=[ToolDeclaration(name="list_files", command=("ls", "-la"))],
+    )
+
+    execute_calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            execute_calls.append(tuple(argv))
+            return SandboxResult(tuple(argv), 0, "3 files\n", "")
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResponse(
+                    "", tool_call=ChatToolCall(name="list_files", arguments={})
+                )
+            return ChatResponse("Found 3 files.")
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        sandbox_resolver=lambda _policy: Executor(),
+        adapter_resolver=lambda _message: Adapter(),
+        should_continue=_bounded_should_continue(2),
+    )
+
+    assert summary.executed_step_ids == ("only",)
+    assert execute_calls == [("ls", "-la")]
+    step = coordinator.get_step("only")
+    assert step.status is StepStatus.SUCCEEDED
+    assert step.tool_call.exit_code == 0
+    assert step.output["content"] == "Found 3 files."
+    run = coordinator.get("run-1")
+    assert run.status is RunStatus.SUCCEEDED
+
+
 def test_run_worker_dispatches_delegation_step_then_moves_on_without_crashing(
     tmp_path,
 ) -> None:

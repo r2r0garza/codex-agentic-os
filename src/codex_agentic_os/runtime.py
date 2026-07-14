@@ -17,6 +17,7 @@ from .chat import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
+    ChatToolCall,
     ChatToolDeclaration,
 )
 from .providers import (
@@ -206,6 +207,33 @@ class ToolDeclaration:
     parameters: Mapping[str, object] | None = None
 
 
+class ToolCallPhase(StrEnum):
+    """Durable phase of one in-flight or completed tool call within a step.
+
+    ``REQUESTED`` is written before the tool's sandboxed command executes;
+    ``EXECUTED`` is written once its result is durable. Recovery never
+    resumes past a persisted phase, so a step interrupted at either phase
+    fails definitively instead of silently re-executing the tool.
+    """
+
+    REQUESTED = "requested"
+    EXECUTED = "executed"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallRecord:
+    """Durable evidence of one model-requested tool invocation and its sandboxed outcome."""
+
+    tool_name: str
+    arguments: Mapping[str, object]
+    call_id: str | None
+    phase: ToolCallPhase
+    command: tuple[str, ...] | None = None
+    exit_code: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class RunStep:
     """Typed view of a durable, ordered unit of work within a run."""
@@ -225,6 +253,7 @@ class RunStep:
     approval_status: ApprovalStatus | None = None
     sandbox_policy: SandboxPolicy | None = None
     tool_declarations: tuple[ToolDeclaration, ...] = ()
+    tool_call: ToolCallRecord | None = None
     artifact_declarations: tuple[ArtifactDeclaration, ...] = ()
     response_artifact_name: str | None = None
     delegation: DelegationSpec | None = None
@@ -1070,23 +1099,190 @@ class RunCoordinator:
                 + context_messages
                 + (ChatMessage("user", running_step.message.content),)
             )
+            tool_declarations = tuple(
+                ChatToolDeclaration(
+                    name=tool.name,
+                    description=tool.description,
+                    parameters=tool.parameters,
+                )
+                for tool in running_step.tool_declarations
+            )
             request = ChatRequest(
                 messages,
                 temperature=running_step.message.temperature,
                 max_tokens=running_step.message.max_tokens,
-                tools=tuple(
-                    ChatToolDeclaration(
-                        name=tool.name,
-                        description=tool.description,
-                        parameters=tool.parameters,
-                    )
-                    for tool in running_step.tool_declarations
-                ),
+                tools=tool_declarations,
             )
             response = adapter.complete(request)
         except (ValueError, RuntimeError, NotImplementedError) as error:
             return self.fail_step_from_error(running_step.step_id, error)
+
+        if response.tool_call is not None:
+            declaration = next(
+                (
+                    tool
+                    for tool in running_step.tool_declarations
+                    if tool.name == response.tool_call.name
+                ),
+                None,
+            )
+            if declaration is None:
+                return self.fail_step_from_error(
+                    running_step.step_id,
+                    ValueError(
+                        f"model requested an undeclared tool: {response.tool_call.name}"
+                    ),
+                )
+            if sandbox_resolver is None:
+                return self.fail_step_from_error(
+                    running_step.step_id,
+                    ValueError(
+                        "tool call requires a sandbox resolver: "
+                        f"{running_step.step_id}"
+                    ),
+                )
+            assert running_step.sandbox_policy is not None  # enforced by _validate_tool_declarations
+            running_step = self._persist_tool_call_requested(
+                run, running_step, response.tool_call
+            )
+            tool_executor = sandbox_resolver(running_step.sandbox_policy)
+            tool_result = tool_executor.execute(declaration.command)
+            running_step = self._persist_tool_call_executed(run, running_step, tool_result)
+            tool_call_record = running_step.tool_call
+            assert tool_call_record is not None
+            tool_result_text = json.dumps(
+                {
+                    "exit_code": tool_call_record.exit_code,
+                    "stdout": tool_call_record.stdout,
+                    "stderr": tool_call_record.stderr,
+                }
+            )
+            followup_messages = messages + (
+                ChatMessage("assistant", response.content, tool_call=response.tool_call),
+                ChatMessage(
+                    "tool",
+                    tool_result_text,
+                    tool_result_for=response.tool_call.call_id or response.tool_call.name,
+                ),
+            )
+            try:
+                response = adapter.complete(
+                    ChatRequest(
+                        followup_messages,
+                        temperature=running_step.message.temperature,
+                        max_tokens=running_step.message.max_tokens,
+                        tools=tool_declarations,
+                    )
+                )
+            except (ValueError, RuntimeError, NotImplementedError) as error:
+                return self.fail_step_from_error(running_step.step_id, error)
+            if response.tool_call is not None:
+                return self.fail_step_from_error(
+                    running_step.step_id,
+                    ValueError(
+                        "provider requested a second tool call in a single-round "
+                        f"tool step: {running_step.step_id}"
+                    ),
+                )
+
         return self.complete_step_from_chat_response(running_step.step_id, response)
+
+    @staticmethod
+    def _running_provider_step_payload(step: RunStep) -> dict[str, object]:
+        """Build the durable payload prefix preserved across in-flight tool-call phase writes."""
+
+        assert step.message is not None
+        payload: dict[str, object] = {
+            "run_id": step.run_id,
+            "position": step.position,
+            "objective": step.objective,
+            "message": RunCoordinator._message_payload(step.message),
+        }
+        if step.sandbox_policy is not None:
+            payload["sandbox_policy"] = RunCoordinator._sandbox_policy_payload(
+                step.sandbox_policy
+            )
+        if step.tool_declarations:
+            payload["tools"] = RunCoordinator._tool_declarations_payload(
+                step.tool_declarations
+            )
+        if step.response_artifact_name is not None:
+            payload["response_artifact_name"] = step.response_artifact_name
+        RunCoordinator._add_context_step_ids_payload(payload, step)
+        RunCoordinator._add_approval_payload(payload, step)
+        return payload
+
+    def _persist_tool_call_requested(
+        self, run: AgentRun, step: RunStep, tool_call: ChatToolCall
+    ) -> RunStep:
+        """Durably record a model's tool-call request before its command executes."""
+
+        record = ToolCallRecord(
+            tool_name=tool_call.name,
+            arguments=dict(tool_call.arguments),
+            call_id=tool_call.call_id,
+            phase=ToolCallPhase.REQUESTED,
+        )
+        payload = self._running_provider_step_payload(step)
+        payload["tool_call"] = self._tool_call_payload(record)
+        try:
+            stored = self.store.put_many(
+                (("step", step.step_id, StepStatus.RUNNING, payload),),
+                expected=(("step", step.step_id, StepStatus.RUNNING, step.revision),),
+                history=(
+                    RunHistoryEntry(
+                        step.run_id, 0, "tool_call_requested", StepStatus.RUNNING,
+                        step_id=step.step_id, agent_id=run.agent_id,
+                        execution_kind="provider",
+                    ),
+                ),
+            )
+        except StateConflictError as error:
+            raise ValueError(f"step transition conflict: {step.step_id}") from error
+        return self._step(stored[0])
+
+    def _persist_tool_call_executed(
+        self, run: AgentRun, step: RunStep, result: ExecutionResult
+    ) -> RunStep:
+        """Durably record a tool's sandboxed result before the follow-up model request."""
+
+        assert step.tool_call is not None
+        result_command = list(result.command)
+        if step.sandbox_policy is not None:
+            passthrough_names = frozenset(step.sandbox_policy.env_passthrough)
+            for index, argument in enumerate(result_command):
+                if index == 0 or result_command[index - 1] != "--env":
+                    continue
+                name, separator, _ = argument.partition("=")
+                if separator and name in passthrough_names:
+                    result_command[index] = name
+        record = ToolCallRecord(
+            tool_name=step.tool_call.tool_name,
+            arguments=step.tool_call.arguments,
+            call_id=step.tool_call.call_id,
+            phase=ToolCallPhase.EXECUTED,
+            command=tuple(result_command),
+            exit_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+        payload = self._running_provider_step_payload(step)
+        payload["tool_call"] = self._tool_call_payload(record)
+        try:
+            stored = self.store.put_many(
+                (("step", step.step_id, StepStatus.RUNNING, payload),),
+                expected=(("step", step.step_id, StepStatus.RUNNING, step.revision),),
+                history=(
+                    RunHistoryEntry(
+                        step.run_id, 0, "tool_call_executed", StepStatus.RUNNING,
+                        step_id=step.step_id, agent_id=run.agent_id,
+                        execution_kind="provider",
+                    ),
+                ),
+            )
+        except StateConflictError as error:
+            raise ValueError(f"step transition conflict: {step.step_id}") from error
+        return self._step(stored[0])
 
     def _reconcile_delegation_step(
         self, run: AgentRun, step: RunStep
@@ -1682,6 +1878,8 @@ class RunCoordinator:
             payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         if current.tool_declarations:
             payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
+        if current.tool_call is not None:
+            payload["tool_call"] = self._tool_call_payload(current.tool_call)
         if current.artifact_declarations:
             payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -1949,6 +2147,8 @@ class RunCoordinator:
             "raw": None if response.usage.raw is None else dict(response.usage.raw),
             "unavailable_reason": response.usage.unavailable_reason,
         }
+        if current.tool_call is not None:
+            output["tool_call"] = self._tool_call_payload(current.tool_call)
         run = self.get(current.run_id)
         if run is None:
             raise KeyError(f"run does not exist: {current.run_id}")
@@ -1967,6 +2167,8 @@ class RunCoordinator:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
+        if current.tool_call is not None:
+            step_payload["tool_call"] = self._tool_call_payload(current.tool_call)
         if current.response_artifact_name is not None:
             step_payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(step_payload, current)
@@ -2025,6 +2227,8 @@ class RunCoordinator:
             "error": str(error),
             "error_type": type(error).__name__,
         }
+        if current.tool_call is not None:
+            output["tool_call"] = self._tool_call_payload(current.tool_call)
         step_payload: dict[str, object] = {
             "run_id": current.run_id,
             "position": current.position,
@@ -2041,6 +2245,8 @@ class RunCoordinator:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
+        if current.tool_call is not None:
+            step_payload["tool_call"] = self._tool_call_payload(current.tool_call)
         if current.artifact_declarations:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -2109,6 +2315,8 @@ class RunCoordinator:
         output: dict[str, object] = {"recovery_reason": reason.value}
         if detail is not None:
             output["recovery_detail"] = detail
+        if current.tool_call is not None:
+            output["tool_call"] = self._tool_call_payload(current.tool_call)
         step_payload: dict[str, object] = {
             "run_id": current.run_id,
             "position": current.position,
@@ -2125,6 +2333,8 @@ class RunCoordinator:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
+        if current.tool_call is not None:
+            step_payload["tool_call"] = self._tool_call_payload(current.tool_call)
         if current.artifact_declarations:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -2228,6 +2438,7 @@ class RunCoordinator:
         context_step_ids = record.payload.get("context_step_ids")
         sandbox_policy = record.payload.get("sandbox_policy")
         tools = record.payload.get("tools")
+        tool_call = record.payload.get("tool_call")
         artifacts = record.payload.get("artifacts")
         response_artifact_name = record.payload.get("response_artifact_name")
         approval_required = record.payload.get("approval_required", False)
@@ -2269,6 +2480,9 @@ class RunCoordinator:
             has_message=normalized_message is not None,
             sandbox_policy=normalized_sandbox_policy,
         )
+        normalized_tool_call = RunCoordinator._validate_tool_call(
+            tool_call, tool_declarations=normalized_tools
+        )
         normalized_artifacts = RunCoordinator._validate_artifact_declarations(
             artifacts, sandbox_policy=normalized_sandbox_policy
         )
@@ -2308,6 +2522,7 @@ class RunCoordinator:
             approval_status=approval_status,
             sandbox_policy=normalized_sandbox_policy,
             tool_declarations=normalized_tools,
+            tool_call=normalized_tool_call,
             artifact_declarations=normalized_artifacts,
             response_artifact_name=normalized_response_artifact_name,
             delegation=normalized_delegation,
@@ -2952,6 +3167,89 @@ class RunCoordinator:
                 )
             )
         return tuple(normalized)
+
+    @staticmethod
+    def _tool_call_payload(record: ToolCallRecord) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "tool_name": record.tool_name,
+            "arguments": dict(record.arguments),
+            "phase": record.phase.value,
+        }
+        if record.call_id is not None:
+            payload["call_id"] = record.call_id
+        if record.command is not None:
+            payload["command"] = list(record.command)
+        if record.exit_code is not None:
+            payload["exit_code"] = record.exit_code
+        if record.stdout is not None:
+            payload["stdout"] = record.stdout
+        if record.stderr is not None:
+            payload["stderr"] = record.stderr
+        return payload
+
+    @staticmethod
+    def _validate_tool_call(
+        value: ToolCallRecord | Mapping[str, object] | object | None,
+        *,
+        tool_declarations: Sequence[ToolDeclaration],
+    ) -> ToolCallRecord | None:
+        if value is None:
+            return None
+        if isinstance(value, ToolCallRecord):
+            return value
+        if not isinstance(value, Mapping):
+            raise ValueError("step tool call must be an object")
+        allowed = {
+            "tool_name", "arguments", "call_id", "phase", "command",
+            "exit_code", "stdout", "stderr",
+        }
+        if set(value) - allowed:
+            raise ValueError("step tool call has unknown fields")
+        tool_name = value.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name:
+            raise ValueError("step tool call name must be a non-empty string")
+        if not any(declaration.name == tool_name for declaration in tool_declarations):
+            raise ValueError(
+                f"step tool call does not match a declared tool: {tool_name}"
+            )
+        arguments = value.get("arguments")
+        if not isinstance(arguments, Mapping):
+            raise ValueError("step tool call arguments must be a JSON object")
+        call_id = value.get("call_id")
+        if call_id is not None and not isinstance(call_id, str):
+            raise ValueError("step tool call id must be a string")
+        try:
+            phase = ToolCallPhase(value.get("phase"))
+        except (TypeError, ValueError) as error:
+            raise ValueError("step tool call phase is invalid") from error
+        command = value.get("command")
+        if command is not None:
+            if isinstance(command, (str, bytes)) or not isinstance(command, Sequence):
+                raise ValueError("step tool call command must be a sequence of arguments")
+            command = tuple(command)
+        exit_code = value.get("exit_code")
+        if exit_code is not None and (
+            not isinstance(exit_code, int) or isinstance(exit_code, bool)
+        ):
+            raise ValueError("step tool call exit code must be an integer")
+        if phase is ToolCallPhase.EXECUTED and (command is None or exit_code is None):
+            raise ValueError("executed tool call requires a command and exit code")
+        stdout = value.get("stdout")
+        stderr = value.get("stderr")
+        if stdout is not None and not isinstance(stdout, str):
+            raise ValueError("step tool call stdout must be a string")
+        if stderr is not None and not isinstance(stderr, str):
+            raise ValueError("step tool call stderr must be a string")
+        return ToolCallRecord(
+            tool_name=tool_name,
+            arguments=dict(arguments),
+            call_id=call_id,
+            phase=phase,
+            command=command,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+        )
 
     @staticmethod
     def _artifact_declarations_payload(

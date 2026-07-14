@@ -1490,6 +1490,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                         routing_policy=_provider_routing_policy(
                             arguments.provider_preference
                         ),
+                        sandbox_resolver=(
+                            _persisted_sandbox_resolver()
+                            if next_step.tool_declarations
+                            else None
+                        ),
                     )
                 else:
                     if next_step.sandbox_policy is not None:

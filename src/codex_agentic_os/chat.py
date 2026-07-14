@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -25,11 +25,29 @@ _COMPATIBLE_DEFAULT_BASE_URLS: Mapping[ProviderKind, str] = {
 
 
 @dataclass(frozen=True, slots=True)
+class ChatToolCall:
+    """A model's normalized request to invoke one declared tool by name."""
+
+    name: str
+    arguments: Mapping[str, object]
+    call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ChatMessage:
-    """A single message in a chat request."""
+    """A single message in a chat request.
+
+    ``tool_call`` marks an assistant turn that requested a tool; only valid
+    when ``role`` is ``"assistant"``. ``tool_result_for`` marks a turn
+    answering that call (by its ``call_id``, or its tool name when the
+    provider has no call id), with ``content`` carrying the serialized
+    result; only valid when ``role`` is ``"tool"``.
+    """
 
     role: str
     content: str
+    tool_call: ChatToolCall | None = None
+    tool_result_for: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +94,7 @@ class ChatResponse:
     model: str | None = None
     raw: Mapping[str, object] | None = None
     usage: ChatUsage = field(default_factory=_unavailable_usage)
+    tool_call: ChatToolCall | None = None
 
 
 class ChatAdapter(Protocol):
@@ -196,6 +215,142 @@ def _google_tools(tools: tuple[ChatToolDeclaration, ...]) -> list[dict[str, obje
     return [{"functionDeclarations": declarations}]
 
 
+def _openai_message(message: ChatMessage) -> dict[str, object]:
+    if message.tool_call is not None:
+        return {
+            "role": "assistant",
+            "content": message.content,
+            "tool_calls": [
+                {
+                    "id": message.tool_call.call_id or message.tool_call.name,
+                    "type": "function",
+                    "function": {
+                        "name": message.tool_call.name,
+                        "arguments": json.dumps(dict(message.tool_call.arguments)),
+                    },
+                }
+            ],
+        }
+    if message.tool_result_for is not None:
+        return {
+            "role": "tool",
+            "tool_call_id": message.tool_result_for,
+            "content": message.content,
+        }
+    return {"role": message.role, "content": message.content}
+
+
+def _openai_tool_call(message: Mapping[str, object]) -> ChatToolCall | None:
+    tool_calls = message.get("tool_calls")
+    if not tool_calls:
+        return None
+    if not isinstance(tool_calls, list) or len(tool_calls) != 1:
+        raise RuntimeError("provider returned an unsupported number of tool calls")
+    try:
+        function = tool_calls[0]["function"]
+        name = function["name"]
+        arguments_raw = function.get("arguments", "{}")
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError("provider returned an unexpected tool call") from exc
+    if not isinstance(name, str):
+        raise RuntimeError("provider returned an unexpected tool call")
+    try:
+        arguments = json.loads(arguments_raw) if isinstance(arguments_raw, str) else arguments_raw
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("provider returned invalid tool call arguments") from exc
+    if not isinstance(arguments, dict):
+        raise RuntimeError("provider tool call arguments must be a JSON object")
+    call_id = tool_calls[0].get("id")
+    return ChatToolCall(name=name, arguments=arguments, call_id=call_id)
+
+
+def _anthropic_message(message: ChatMessage) -> dict[str, object]:
+    if message.tool_call is not None:
+        return {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": message.tool_call.call_id or message.tool_call.name,
+                    "name": message.tool_call.name,
+                    "input": dict(message.tool_call.arguments),
+                }
+            ],
+        }
+    if message.tool_result_for is not None:
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": message.tool_result_for,
+                    "content": message.content,
+                }
+            ],
+        }
+    return {"role": message.role, "content": message.content}
+
+
+def _anthropic_tool_call(blocks: Sequence[object]) -> ChatToolCall | None:
+    tool_use_blocks = [block for block in blocks if isinstance(block, Mapping) and block.get("type") == "tool_use"]
+    if not tool_use_blocks:
+        return None
+    if len(tool_use_blocks) != 1:
+        raise RuntimeError("provider returned an unsupported number of tool calls")
+    block = tool_use_blocks[0]
+    name = block.get("name")
+    arguments = block.get("input")
+    if not isinstance(name, str) or not isinstance(arguments, Mapping):
+        raise RuntimeError("provider returned an unexpected tool call")
+    return ChatToolCall(name=name, arguments=dict(arguments), call_id=block.get("id"))
+
+
+def _google_content(message: ChatMessage) -> dict[str, object]:
+    if message.tool_call is not None:
+        return {
+            "role": "model",
+            "parts": [
+                {
+                    "functionCall": {
+                        "name": message.tool_call.name,
+                        "args": dict(message.tool_call.arguments),
+                    }
+                }
+            ],
+        }
+    if message.tool_result_for is not None:
+        return {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": message.tool_result_for,
+                        "response": {"content": message.content},
+                    }
+                }
+            ],
+        }
+    return {
+        "role": "model" if message.role == "assistant" else "user",
+        "parts": [{"text": message.content}],
+    }
+
+
+def _google_tool_call(parts: Sequence[object]) -> ChatToolCall | None:
+    calls = [part["functionCall"] for part in parts if isinstance(part, Mapping) and "functionCall" in part]
+    if not calls:
+        return None
+    if len(calls) != 1:
+        raise RuntimeError("provider returned an unsupported number of tool calls")
+    call = calls[0]
+    name = call.get("name") if isinstance(call, Mapping) else None
+    arguments = call.get("args", {}) if isinstance(call, Mapping) else None
+    if not isinstance(name, str) or not isinstance(arguments, Mapping):
+        raise RuntimeError("provider returned an unexpected tool call")
+    call_id = call.get("id") if isinstance(call, Mapping) else None
+    return ChatToolCall(name=name, arguments=dict(arguments), call_id=call_id)
+
+
 class OpenAICompatibleAdapter:
     """Adapter for providers exposing ``POST /chat/completions``."""
 
@@ -214,7 +369,7 @@ class OpenAICompatibleAdapter:
 
         payload: dict[str, object] = {
             "model": self.spec.model,
-            "messages": [{"role": message.role, "content": message.content} for message in request.messages],
+            "messages": [_openai_message(message) for message in request.messages],
         }
         if request.temperature is not None:
             payload["temperature"] = request.temperature
@@ -235,13 +390,21 @@ class OpenAICompatibleAdapter:
         try:
             choice = raw["choices"][0]
             message = choice["message"]
-            content = message["content"]
+            content = message.get("content")
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("provider returned an unexpected chat response") from exc
-        if not isinstance(content, str):
-            raise RuntimeError("provider returned non-text chat content")
+        tool_call = _openai_tool_call(message)
+        if tool_call is None:
+            if not isinstance(content, str):
+                raise RuntimeError("provider returned non-text chat content")
+        elif not isinstance(content, str):
+            content = ""
         return ChatResponse(
-            content=content, model=raw.get("model"), raw=raw, usage=_openai_compatible_usage(raw)
+            content=content,
+            model=raw.get("model"),
+            raw=raw,
+            usage=_openai_compatible_usage(raw),
+            tool_call=tool_call,
         )
 
 
@@ -258,7 +421,7 @@ class AnthropicAdapter:
 
         system_messages = [message.content for message in request.messages if message.role == "system"]
         messages = [
-            {"role": message.role, "content": message.content}
+            _anthropic_message(message)
             for message in request.messages
             if message.role != "system"
         ]
@@ -288,12 +451,20 @@ class AnthropicAdapter:
 
         raw = json.loads(self._transport(f"{base_url}/v1/messages", headers, json.dumps(payload).encode()))
         try:
-            content = "".join(block["text"] for block in raw["content"] if block.get("type") == "text")
+            blocks = raw["content"]
+            content = "".join(block["text"] for block in blocks if block.get("type") == "text")
         except (KeyError, TypeError) as exc:
             raise RuntimeError("provider returned an unexpected chat response") from exc
-        if not content:
+        tool_call = _anthropic_tool_call(blocks)
+        if tool_call is None and not content:
             raise RuntimeError("provider returned no text chat content")
-        return ChatResponse(content=content, model=raw.get("model"), raw=raw, usage=_anthropic_usage(raw))
+        return ChatResponse(
+            content=content,
+            model=raw.get("model"),
+            raw=raw,
+            usage=_anthropic_usage(raw),
+            tool_call=tool_call,
+        )
 
 
 class GoogleAdapter:
@@ -311,17 +482,11 @@ class GoogleAdapter:
         messages = [message for message in request.messages if message.role != "system"]
         if not messages:
             raise ValueError("Google chat requests require at least one user or assistant message")
-        if any(message.role not in {"user", "assistant"} for message in messages):
+        if any(message.role not in {"user", "assistant", "tool"} for message in messages):
             raise ValueError("Google chat messages must use system, user, or assistant roles")
 
         payload: dict[str, object] = {
-            "contents": [
-                {
-                    "role": "model" if message.role == "assistant" else "user",
-                    "parts": [{"text": message.content}],
-                }
-                for message in messages
-            ]
+            "contents": [_google_content(message) for message in messages]
         }
         if system_messages:
             payload["systemInstruction"] = {
@@ -357,10 +522,15 @@ class GoogleAdapter:
             content = "".join(part["text"] for part in parts if "text" in part)
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("provider returned an unexpected chat response") from exc
-        if not content:
+        tool_call = _google_tool_call(parts)
+        if tool_call is None and not content:
             raise RuntimeError("provider returned no text chat content")
         return ChatResponse(
-            content=content, model=raw.get("modelVersion"), raw=raw, usage=_google_usage(raw)
+            content=content,
+            model=raw.get("modelVersion"),
+            raw=raw,
+            usage=_google_usage(raw),
+            tool_call=tool_call,
         )
 
 
