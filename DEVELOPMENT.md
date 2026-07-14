@@ -642,6 +642,32 @@ codex-agentic-os api serve --port 8080
 codex-agentic-os api serve --host ::1 --port 8080 --state-db /path/to/state.sqlite3
 ```
 
+For a local operator acceptance review, create or copy a state database to a
+temporary path, then start the server explicitly on loopback:
+
+```bash
+codex-agentic-os api serve --host 127.0.0.1 --port 8080 --state-db /tmp/codex-agentic-os-uat.sqlite3
+```
+
+From another terminal, inspect the mixed run through all five contracts:
+
+```bash
+curl http://127.0.0.1:8080/api/v1/runs
+curl http://127.0.0.1:8080/api/v1/runs/RUN_ID
+curl http://127.0.0.1:8080/api/v1/runs/RUN_ID/history
+curl http://127.0.0.1:8080/api/v1/runs/RUN_ID/approvals
+curl http://127.0.0.1:8080/api/v1/runs/RUN_ID/usage
+```
+
+The responses are JSON, steps remain in durable order, pending approvals and
+available or unavailable usage are explicit, and captured terminal/provider
+output is `"<redacted>"`. Requests use only `127.0.0.1`; comparing `run
+inspect` and `run history` before and after the review should show no durable
+change. Press Ctrl-C in the server terminal and confirm it exits without a
+traceback. The consolidated offline regression in `tests/test_api.py` performs
+the same five-endpoint, redaction, loopback-only, and no-mutation review against
+a temporary mixed-run database.
+
 Show one run's provider usage evidence in durable step order plus a
 run-level token aggregate. Each provider step reports its status, provider,
 resolved model, and a `usage` block (`available`, `input_tokens`,

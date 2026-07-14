@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import os
 import signal
@@ -206,6 +207,21 @@ def _as_json(payload: object) -> object:
     return json.loads(json.dumps(payload))
 
 
+def _database_snapshot(database) -> tuple[object, ...]:
+    """Capture every durable run view used by the read-only HTTP surface."""
+
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+    runs = coordinator.list_runs()
+    return tuple(
+        (
+            run,
+            tuple(coordinator.list_steps(run.run_id)),
+            tuple(coordinator.list_history(run.run_id)),
+        )
+        for run in runs
+    )
+
+
 def test_http_api_run_list_matches_run_list_payload_contract(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     _seed_database(database)
@@ -344,6 +360,55 @@ def test_http_api_usage_matches_shared_and_cli_contracts(tmp_path, capsys) -> No
         "output_tokens": 3,
     }
     assert "private prompt" not in json.dumps(http_payload)
+
+
+def test_http_api_complete_offline_endpoint_review_is_loopback_only_and_read_only(
+    tmp_path, monkeypatch
+) -> None:
+    """Exercise every Sprint 17 endpoint against one temporary mixed database."""
+
+    database = tmp_path / "state.sqlite3"
+    _seed_approval_and_usage(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+    before = _database_snapshot(database)
+
+    original_create_connection = socket.create_connection
+    connected_hosts: list[str] = []
+
+    def connect_loopback_only(address, *args, **kwargs):
+        host = address[0]
+        assert ipaddress.ip_address(host).is_loopback
+        connected_hosts.append(host)
+        return original_create_connection(address, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "create_connection", connect_loopback_only)
+
+    with _running_server(coordinator) as port:
+        run_list = _get_json(port, "/api/v1/runs")
+        detail = _get_json(port, "/api/v1/runs/run-evidence")
+        history = _get_json(port, "/api/v1/runs/run-evidence/history")
+        approvals = _get_json(port, "/api/v1/runs/run-evidence/approvals")
+        usage = _get_json(port, "/api/v1/runs/run-evidence/usage")
+
+    assert [run["run_id"] for run in run_list] == ["run-evidence"]
+    detail_steps = {step["step_id"]: step for step in detail["steps"]}
+    assert detail_steps["provider-1"]["output"]["content"] == "<redacted>"
+    serialized_detail = json.dumps(detail)
+    assert "sanitized response" not in serialized_detail
+    assert [entry["transition"] for entry in history] == [
+        "created",
+        "step_approved",
+        "transitioned",
+        "step_started",
+        "step_succeeded",
+    ]
+    assert [item["step_id"] for item in approvals] == ["provider-1"]
+    assert [item["step_id"] for item in usage["steps"]] == [
+        "provider-1",
+        "provider-2",
+    ]
+    assert connected_hosts
+    assert _database_snapshot(database) == before
 
 
 @pytest.mark.parametrize("suffix", ["approvals", "usage"])
