@@ -3433,3 +3433,189 @@ def test_cli_plan_decision_rejects_stale_revision_without_mutation(
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get_plan("draft-1").status == "draft"
     assert reloaded.list_steps("run-1") == ()
+
+
+def test_cli_end_to_end_operator_review_reconstructs_plan_execution_after_restart(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Sprint 13 UAT: objective -> proposed plan -> inspection -> acceptance ->
+    execution -> durable reconstruction across a simulated process restart."""
+
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+
+    main(
+        [
+            "run", "create", "run-1", "--objective", "Ship the feature",
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    class PlanAdapter:
+        def complete(self, request):
+            return ChatResponse(content=PLAN_PROPOSAL_CONTENT, model="planner-model")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: PlanAdapter())
+    main(
+        [
+            "run", "plan", "run-1", "draft-1", "--provider", "ollama",
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    main(["run", "inspect-plan", "draft-1", "--state-db", str(database)])
+    draft_payload = json.loads(capsys.readouterr().out)
+    assert draft_payload["status"] == "draft"
+    assert [step["step_id"] for step in draft_payload["steps"]] == [
+        "draft-1-step-1",
+        "draft-1-step-2",
+    ]
+
+    main(["agent", "register", "operator-1", "--state-db", str(database)])
+    capsys.readouterr()
+
+    # No draft step can execute before explicit acceptance: the run's queue is
+    # still empty, so execution reports no attempt.
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    pre_acceptance = json.loads(capsys.readouterr().out)
+    assert pre_acceptance["execution"] == {"attempted": False}
+    assert pre_acceptance["steps"] == []
+
+    main(
+        [
+            "run", "accept-plan", "draft-1", "--expected-revision", "1",
+            "--agent-id", "operator-1", "--state-db", str(database),
+        ]
+    )
+    acceptance = json.loads(capsys.readouterr().out)
+    assert acceptance["status"] == "accepted"
+    assert acceptance["decision_agent_id"] == "operator-1"
+
+    # Accepted steps execute through the existing worker/coordinator dispatch
+    # path (persisted sandbox policy, adapter resolver) rather than a
+    # planner-specific shortcut.
+    def execute(self, argv, *, timeout=None):
+        return SandboxResult(("docker", *argv), 0, "pytest ok", "")
+
+    monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    capsys.readouterr()
+
+    class SummaryAdapter:
+        def complete(self, request):
+            return ChatResponse("Summary complete", model="served-model")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: SummaryAdapter())
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    capsys.readouterr()
+
+    # Simulate a process restart: fresh coordinator/state connections and
+    # fresh CLI invocations reconstruct the objective, draft, decision,
+    # materialized/executed steps, and terminal run outcome from durable
+    # state alone.
+    restarted = RunCoordinator(StateStore(database))
+    reconstructed_run = restarted.get("run-1")
+    assert reconstructed_run.objective == "Ship the feature"
+    assert reconstructed_run.status is RunStatus.SUCCEEDED
+
+    main(["run", "inspect-plan", "draft-1", "--state-db", str(database)])
+    reconstructed_draft = json.loads(capsys.readouterr().out)
+    assert reconstructed_draft["status"] == "accepted"
+    assert reconstructed_draft["decision_agent_id"] == "operator-1"
+    assert reconstructed_draft["steps"] == draft_payload["steps"]
+
+    main(["run", "inspect", "run-1", "--state-db", str(database)])
+    reconstructed_inspect = json.loads(capsys.readouterr().out)
+    assert reconstructed_inspect["run"]["status"] == "succeeded"
+    assert [step["step_id"] for step in reconstructed_inspect["steps"]] == [
+        "draft-1-step-1",
+        "draft-1-step-2",
+    ]
+    assert all(
+        step["status"] == "succeeded" for step in reconstructed_inspect["steps"]
+    )
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    reconstructed_history = json.loads(capsys.readouterr().out)
+    assert [entry["transition"] for entry in reconstructed_history] == [
+        "created",
+        "plan_accepted",
+        "run_started",
+        "step_started",
+        "step_succeeded",
+        "step_started",
+        "step_succeeded",
+        "run_succeeded",
+    ]
+    decision_entry = reconstructed_history[1]
+    assert decision_entry["plan_id"] == "draft-1"
+    assert decision_entry["agent_id"] == "operator-1"
+
+
+def test_cli_rejected_plan_remains_reconstructable_with_no_executable_steps_after_restart(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Regression: a rejected draft stays reconstructable and the run has no
+    executable steps, even after a simulated process restart."""
+
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+
+    main(
+        [
+            "run", "create", "run-1", "--objective", "Ship the feature",
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    class PlanAdapter:
+        def complete(self, request):
+            return ChatResponse(content=PLAN_PROPOSAL_CONTENT, model="planner-model")
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: PlanAdapter())
+    main(
+        [
+            "run", "plan", "run-1", "draft-1", "--provider", "ollama",
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    main(["agent", "register", "operator-2", "--state-db", str(database)])
+    capsys.readouterr()
+
+    main(
+        [
+            "run", "reject-plan", "draft-1", "--expected-revision", "1",
+            "--agent-id", "operator-2", "--state-db", str(database),
+        ]
+    )
+    rejection = json.loads(capsys.readouterr().out)
+    assert rejection["status"] == "rejected"
+
+    # Simulate a process restart before inspecting the outcome.
+    restarted = RunCoordinator(StateStore(database))
+    assert restarted.list_steps("run-1") == ()
+
+    main(["run", "inspect-plan", "draft-1", "--state-db", str(database)])
+    reconstructed_draft = json.loads(capsys.readouterr().out)
+    assert reconstructed_draft["status"] == "rejected"
+    assert reconstructed_draft["decision_agent_id"] == "operator-2"
+
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    execution = json.loads(capsys.readouterr().out)
+    assert execution["execution"] == {"attempted": False}
+    assert execution["steps"] == []
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    reconstructed_history = json.loads(capsys.readouterr().out)
+    assert [entry["transition"] for entry in reconstructed_history] == [
+        "created",
+        "plan_rejected",
+    ]
+    assert reconstructed_history[-1]["plan_id"] == "draft-1"

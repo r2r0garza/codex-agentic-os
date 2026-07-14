@@ -405,6 +405,16 @@ revision, and `decision_agent_id` when one was supplied. Accepted steps enter th
 queued approval, eligibility, execution, retry, and history paths as manually added
 steps; there is no planner-specific execution path.
 
+The full operator review — objective, `run plan`, `run inspect-plan`, `run accept-plan`
+or `run reject-plan`, `run execute-next` through the unchanged worker/coordinator path,
+and reconstruction from `run inspect-plan`/`run inspect`/`run history` after a simulated
+process restart — is exercised end to end by
+`tests/test_run_cli.py::test_cli_end_to_end_operator_review_reconstructs_plan_execution_after_restart`,
+with `test_cli_rejected_plan_remains_reconstructable_with_no_executable_steps_after_restart`
+covering the rejection path. No draft step is queued or executable before its plan is
+explicitly accepted; running the two tests directly reproduces the reviewed flow without
+a live provider or container backend.
+
 Inspect a durable run and its ordered steps without modifying runtime state:
 
 ```bash
