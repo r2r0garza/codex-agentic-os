@@ -4243,3 +4243,208 @@ def test_list_artifacts_requires_an_existing_run(tmp_path) -> None:
 def test_run_coordinator_rejects_non_positive_artifact_size_limit(tmp_path) -> None:
     with pytest.raises(ValueError, match="artifact size limit must be positive"):
         _RunCoordinator(StateStore(tmp_path / "state.sqlite3"), artifact_size_limit_bytes=0)
+
+
+def test_provider_response_artifact_declaration_persists_across_restart(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ask a model")
+
+    created = coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Summarize",
+        message=ProviderMessage(provider="local", content="Hello"),
+        response_artifact_name="answer",
+    )
+
+    assert created.response_artifact_name == "answer"
+    assert RunCoordinator(StateStore(database)).get_step("model") == created
+
+
+@pytest.mark.parametrize("name", ["", "bad name", "path/name"])
+def test_provider_response_artifact_name_validation_is_pre_mutation(tmp_path, name) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    original = coordinator.create("run-1", objective="Ask a model")
+
+    with pytest.raises(ValueError, match="non-empty identifier-safe string"):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize",
+            message=ProviderMessage(provider="local", content="Hello"),
+            response_artifact_name=name,
+        )
+
+    assert coordinator.get("run-1") == original
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_response_artifact_declaration_is_rejected_for_command_step(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Run a command")
+
+    with pytest.raises(ValueError, match="require a provider message"):
+        coordinator.add_step(
+            "run-1",
+            "command",
+            objective="Execute",
+            command=("true",),
+            response_artifact_name="answer",
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_provider_response_artifact_captures_content_with_routing_context_and_usage(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    resolved_messages = []
+    requests = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "context-output", "")
+
+    class Adapter:
+        def complete(self, request):
+            requests.append(request)
+            return ChatResponse(
+                "Durable answer\n",
+                model="served-model",
+                raw={"provider_envelope": "preserved"},
+                usage=ChatUsage(
+                    available=True,
+                    input_tokens=9,
+                    output_tokens=3,
+                    raw={"prompt_tokens": 9, "completion_tokens": 3},
+                ),
+            )
+
+    specs = (
+        ProviderSpec(
+            kind=ProviderKind.ANTHROPIC,
+            model="routed-model",
+            capabilities=("reasoning",),
+        ),
+    )
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Compose work")
+    coordinator.add_step("run-1", "context", objective="Gather", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Reason",
+        message=ProviderMessage(
+            provider=None,
+            content="private request",
+            required_capability="reasoning",
+        ),
+        context_step_ids=("context",),
+        response_artifact_name="answer",
+    )
+    coordinator.add_step("run-1", "tail", objective="Finish", command=("true",))
+    coordinator.execute_next_step("run-1", Executor())
+
+    step, run = coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda message: resolved_messages.append(message) or Adapter(),
+        routing_policy=ProviderRoutingPolicy((ProviderKind.ANTHROPIC,)),
+        provider_specs=specs,
+    )
+
+    assert step.status is StepStatus.SUCCEEDED
+    assert run.status is RunStatus.RUNNING
+    assert step.response_artifact_name == "answer"
+    assert RunCoordinator(StateStore(database)).get_step("model") == step
+    assert step.output == {
+        "content": "Durable answer\n",
+        "model": "served-model",
+        "raw": {"provider_envelope": "preserved"},
+        "usage": {
+            "available": True,
+            "input_tokens": 9,
+            "output_tokens": 3,
+            "raw": {"prompt_tokens": 9, "completion_tokens": 3},
+            "unavailable_reason": None,
+        },
+    }
+    assert resolved_messages[0].provider == "anthropic"
+    assert requests[0].messages[-2:] == (
+        ChatMessage("assistant", "exit_code=0\nstdout:\ncontext-output\nstderr:\n"),
+        ChatMessage("user", "private request"),
+    )
+    artifact = coordinator.list_artifacts("run-1", step_id="model")[0]
+    content = b"Durable answer\n"
+    assert artifact.name == "answer"
+    assert artifact.source_path == "response.content"
+    assert artifact.status is ArtifactStatus.CAPTURED
+    assert artifact.content_hash == hashlib.sha256(content).hexdigest()
+    assert artifact.size_bytes == len(content)
+    assert (coordinator._artifact_storage_dir / artifact.artifact_id).read_bytes() == content
+    captured = next(
+        entry
+        for entry in coordinator.list_history("run-1")
+        if entry.transition == "artifact_captured" and entry.step_id == "model"
+    )
+    assert captured.execution_kind == "provider"
+    assert captured.artifact_name == "answer"
+    assert "private request" not in repr(captured)
+    assert "provider_envelope" not in repr(captured)
+    _, completed_run = coordinator.execute_next_step("run-1", Executor())
+    assert completed_run.status is RunStatus.SUCCEEDED
+
+
+def test_provider_response_artifact_size_rejection_does_not_fail_step(tmp_path) -> None:
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("oversized")
+
+    coordinator = _RunCoordinator(
+        StateStore(tmp_path / "state.sqlite3"), artifact_size_limit_bytes=4
+    )
+    coordinator.create("run-1", objective="Ask a model")
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Answer",
+        message=ProviderMessage(provider="local", content="Hello"),
+        response_artifact_name="answer",
+    )
+
+    step, run = coordinator.execute_next_step(
+        "run-1", adapter_resolver=lambda _: Adapter()
+    )
+
+    assert step.status is StepStatus.SUCCEEDED
+    assert run.status is RunStatus.SUCCEEDED
+    artifact = coordinator.list_artifacts("run-1")[0]
+    assert artifact.status is ArtifactStatus.REJECTED
+    assert artifact.size_bytes == len("oversized".encode("utf-8"))
+    assert artifact.size_limit_bytes == 4
+    assert list(coordinator._artifact_storage_dir.glob("*")) == []
+
+
+def test_failed_provider_step_does_not_capture_response_artifact(tmp_path) -> None:
+    class Adapter:
+        def complete(self, request):
+            raise RuntimeError("provider unavailable")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model")
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Answer",
+        message=ProviderMessage(provider="local", content="Hello"),
+        response_artifact_name="answer",
+    )
+
+    step, _ = coordinator.execute_next_step(
+        "run-1", adapter_resolver=lambda _: Adapter()
+    )
+
+    assert step.status is StepStatus.FAILED
+    assert step.response_artifact_name == "answer"
+    assert coordinator.list_artifacts("run-1") == ()

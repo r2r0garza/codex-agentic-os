@@ -326,8 +326,19 @@ written. Model, system, temperature, and token limit are optional:
 codex-agentic-os run add-step run-002 step-002 --objective "Summarize output" \
   --provider ollama --message "Summarize the test output" --model llama3.1 \
   --system "Be concise" --temperature 0.2 --max-tokens 256 \
+  --response-artifact summary \
   --state-db .codex-agentic-os/state.sqlite3
 ```
+
+`--response-artifact NAME` declares that the successful normalized response text
+should also be captured as a durable artifact. The response's UTF-8 bytes use the
+same local storage, hash, byte-size, producing run/step identity, size-limit, and
+history contracts as command artifacts; inspection identifies the source as
+`response.content`. Oversize content is recorded as `rejected` without changing the
+provider step's successful output, while adapter or routing failures capture no
+artifact. Existing normalized output, provider usage evidence, routing provenance,
+and context behavior are unchanged, and durable artifact history never includes the
+request body, raw provider envelope, credentials, or environment values.
 
 ```bash
 codex-agentic-os run add-step run-002 step-002b --objective "Summarize output" \

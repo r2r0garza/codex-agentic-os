@@ -183,6 +183,7 @@ class RunStep:
     approval_status: ApprovalStatus | None = None
     sandbox_policy: SandboxPolicy | None = None
     artifact_declarations: tuple[ArtifactDeclaration, ...] = ()
+    response_artifact_name: str | None = None
 
     @property
     def failure_kind(self) -> StepFailureKind | None:
@@ -783,6 +784,8 @@ class RunCoordinator:
                 step_payload["artifacts"] = self._artifact_declarations_payload(
                     next_step.artifact_declarations
                 )
+            if next_step.response_artifact_name is not None:
+                step_payload["response_artifact_name"] = next_step.response_artifact_name
             self._add_context_step_ids_payload(step_payload, next_step)
             self._add_approval_payload(step_payload, next_step)
             stored = self.store.put_many(
@@ -961,6 +964,7 @@ class RunCoordinator:
         approval_required: bool = False,
         sandbox_policy: SandboxPolicy | Mapping[str, object] | None = None,
         artifacts: Sequence[ArtifactDeclaration | Mapping[str, object]] | None = None,
+        response_artifact_name: str | None = None,
     ) -> RunStep:
         """Append a queued step to a non-terminal run."""
 
@@ -988,6 +992,9 @@ class RunCoordinator:
         normalized_artifacts = self._validate_artifact_declarations(
             artifacts, sandbox_policy=normalized_sandbox_policy
         )
+        normalized_response_artifact_name = self._validate_response_artifact_name(
+            response_artifact_name, has_message=normalized_message is not None
+        )
         payload: dict[str, object] = {
             "objective": objective,
             "approval_required": approval_required,
@@ -1006,6 +1013,8 @@ class RunCoordinator:
             payload["sandbox_policy"] = self._sandbox_policy_payload(normalized_sandbox_policy)
         if normalized_artifacts:
             payload["artifacts"] = self._artifact_declarations_payload(normalized_artifacts)
+        if normalized_response_artifact_name is not None:
+            payload["response_artifact_name"] = normalized_response_artifact_name
         try:
             record = self.store.append_step(
                 step_id,
@@ -1322,6 +1331,8 @@ class RunCoordinator:
             payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
             )
+        if current.response_artifact_name is not None:
+            payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(payload, current)
         self._add_approval_payload(payload, current)
         if output is not None:
@@ -1510,6 +1521,8 @@ class RunCoordinator:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
             )
+        if current.response_artifact_name is not None:
+            step_payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
@@ -1588,6 +1601,8 @@ class RunCoordinator:
             raise KeyError(f"run does not exist: {current.run_id}")
         if run.status is not RunStatus.RUNNING or current.status is not StepStatus.RUNNING:
             raise ValueError(f"step and run must be running to record a response: {step_id}")
+        if current.response_artifact_name is not None:
+            self._capture_response_artifact(current, response.content)
         step_payload = {
             "run_id": current.run_id,
             "position": current.position,
@@ -1595,6 +1610,8 @@ class RunCoordinator:
             "message": self._message_payload(current.message),
             "output": output,
         }
+        if current.response_artifact_name is not None:
+            step_payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
         superseded_step_ids = self._superseded_step_ids(run.run_id)
@@ -1673,6 +1690,8 @@ class RunCoordinator:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
             )
+        if current.response_artifact_name is not None:
+            step_payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
@@ -1751,6 +1770,8 @@ class RunCoordinator:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
             )
+        if current.response_artifact_name is not None:
+            step_payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
@@ -1825,6 +1846,7 @@ class RunCoordinator:
         context_step_ids = record.payload.get("context_step_ids")
         sandbox_policy = record.payload.get("sandbox_policy")
         artifacts = record.payload.get("artifacts")
+        response_artifact_name = record.payload.get("response_artifact_name")
         approval_required = record.payload.get("approval_required", False)
         approval_status_value = record.payload.get("approval_status")
         if not isinstance(run_id, str) or not run_id:
@@ -1847,6 +1869,9 @@ class RunCoordinator:
         )
         normalized_artifacts = RunCoordinator._validate_artifact_declarations(
             artifacts, sandbox_policy=normalized_sandbox_policy
+        )
+        normalized_response_artifact_name = RunCoordinator._validate_response_artifact_name(
+            response_artifact_name, has_message=normalized_message is not None
         )
         if not isinstance(approval_required, bool):
             raise ValueError(f"step record has invalid approval requirement: {record.key}")
@@ -1881,6 +1906,7 @@ class RunCoordinator:
             approval_status=approval_status,
             sandbox_policy=normalized_sandbox_policy,
             artifact_declarations=normalized_artifacts,
+            response_artifact_name=normalized_response_artifact_name,
         )
 
     @staticmethod
@@ -1960,6 +1986,8 @@ class RunCoordinator:
             payload["artifacts"] = RunCoordinator._artifact_declarations_payload(
                 step.artifact_declarations
             )
+        if step.response_artifact_name is not None:
+            payload["response_artifact_name"] = step.response_artifact_name
         payload["approval_required"] = step.approval_required
         payload["approval_status"] = approval_status
         return payload
@@ -2406,6 +2434,24 @@ class RunCoordinator:
         return tuple(normalized)
 
     @staticmethod
+    def _validate_response_artifact_name(
+        name: object | None, *, has_message: bool
+    ) -> str | None:
+        if name is None:
+            return None
+        if not has_message:
+            raise ValueError("response artifact declarations require a provider message")
+        if (
+            not isinstance(name, str)
+            or not name
+            or re.fullmatch(r"[A-Za-z0-9_-]+", name) is None
+        ):
+            raise ValueError(
+                "response artifact name must be a non-empty identifier-safe string"
+            )
+        return name
+
+    @staticmethod
     def _resolve_artifact_host_path(
         policy: SandboxPolicy, declared_path: str
     ) -> Path | None:
@@ -2433,51 +2479,109 @@ class RunCoordinator:
             return
         assert step.sandbox_policy is not None  # enforced by _validate_artifact_declarations
         for declaration in step.artifact_declarations:
-            artifact_id = f"{step.step_id}-artifact-{declaration.name}"
             host_path = self._resolve_artifact_host_path(step.sandbox_policy, declaration.path)
-            content_hash: str | None = None
-            size_bytes: int | None = None
-            size_limit_bytes: int | None = None
             if host_path is None or not host_path.is_file():
                 status = ArtifactStatus.ABSENT
+                data = None
+                size_bytes = None
+                size_limit_bytes = None
             else:
                 size = host_path.stat().st_size
                 if size > self._artifact_size_limit_bytes:
                     status = ArtifactStatus.REJECTED
+                    data = None
                     size_bytes = size
                     size_limit_bytes = self._artifact_size_limit_bytes
                 else:
                     data = host_path.read_bytes()
                     status = ArtifactStatus.CAPTURED
-                    content_hash = hashlib.sha256(data).hexdigest()
                     size_bytes = len(data)
-                    self._artifact_storage_dir.mkdir(parents=True, exist_ok=True)
-                    (self._artifact_storage_dir / artifact_id).write_bytes(data)
-            payload: dict[str, object] = {
-                "run_id": step.run_id,
-                "step_id": step.step_id,
-                "name": declaration.name,
-                "source_path": declaration.path,
-            }
-            if content_hash is not None:
-                payload["content_hash"] = content_hash
-            if size_bytes is not None:
-                payload["size_bytes"] = size_bytes
-            if size_limit_bytes is not None:
-                payload["size_limit_bytes"] = size_limit_bytes
-            self.store.insert(
-                "artifact",
-                artifact_id,
-                status=status.value,
-                payload=payload,
-                history=(
-                    RunHistoryEntry(
-                        step.run_id, 0, f"artifact_{status.value}", status.value,
-                        step_id=step.step_id, execution_kind="command",
-                        artifact_name=declaration.name,
-                    ),
-                ),
+                    size_limit_bytes = None
+            self._persist_artifact(
+                step,
+                name=declaration.name,
+                source_path=declaration.path,
+                execution_kind="command",
+                status=status,
+                data=data,
+                size_bytes=size_bytes,
+                size_limit_bytes=size_limit_bytes,
             )
+
+    def _capture_response_artifact(self, step: RunStep, content: str) -> None:
+        """Capture normalized provider response content through artifact storage."""
+
+        assert step.response_artifact_name is not None
+        data = content.encode("utf-8")
+        if len(data) > self._artifact_size_limit_bytes:
+            status = ArtifactStatus.REJECTED
+            stored_data = None
+            size_limit_bytes = self._artifact_size_limit_bytes
+        else:
+            status = ArtifactStatus.CAPTURED
+            stored_data = data
+            size_limit_bytes = None
+        self._persist_artifact(
+            step,
+            name=step.response_artifact_name,
+            source_path="response.content",
+            execution_kind="provider",
+            status=status,
+            data=stored_data,
+            size_bytes=len(data),
+            size_limit_bytes=size_limit_bytes,
+        )
+
+    def _persist_artifact(
+        self,
+        step: RunStep,
+        *,
+        name: str,
+        source_path: str,
+        execution_kind: str,
+        status: ArtifactStatus,
+        data: bytes | None,
+        size_bytes: int | None,
+        size_limit_bytes: int | None,
+    ) -> None:
+        """Persist one artifact outcome through the shared local storage contract."""
+
+        artifact_id = f"{step.step_id}-artifact-{name}"
+        content_hash = None
+        if status is ArtifactStatus.CAPTURED:
+            assert data is not None
+            content_hash = hashlib.sha256(data).hexdigest()
+            self._artifact_storage_dir.mkdir(parents=True, exist_ok=True)
+            (self._artifact_storage_dir / artifact_id).write_bytes(data)
+        payload: dict[str, object] = {
+            "run_id": step.run_id,
+            "step_id": step.step_id,
+            "name": name,
+            "source_path": source_path,
+        }
+        if content_hash is not None:
+            payload["content_hash"] = content_hash
+        if size_bytes is not None:
+            payload["size_bytes"] = size_bytes
+        if size_limit_bytes is not None:
+            payload["size_limit_bytes"] = size_limit_bytes
+        self.store.insert(
+            "artifact",
+            artifact_id,
+            status=status.value,
+            payload=payload,
+            history=(
+                RunHistoryEntry(
+                    step.run_id,
+                    0,
+                    f"artifact_{status.value}",
+                    status.value,
+                    step_id=step.step_id,
+                    execution_kind=execution_kind,
+                    artifact_name=name,
+                ),
+            ),
+        )
 
     @staticmethod
     def _artifact(record: StateRecord) -> ArtifactRecord:

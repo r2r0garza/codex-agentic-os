@@ -237,6 +237,11 @@ def _parser() -> argparse.ArgumentParser:
             "sandbox mount; repeat for multiple artifacts"
         ),
     )
+    add_step.add_argument(
+        "--response-artifact",
+        metavar="NAME",
+        help="capture a successful provider step's normalized response as a named artifact",
+    )
     plan.add_argument("run_id")
     plan.add_argument("plan_id")
     plan.add_argument(
@@ -804,6 +809,8 @@ def _step_payload(
         payload["sandbox_policy"]["kind"] = step.sandbox_policy.kind.value
     if not step.artifact_declarations:
         payload.pop("artifact_declarations")
+    if step.response_artifact_name is None:
+        payload.pop("response_artifact_name")
     if artifacts:
         payload["artifacts"] = [_artifact_record_payload(artifact) for artifact in artifacts]
     payload["status"] = step.status.value
@@ -1070,6 +1077,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     approval_required=arguments.approval_required,
                     sandbox_policy=sandbox_policy,
                     artifacts=_parse_artifacts(arguments.artifact) or None,
+                    response_artifact_name=arguments.response_artifact,
                 )
                 run_id = arguments.run_id
             elif arguments.run_command == "plan":

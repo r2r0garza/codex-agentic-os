@@ -717,6 +717,52 @@ def test_cli_add_step_without_artifact_flags_has_no_artifact_declarations(
     assert "artifact_declarations" not in payload["steps"][0]
 
 
+def test_cli_adds_and_inspects_provider_response_artifact_declaration(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ask a model")
+
+    main(
+        [
+            "run", "add-step", "run-1", "model", "--objective", "Answer",
+            "--provider", "local", "--message", "Hello",
+            "--response-artifact", "answer", "--state-db", str(database),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"][0]["response_artifact_name"] == "answer"
+    assert "artifact_declarations" not in payload["steps"][0]
+
+    main(["run", "inspect-step", "model", "--state-db", str(database)])
+    assert json.loads(capsys.readouterr().out) == payload["steps"][0]
+
+
+def test_cli_rejects_response_artifact_on_command_without_mutation(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original = coordinator.create("run-1", objective="Run a command")
+
+    with pytest.raises(SystemExit) as error:
+        main(
+            [
+                "run", "add-step", "run-1", "command", "--objective", "Execute",
+                "--response-artifact", "answer", "--state-db", str(database),
+                "--", "true",
+            ]
+        )
+
+    assert error.value.code == 2
+    assert "response artifact declarations require a provider message" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original
+    assert reloaded.list_steps("run-1") == ()
+
+
 @pytest.mark.parametrize(
     ("extra_arguments", "message"),
     [
