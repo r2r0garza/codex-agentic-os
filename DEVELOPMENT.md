@@ -752,6 +752,39 @@ review did not change durable state. The database is recreated on the next run.
 Set `STATE_DB`, `API_PORT`, `DASHBOARD_PORT`, `SANDBOX_IMAGE`, `RUN_ID`, or
 `AGENT_ID` before the command only when a local conflict requires an override.
 
+For the mutable Sprint 19 approval review, run the separate harness instead:
+
+```bash
+./scripts/dashboard-approval-review.sh
+```
+
+It recreates only its isolated state database at
+`/tmp/codex-agentic-os-dashboard-approval-review.sqlite3`, registers a
+dedicated worker, and queues one Docker command step behind an approval gate.
+The worker first executes `preflight-command-step` through Docker so the run
+reaches `running` through real dispatch, then remains active while the second
+command waits at its approval gate. The API and dashboard listen explicitly on
+`127.0.0.1`; the harness checks the API's actual listening socket before
+allowing the review to continue.
+
+Open the printed dashboard URL, select `dashboard-approval-review`, click
+Approve, verify the “Approve this step?” dialog appears, and click “Confirm
+approve.” The worker must then execute `approved-command-step` through Docker.
+The harness checks durable state for an approved request, a succeeded step and
+run, exactly one `step_started` and `step_succeeded` transition for the
+approval-gated step, and final `run_succeeded`. It leaves the servers open
+after printing `Approval review
+passed` so the dashboard can poll and show the persisted succeeded state plus
+`step_approved`, `step_started`, `step_succeeded`, and `run_succeeded` history.
+Press Ctrl-C after inspecting that evidence. The database is recreated on the
+next run, and no repository or non-isolated state is mutated.
+
+Set `STATE_DB`, `API_PORT`, `DASHBOARD_PORT`, `SANDBOX_IMAGE`, `RUN_ID`,
+`STEP_ID`, or `AGENT_ID` only to avoid a local conflict. Unlike the Sprint 18
+review above, this review intentionally mutates its isolated database through
+the same dashboard proxy and loopback mutation API used in production; it does
+not replace the read-only hash check.
+
 For an existing database instead, start both processes manually. In one
 terminal, serve the API exactly as above:
 
