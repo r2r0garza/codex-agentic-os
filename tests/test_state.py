@@ -694,8 +694,16 @@ def test_dispatch_delegation_step_inserts_child_run_and_starts_parent(tmp_path) 
     assert store.get("run", "delegate-child") == child_run
     child_history = store.list_run_history("delegate-child")
     assert child_history[0].transition == "created"
+    assert child_history[0].parent_run_id == "run-1"
+    assert child_history[0].parent_step_id == "delegate"
+    assert child_history[0].delegated_run_id is None
     parent_history = store.list_run_history("run-1")
-    assert any(entry.transition == "step_delegated" for entry in parent_history)
+    delegated = next(
+        entry for entry in parent_history if entry.transition == "step_delegated"
+    )
+    assert delegated.delegated_run_id == "delegate-child"
+    assert delegated.parent_run_id is None
+    assert delegated.parent_step_id is None
 
 
 def test_dispatch_delegation_step_rejects_stale_step_revision_without_mutation(

@@ -501,6 +501,25 @@ def test_cli_add_step_and_execute_next_dispatch_delegation_step(tmp_path, capsys
     assert child["run"]["parent_step_id"] == "delegate"
     assert child["run"]["status"] == "queued"
 
+    main(["run", "inspect", "run-1", "--state-db", str(database)])
+    parent = json.loads(capsys.readouterr().out)
+    assert parent["steps"][0]["delegated_run_id"] == "delegate-child"
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    parent_history = json.loads(capsys.readouterr().out)
+    delegated = next(
+        entry for entry in parent_history if entry["transition"] == "step_delegated"
+    )
+    assert delegated["delegated_run_id"] == "delegate-child"
+    assert "parent_run_id" not in delegated
+    assert "parent_step_id" not in delegated
+
+    main(["run", "history", "delegate-child", "--state-db", str(database)])
+    child_history = json.loads(capsys.readouterr().out)
+    assert child_history[0]["parent_run_id"] == "run-1"
+    assert child_history[0]["parent_step_id"] == "delegate"
+    assert "delegated_run_id" not in child_history[0]
+
     main(["run", "execute-next", "run-1", "--state-db", str(database)])
     pending = json.loads(capsys.readouterr().out)
     assert pending["execution"] == {"attempted": False}

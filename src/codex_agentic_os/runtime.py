@@ -1283,6 +1283,7 @@ class RunCoordinator:
             )
         if normalized_delegation is not None and normalized_delegation.target_agent_id is not None:
             self._require_registered_agent(normalized_delegation.target_agent_id)
+            self._validate_delegation_lineage(run, normalized_delegation.target_agent_id)
         normalized_context_step_ids = self._validate_context_step_ids(
             run_id,
             context_step_ids,
@@ -2367,6 +2368,38 @@ class RunCoordinator:
         return DelegationSpec(
             child_objective=child_objective, target_agent_id=target_agent_id
         )
+
+    def _validate_delegation_lineage(
+        self, run: AgentRun, target_agent_id: str
+    ) -> None:
+        """Reject delegation to the current or an ancestor run's assigned agent."""
+
+        current = run
+        visited: set[str] = set()
+        while True:
+            if current.run_id in visited:
+                raise ValueError(
+                    f"delegation parent linkage contains a cycle: {current.run_id}"
+                )
+            visited.add(current.run_id)
+            if current.agent_id == target_agent_id:
+                if current.run_id == run.run_id:
+                    raise ValueError(
+                        f"delegation target agent matches the parent run agent: "
+                        f"{target_agent_id}"
+                    )
+                raise ValueError(
+                    f"delegation target agent would create an ancestor cycle: "
+                    f"{target_agent_id}"
+                )
+            if current.parent_run_id is None:
+                return
+            parent = self.get(current.parent_run_id)
+            if parent is None:
+                raise ValueError(
+                    f"delegation parent run does not exist: {current.parent_run_id}"
+                )
+            current = parent
 
     @staticmethod
     def _parse_plan_proposal(content: str, plan_id: str) -> tuple[PlanStepProposal, ...]:

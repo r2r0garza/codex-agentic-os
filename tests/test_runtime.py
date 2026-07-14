@@ -4620,6 +4620,53 @@ def test_add_step_rejects_unregistered_delegation_target_agent(tmp_path) -> None
     assert coordinator.list_steps("run-1") == ()
 
 
+def test_add_step_rejects_delegation_to_parent_run_agent_without_mutation(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Delegate part of the work", agent_id="agent-1")
+
+    with pytest.raises(ValueError, match="target agent matches the parent run agent"):
+        coordinator.add_step(
+            "run-1",
+            "bad",
+            objective="Delegate",
+            delegation=DelegationSpec(
+                child_objective="Do the child work", target_agent_id="agent-1"
+            ),
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_add_step_rejects_delegation_back_to_ancestor_agent_without_mutation(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Delegate part of the work", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate to agent 2",
+        delegation=DelegationSpec(
+            child_objective="Review the work", target_agent_id="agent-2"
+        ),
+    )
+    coordinator.execute_next_step("run-1")
+
+    with pytest.raises(ValueError, match="target agent would create an ancestor cycle"):
+        coordinator.add_step(
+            "delegate-child",
+            "bad-cycle",
+            objective="Delegate back to agent 1",
+            delegation=DelegationSpec(
+                child_objective="Rework the parent", target_agent_id="agent-1"
+            ),
+        )
+
+    assert coordinator.list_steps("delegate-child") == ()
+
+
 def test_add_step_persists_delegation_declaration_across_restart(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     coordinator = RunCoordinator(StateStore(database))

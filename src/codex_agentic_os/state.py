@@ -41,6 +41,9 @@ class RunHistoryEntry:
     resolved_model: str | None = None
     routing_reason: str | None = None
     artifact_name: str | None = None
+    parent_run_id: str | None = None
+    parent_step_id: str | None = None
+    delegated_run_id: str | None = None
 
 
 class StateConflictError(ValueError):
@@ -134,6 +137,9 @@ class StateStore:
                 "resolved_model",
                 "routing_reason",
                 "artifact_name",
+                "parent_run_id",
+                "parent_step_id",
+                "delegated_run_id",
             ):
                 if column not in history_columns:
                     connection.execute(
@@ -229,6 +235,9 @@ class StateStore:
                         resolved_model=entry.resolved_model,
                         routing_reason=entry.routing_reason,
                         artifact_name=entry.artifact_name,
+                        parent_run_id=entry.parent_run_id,
+                        parent_step_id=entry.parent_step_id,
+                        delegated_run_id=entry.delegated_run_id,
                     )
                 connection.commit()
         except sqlite3.IntegrityError as error:
@@ -285,6 +294,9 @@ class StateStore:
                     resolved_model=entry.resolved_model,
                     routing_reason=entry.routing_reason,
                     artifact_name=entry.artifact_name,
+                    parent_run_id=entry.parent_run_id,
+                    parent_step_id=entry.parent_step_id,
+                    delegated_run_id=entry.delegated_run_id,
                 )
             connection.commit()
         return tuple(stored)
@@ -723,6 +735,8 @@ class StateStore:
                 status="queued",
                 agent_id=target_agent_id,
                 execution_kind=None,
+                parent_run_id=run_id,
+                parent_step_id=step_id,
             )
 
             new_step_revision = step_revision + 1
@@ -765,6 +779,7 @@ class StateStore:
                 step_id=step_id,
                 agent_id=run_agent_id,
                 execution_kind="delegation",
+                delegated_run_id=child_run_id,
             )
             connection.commit()
         return (
@@ -1167,6 +1182,9 @@ class StateStore:
                     resolved_model=entry.resolved_model,
                     routing_reason=entry.routing_reason,
                     artifact_name=entry.artifact_name,
+                    parent_run_id=entry.parent_run_id,
+                    parent_step_id=entry.parent_step_id,
+                    delegated_run_id=entry.delegated_run_id,
                 )
             connection.commit()
         return stored_plan, tuple(stored_steps)
@@ -1182,7 +1200,8 @@ class StateStore:
                 SELECT run_id, sequence, transition, status, step_id, agent_id,
                        execution_kind, retried_step_id, context_step_ids, plan_id,
                        required_capability, resolved_provider, resolved_model,
-                       routing_reason, artifact_name
+                       routing_reason, artifact_name, parent_run_id, parent_step_id,
+                       delegated_run_id
                 FROM run_history WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
@@ -1204,6 +1223,9 @@ class StateStore:
                 resolved_model=row[12],
                 routing_reason=row[13],
                 artifact_name=row[14],
+                parent_run_id=row[15],
+                parent_step_id=row[16],
+                delegated_run_id=row[17],
             )
             for row in rows
         )
@@ -1304,6 +1326,9 @@ class StateStore:
         resolved_model: str | None = None,
         routing_reason: str | None = None,
         artifact_name: str | None = None,
+        parent_run_id: str | None = None,
+        parent_step_id: str | None = None,
+        delegated_run_id: str | None = None,
     ) -> None:
         """Append one ordered history entry on a caller-owned run mutation transaction."""
 
@@ -1317,8 +1342,9 @@ class StateStore:
                 (run_id, sequence, transition, status, step_id, agent_id,
                  execution_kind, retried_step_id, context_step_ids, plan_id,
                  required_capability, resolved_provider, resolved_model,
-                 routing_reason, artifact_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 routing_reason, artifact_name, parent_run_id, parent_step_id,
+                 delegated_run_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1336,6 +1362,9 @@ class StateStore:
                 resolved_model,
                 routing_reason,
                 artifact_name,
+                parent_run_id,
+                parent_step_id,
+                delegated_run_id,
             ),
         )
 

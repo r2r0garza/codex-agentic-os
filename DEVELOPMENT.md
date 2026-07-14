@@ -432,6 +432,15 @@ existing lifecycle, including approvals, artifacts, and history. A competing or 
 dispatch of the same step cannot spawn a second child: the parent step's own
 compare-and-swap revision check inside the atomic dispatch transaction rejects it.
 
+When both sides have assigned agents, declaration rejects delegation to the current
+run's own agent (self-delegation) or back to any assigned ancestor run's agent (a
+detectable delegation cycle) before appending the step. Unassigned runs and unassigned
+delegations remain valid because they do not declare an agent edge that can be checked.
+`run inspect` shows `delegated_run_id` on the parent step and `parent_run_id` plus
+`parent_step_id` on the child run. The corresponding `step_delegated` and child
+`created` history entries persist the same identifiers, so either history can be read
+without correlating raw database rows.
+
 Calling `run execute-next` again reconciles the delegation. While the child is queued or
 running it reports `{"execution": {"attempted": false}}`; the underlying coordinator
 raises `DelegationPendingError`, which the worker loop treats like an approval or
@@ -461,6 +470,18 @@ state while a child executes, not an uncertain in-process execution. Calling it 
 delegation step is rejected explicitly; recover the linked child run's own step
 instead, or let `run execute-next` reconcile the parent once the child reaches a
 terminal status.
+
+Run the reproducible two-agent interruption review from the repository root:
+
+```bash
+scripts/delegation-interruption-review.sh
+```
+
+It uses an isolated `/tmp` database, registers distinct parent and child agents,
+interrupts the parent worker after atomic child dispatch, lets the child worker execute
+a Docker-sandboxed `printf` step, then starts a fresh parent-worker process and asserts
+the parent completes from the child's durable terminal outcome. Final assertions cover
+both inspection directions and both linkage-bearing history entries.
 
 Record a sandbox result through the structural execution-result boundary. A zero exit
 completes the step successfully and succeeds the run when every step is complete; a

@@ -149,6 +149,9 @@ def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, objec
             "resolved_model",
             "routing_reason",
             "artifact_name",
+            "parent_run_id",
+            "parent_step_id",
+            "delegated_run_id",
         ):
             if getattr(entry, optional_field) is None:
                 payload.pop(optional_field)
