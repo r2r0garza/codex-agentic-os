@@ -693,7 +693,44 @@ class RunCoordinator:
         return content_path.read_bytes()
 
     def cancel(self, run_id: str) -> AgentRun:
-        """Atomically cancel a run and each of its queued or running steps."""
+        """Atomically cancel a run, its active steps, and any active delegated child.
+
+        Cancelling a run is the one automatic child-cancellation policy this
+        runtime applies: an active delegated child left behind by a
+        cancelled parent would otherwise keep running unattended, with no
+        parent step left to reconcile its eventual outcome. A child that has
+        already reached a terminal status is left untouched rather than
+        overwritten.
+        """
+
+        records: list[tuple[str, str, str, Mapping[str, object]]] = []
+        expected: list[tuple[str, str, str, int]] = []
+        history: list[RunHistoryEntry] = []
+        target_index = self._collect_cancel_closure(
+            run_id, set(), records, expected, history
+        )
+        stored = self.store.put_many(records, expected=expected, history=history)
+        return self._run(stored[target_index])
+
+    def _collect_cancel_closure(
+        self,
+        run_id: str,
+        visited: set[str],
+        records: list[tuple[str, str, str, Mapping[str, object]]],
+        expected: list[tuple[str, str, str, int]],
+        history: list[RunHistoryEntry],
+    ) -> int:
+        """Append cancel records/history for ``run_id`` and any active delegated child.
+
+        Returns the index into ``records`` of ``run_id``'s own cancelled run
+        record, so a single atomic :meth:`StateStore.put_many` call can cover
+        the whole parent/child cancellation closure and the caller can still
+        read back the run it originally asked to cancel.
+        """
+
+        if run_id in visited:
+            raise ValueError(f"delegation cycle detected while cancelling: {run_id}")
+        visited.add(run_id)
 
         current = self.get(run_id)
         if current is None:
@@ -713,7 +750,6 @@ class RunCoordinator:
                     f"invalid step transition: {step.status} -> {StepStatus.CANCELLED}"
                 )
 
-        records: list[tuple[str, str, str, Mapping[str, object]]] = []
         for step in active_steps:
             payload: dict[str, object] = {
                 "run_id": step.run_id,
@@ -735,31 +771,41 @@ class RunCoordinator:
             self._add_context_step_ids_payload(payload, step)
             self._add_approval_payload(payload, step)
             records.append(("step", step.step_id, StepStatus.CANCELLED, payload))
+            expected.append(("step", step.step_id, step.status, step.revision))
+            history.append(
+                RunHistoryEntry(
+                    run_id, 0, "step_cancelled", StepStatus.CANCELLED,
+                    step_id=step.step_id, agent_id=current.agent_id,
+                    execution_kind=self._execution_kind(step),
+                )
+            )
+            if step.delegated_run_id is not None:
+                child = self.get(step.delegated_run_id)
+                if child is not None and child.status in {
+                    RunStatus.QUEUED, RunStatus.RUNNING,
+                }:
+                    if (
+                        child.parent_run_id != run_id
+                        or child.parent_step_id != step.step_id
+                    ):
+                        raise ValueError(
+                            "delegated child run linkage does not match parent: "
+                            f"{step.delegated_run_id}"
+                        )
+                    self._collect_cancel_closure(
+                        step.delegated_run_id, visited, records, expected, history
+                    )
 
         run_payload: dict[str, object] = self._base_run_payload(current)
         records.append(("run", run_id, RunStatus.CANCELLED, run_payload))
-        stored = self.store.put_many(
-            records,
-            expected=(
-                *(("step", step.step_id, step.status, step.revision) for step in active_steps),
-                ("run", run_id, current.status, current.revision),
-            ),
-            history=(
-                *(
-                    RunHistoryEntry(
-                        run_id, 0, "step_cancelled", StepStatus.CANCELLED,
-                        step_id=step.step_id, agent_id=current.agent_id,
-                        execution_kind=self._execution_kind(step),
-                    )
-                    for step in active_steps
-                ),
-                RunHistoryEntry(
-                    run_id, 0, "run_cancelled", RunStatus.CANCELLED,
-                    agent_id=current.agent_id,
-                ),
-            ),
+        expected.append(("run", run_id, current.status, current.revision))
+        history.append(
+            RunHistoryEntry(
+                run_id, 0, "run_cancelled", RunStatus.CANCELLED,
+                agent_id=current.agent_id,
+            )
         )
-        return self._run(stored[-1])
+        return len(records) - 1
 
     def start_next_step(
         self, run_id: str, *, provider_route: ProviderRoute | None = None
@@ -1019,6 +1065,10 @@ class RunCoordinator:
         child = self.get(child_run_id)
         if child is None:
             raise ValueError(f"delegated child run does not exist: {child_run_id}")
+        if child.parent_run_id != run.run_id or child.parent_step_id != step.step_id:
+            raise ValueError(
+                f"delegated child run linkage does not match parent: {child_run_id}"
+            )
         if child.status not in {
             RunStatus.SUCCEEDED,
             RunStatus.FAILED,
@@ -1988,6 +2038,12 @@ class RunCoordinator:
             raise ValueError(f"run must be running to recover a step: {run.run_id}")
         if current.status is not StepStatus.RUNNING:
             raise ValueError(f"step must be running to recover it: {step_id}")
+        if current.delegation is not None:
+            raise ValueError(
+                "cannot recover a delegation step directly; recover the "
+                "linked child run's own step instead: "
+                f"{step_id} -> {current.delegated_run_id}"
+            )
         if not isinstance(reason, StepRecoveryReason):
             raise ValueError("recovery reason must be a StepRecoveryReason")
         if detail is not None and not detail.strip():

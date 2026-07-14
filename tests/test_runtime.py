@@ -4996,6 +4996,126 @@ def test_cancel_run_preserves_delegation_fields_on_active_step(tmp_path) -> None
     assert step.status is StepStatus.CANCELLED
     assert step.delegation == DelegationSpec(child_objective="Review the change")
     assert step.delegated_run_id == "delegate-child"
+    # Cancelling the parent is the one automatic child-cancellation policy
+    # this runtime applies: an active delegated child must never be left
+    # running unattended with no parent step left to reconcile its outcome.
+    child = coordinator.get("delegate-child")
+    assert child.status is RunStatus.CANCELLED
+
+
+def test_cancel_run_cascades_to_active_delegated_child_and_its_own_step(
+    tmp_path,
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Delegate part of the work")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(child_objective="Review the change"),
+    )
+    coordinator.execute_next_step("run-1")
+    coordinator.add_step(
+        "delegate-child", "review", objective="Do the review", command=("true",)
+    )
+    coordinator.start_next_step("delegate-child")
+
+    run = coordinator.cancel("run-1")
+
+    assert run.status is RunStatus.CANCELLED
+    child = coordinator.get("delegate-child")
+    assert child.status is RunStatus.CANCELLED
+    child_step = coordinator.get_step("review")
+    assert child_step.status is StepStatus.CANCELLED
+    child_history = [entry.transition for entry in coordinator.list_history("delegate-child")]
+    assert child_history[-2:] == ["step_cancelled", "run_cancelled"]
+
+
+def test_cancel_run_leaves_terminal_delegated_child_untouched(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Delegate part of the work")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(child_objective="Review the change"),
+    )
+    coordinator.execute_next_step("run-1")
+    coordinator.transition("delegate-child", RunStatus.RUNNING)
+    coordinator.transition(
+        "delegate-child", RunStatus.SUCCEEDED, output={"summary": "review passed"}
+    )
+
+    coordinator.cancel("run-1")
+
+    step = coordinator.get_step("delegate")
+    assert step.status is StepStatus.CANCELLED
+    child = coordinator.get("delegate-child")
+    assert child.status is RunStatus.SUCCEEDED
+    assert child.output == {"summary": "review passed"}
+
+
+def test_cancel_run_rejects_mismatched_delegation_linkage(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Delegate part of the work")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(child_objective="Review the change"),
+    )
+    coordinator.execute_next_step("run-1")
+    store = StateStore(database)
+    child_record = store.get("run", "delegate-child")
+    tampered = {**child_record.payload, "parent_step_id": "not-delegate"}
+    store.put("run", "delegate-child", status=child_record.status, payload=tampered)
+
+    with pytest.raises(ValueError, match="delegated child run linkage does not match parent"):
+        coordinator.cancel("run-1")
+
+
+def test_recover_running_step_rejects_delegation_step(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Delegate part of the work")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(child_objective="Review the change"),
+    )
+    coordinator.execute_next_step("run-1")
+
+    with pytest.raises(ValueError, match="cannot recover a delegation step directly"):
+        coordinator.recover_running_step("delegate", StepRecoveryReason.INTERRUPTED)
+
+    step = coordinator.get_step("delegate")
+    assert step.status is StepStatus.RUNNING
+    assert step.delegated_run_id == "delegate-child"
+    child = coordinator.get("delegate-child")
+    assert child.status is RunStatus.QUEUED
+
+
+def test_reconcile_delegation_step_rejects_mismatched_child_linkage(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Delegate part of the work")
+    coordinator.add_step(
+        "run-1",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(child_objective="Review the change"),
+    )
+    coordinator.execute_next_step("run-1")
+    coordinator.transition("delegate-child", RunStatus.RUNNING)
+    coordinator.transition("delegate-child", RunStatus.SUCCEEDED, output={"ok": True})
+    store = StateStore(database)
+    child_record = store.get("run", "delegate-child")
+    tampered = {**child_record.payload, "parent_run_id": "not-run-1"}
+    store.put("run", "delegate-child", status=child_record.status, payload=tampered)
+
+    with pytest.raises(ValueError, match="delegated child run linkage does not match parent"):
+        coordinator.execute_next_step("run-1")
 
 
 class _StubExecutor:

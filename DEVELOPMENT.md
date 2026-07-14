@@ -442,6 +442,25 @@ step and either advances the parent to its next queued step or succeeds the comp
 parent run. A failed or cancelled child fails the delegation step and parent run
 explicitly. These parent history entries use `execution_kind: "delegation"`, and stale
 step/run revisions reject reconciliation without overwriting a competing transition.
+Reconciliation also rejects a child run whose recorded `parent_run_id`/`parent_step_id`
+no longer matches the delegating step, rather than reconciling against an unrelated run.
+
+Cancelling a run with an active delegation step cascades to its linked child: an
+active (`queued` or `running`) child run, and any of its own active steps, are
+cancelled atomically alongside the parent, so a cancelled parent never leaves a
+delegated child running unattended with no parent step left to reconcile its
+outcome. A child that already reached a terminal status is left untouched. This
+cascade is the one automatic child-cancellation policy the runtime applies; it
+also rejects cancellation outright if a child's linkage no longer matches its
+parent, rather than silently cancelling an unrelated run.
+
+`run recover`/`recover_running_step` exists to fail a running command or provider
+step whose subprocess or adapter call may have crashed without a durable result — it
+does not apply to delegation steps, whose `running` status is a legitimate parked
+state while a child executes, not an uncertain in-process execution. Calling it on a
+delegation step is rejected explicitly; recover the linked child run's own step
+instead, or let `run execute-next` reconcile the parent once the child reaches a
+terminal status.
 
 Record a sandbox result through the structural execution-result boundary. A zero exit
 completes the step successfully and succeeds the run when every step is complete; a
@@ -961,7 +980,9 @@ codex-agentic-os run cancel run-002 --state-db /path/to/state.sqlite3
 ```
 
 Cancellation requires an existing database and rejects terminal runs without changing
-their state.
+their state. Cancelling a run with an active delegation step also cancels its linked
+child run (and any of the child's own active steps) atomically; see the delegation
+section above for the cascade and linkage-mismatch details.
 
 Permanently remove a terminal run and all of its durable step history. The command
 prints the removed run identifier and the number of removed steps; it never mutates
