@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
+from .providers import DEFAULT_PROVIDER_ROUTING_POLICY, ProviderRoutingPolicy
 from .runtime import (
     Agent,
     AgentRegistry,
@@ -85,6 +86,7 @@ def run_worker(
     executor: SandboxExecutor | None = None,
     sandbox_resolver: SandboxPolicyResolver | None = None,
     adapter_resolver: ChatAdapterResolver | None = None,
+    routing_policy: ProviderRoutingPolicy = DEFAULT_PROVIDER_ROUTING_POLICY,
     label: str | None = None,
     sleeper: Callable[[float], None] | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -146,6 +148,7 @@ def run_worker(
                     executor,
                     sandbox_resolver=sandbox_resolver,
                     adapter_resolver=adapter_resolver,
+                    routing_policy=routing_policy,
                 )
             except (ApprovalRequiredError, ContextReferencesUnresolvedError):
                 blocked = True

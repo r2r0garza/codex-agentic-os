@@ -1861,7 +1861,13 @@ def test_cli_executes_from_persisted_sandbox_policy_and_resolves_worker_env(
 
     monkeypatch.setattr("codex_agentic_os.cli.ContainerSandbox.execute", execute)
 
-    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    main([
+        "run",
+        "execute-next",
+        "run-1",
+        "--state-db",
+        str(database),
+    ])
     first_payload = json.loads(capsys.readouterr().out)
     monkeypatch.setenv("API_TOKEN", "changed-worker-secret")
     main(["run", "execute-next", "run-1", "--state-db", str(database)])
@@ -2037,6 +2043,64 @@ def test_cli_executes_provider_message_without_sandbox(
     assert "never-persist-this-secret" not in persisted
     assert "Be concise" not in persisted
     assert "Hello" not in persisted
+
+
+def test_cli_history_exposes_capability_route_without_request_or_credentials(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Route durable model work")
+    coordinator.add_step(
+        "run-1",
+        "model-1",
+        objective="Reason",
+        message=ProviderMessage(
+            provider=None,
+            content="private routing request",
+            required_capability="reasoning",
+        ),
+    )
+    captured = {}
+    monkeypatch.setenv("OPENAI_API_KEY", "never-print-this-secret")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("done", model="served-model")
+
+    def build_adapter(spec):
+        captured["spec"] = spec
+        return Adapter()
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", build_adapter)
+
+    main([
+        "run",
+        "execute-next",
+        "run-1",
+        "--provider-preference",
+        "anthropic",
+        "--provider-preference",
+        "openai",
+        "--state-db",
+        str(database),
+    ])
+    capsys.readouterr()
+    main(["run", "history", "run-1", "--state-db", str(database)])
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    routed = next(entry for entry in payload if entry["transition"] == "step_started")
+    assert captured["spec"].kind.value == "anthropic"
+    assert captured["spec"].model == "claude-sonnet-4"
+    assert routed["required_capability"] == "reasoning"
+    assert routed["resolved_provider"] == "anthropic"
+    assert routed["resolved_model"] == "claude-sonnet-4"
+    assert routed["routing_reason"].startswith("policy position 1 selected anthropic")
+    assert "private routing request" not in output
+    assert "never-print-this-secret" not in output
 
 
 def test_cli_execute_next_records_provider_failure_without_orphaned_claim(

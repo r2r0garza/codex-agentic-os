@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from codex_agentic_os.chat import ChatMessage, ChatResponse, ChatUsage
+from codex_agentic_os.providers import ProviderKind, ProviderRoutingPolicy, ProviderSpec
 from codex_agentic_os.runtime import (
     Agent,
     AgentRegistry,
@@ -2110,6 +2111,150 @@ def test_execute_next_step_sends_provider_message_and_persists_response(tmp_path
     }
     assert run.status is RunStatus.SUCCEEDED
     assert RunCoordinator(StateStore(database)).get_step("manual") == step
+
+
+def test_execute_next_step_routes_capability_by_policy_and_reconstructs_provenance(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    resolved_messages = []
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("Durable answer", model="served-model")
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "ready", "")
+
+    specs = (
+        ProviderSpec(
+            kind=ProviderKind.OPENAI, model="openai-model", capabilities=("reasoning",)
+        ),
+        ProviderSpec(
+            kind=ProviderKind.ANTHROPIC,
+            model="anthropic-model",
+            capabilities=("reasoning",),
+        ),
+    )
+    policy = ProviderRoutingPolicy((ProviderKind.ANTHROPIC, ProviderKind.OPENAI))
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Route work")
+    coordinator.add_step(
+        "run-1", "prepare", objective="Prepare", command=("true",)
+    )
+    coordinator.add_step(
+        "run-1",
+        "routed",
+        objective="Reason",
+        message=ProviderMessage(
+            provider=None,
+            content="private request body",
+            required_capability="reasoning",
+        ),
+    )
+    coordinator.execute_next_step("run-1", Executor())
+
+    step, run = coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda message: resolved_messages.append(message) or Adapter(),
+        routing_policy=policy,
+        provider_specs=specs,
+    )
+
+    assert step.status is StepStatus.SUCCEEDED
+    assert run.status is RunStatus.SUCCEEDED
+    assert resolved_messages == [
+        ProviderMessage(
+            provider="anthropic", content="private request body", model="anthropic-model"
+        )
+    ]
+    started = next(
+        entry
+        for entry in RunCoordinator(StateStore(database)).list_history("run-1")
+        if entry.transition == "step_started" and entry.step_id == "routed"
+    )
+    assert started.required_capability == "reasoning"
+    assert started.resolved_provider == "anthropic"
+    assert started.resolved_model == "anthropic-model"
+    assert started.routing_reason == (
+        "policy position 1 selected anthropic as the first configured provider "
+        "declaring capability 'reasoning'"
+    )
+    assert "private request body" not in repr(started)
+
+
+def test_execute_next_step_policy_order_changes_capability_route(tmp_path) -> None:
+    resolved_providers = []
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("ok")
+
+    specs = (
+        ProviderSpec(
+            kind=ProviderKind.OPENAI, model="openai-model", capabilities=("general",)
+        ),
+        ProviderSpec(
+            kind=ProviderKind.ANTHROPIC,
+            model="anthropic-model",
+            capabilities=("general",),
+        ),
+    )
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    for run_id, policy in (
+        ("openai-first", ProviderRoutingPolicy((ProviderKind.OPENAI, ProviderKind.ANTHROPIC))),
+        ("anthropic-first", ProviderRoutingPolicy((ProviderKind.ANTHROPIC, ProviderKind.OPENAI))),
+    ):
+        coordinator.create(run_id, objective="Route work")
+        coordinator.add_step(
+            run_id,
+            f"{run_id}-step",
+            objective="Route",
+            message=ProviderMessage(
+                provider=None, content="route", required_capability="general"
+            ),
+        )
+        coordinator.execute_next_step(
+            run_id,
+            adapter_resolver=lambda message: resolved_providers.append(message.provider)
+            or Adapter(),
+            routing_policy=policy,
+            provider_specs=specs,
+        )
+
+    assert resolved_providers == ["openai", "anthropic"]
+
+
+def test_execute_next_step_fixed_provider_bypasses_capability_routing(tmp_path) -> None:
+    resolved = []
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse("fixed")
+
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Fixed dispatch")
+    message = ProviderMessage(provider="ollama", content="fixed request")
+    coordinator.add_step("run-1", "fixed", objective="Fixed", message=message)
+
+    coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda routed: resolved.append(routed) or Adapter(),
+        routing_policy=ProviderRoutingPolicy(()),
+        provider_specs=(),
+    )
+
+    assert resolved == [message]
+    started = next(
+        entry
+        for entry in coordinator.list_history("run-1")
+        if entry.transition == "step_started"
+    )
+    assert started.required_capability is None
+    assert started.resolved_provider is None
+    assert started.resolved_model is None
+    assert started.routing_reason is None
 
 
 def test_execute_next_step_sends_resolved_context_as_ordered_prior_turns(tmp_path) -> None:

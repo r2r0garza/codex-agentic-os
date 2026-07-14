@@ -18,7 +18,13 @@ from .index import (
     explain_symbol,
     unstaged_index_paths,
 )
-from .providers import DEFAULT_PROVIDER_SPECS, ProviderKind, ProviderSpec
+from .providers import (
+    DEFAULT_PROVIDER_ROUTING_POLICY,
+    DEFAULT_PROVIDER_SPECS,
+    ProviderKind,
+    ProviderRoutingPolicy,
+    ProviderSpec,
+)
 from .runtime import (
     Agent,
     AgentRegistry,
@@ -477,9 +483,24 @@ def _parser() -> argparse.ArgumentParser:
     provider = commands.add_parser("provider", help="inspect configured model providers")
     provider_commands = provider.add_subparsers(dest="provider_command", required=True)
     provider_commands.add_parser("list", help="list default provider specs")
+    routing_policy = provider_commands.add_parser(
+        "routing-policy", help="show capability-routing provider preference order"
+    )
     provider_commands.add_parser(
         "credentials", help="report default provider credential readiness"
     )
+    for command in (execute_next, worker_run, routing_policy):
+        command.add_argument(
+            "--provider-preference",
+            action="append",
+            default=[],
+            choices=[kind.value for kind in ProviderKind],
+            metavar="PROVIDER",
+            help=(
+                "ordered provider preference for capability routing; repeat to "
+                "override the default registry order"
+            ),
+        )
 
     chat = commands.add_parser("chat", help="send ad hoc requests through provider adapters")
     chat_commands = chat.add_subparsers(dest="chat_command", required=True)
@@ -597,8 +618,15 @@ def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, objec
     payloads = []
     for entry in entries:
         payload = asdict(entry)
-        if entry.plan_id is None:
-            payload.pop("plan_id")
+        for optional_field in (
+            "plan_id",
+            "required_capability",
+            "resolved_provider",
+            "resolved_model",
+            "routing_reason",
+        ):
+            if getattr(entry, optional_field) is None:
+                payload.pop(optional_field)
         payloads.append(payload)
     return payloads
 
@@ -793,6 +821,14 @@ def _provider_adapter_resolver() -> Callable[[ProviderMessage], object]:
         return adapter_for(provider_spec)
 
     return resolve
+
+
+def _provider_routing_policy(preferences: Sequence[str]) -> ProviderRoutingPolicy:
+    """Build the explicit capability-routing policy for one CLI invocation."""
+
+    if not preferences:
+        return DEFAULT_PROVIDER_ROUTING_POLICY
+    return ProviderRoutingPolicy(tuple(ProviderKind(value) for value in preferences))
 
 
 def _install_worker_shutdown_signals() -> tuple[Callable[[], bool], Callable[[], None]]:
@@ -1273,6 +1309,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                     result = coordinator.execute_next_step(
                         arguments.run_id,
                         adapter_resolver=_provider_adapter_resolver(),
+                        routing_policy=_provider_routing_policy(
+                            arguments.provider_preference
+                        ),
                     )
                 else:
                     if next_step.sandbox_policy is not None:
@@ -1363,6 +1402,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                     poll_interval=arguments.poll_interval,
                     sandbox_resolver=_persisted_sandbox_resolver(),
                     adapter_resolver=_provider_adapter_resolver(),
+                    routing_policy=_provider_routing_policy(
+                        arguments.provider_preference
+                    ),
                     label=arguments.label,
                     should_continue=should_continue,
                 )
@@ -1380,10 +1422,16 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
             )
         elif arguments.command == "provider":
-            providers = (
-                [spec.to_dict() for spec in DEFAULT_PROVIDER_SPECS]
-                if arguments.provider_command == "list"
-                else [
+            if arguments.provider_command == "list":
+                providers: object = [
+                    spec.to_dict() for spec in DEFAULT_PROVIDER_SPECS
+                ]
+            elif arguments.provider_command == "routing-policy":
+                providers = _provider_routing_policy(
+                    arguments.provider_preference
+                ).to_dict()
+            else:
+                providers = [
                     {
                         "kind": spec.kind.value,
                         "api_key_env": spec.api_key_env,
@@ -1393,7 +1441,6 @@ def main(argv: Sequence[str] | None = None) -> None:
                     }
                     for spec in DEFAULT_PROVIDER_SPECS
                 ]
-            )
             print(
                 json.dumps(
                     providers,

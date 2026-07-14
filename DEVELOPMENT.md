@@ -38,6 +38,16 @@ command performs no network or state-database access:
 codex-agentic-os provider list
 ```
 
+Inspect the ordered provider preference policy used for capability-routed
+steps. The default follows `DEFAULT_PROVIDER_SPECS` order; repeat
+`--provider-preference` to inspect an explicit dispatch override:
+
+```bash
+codex-agentic-os provider routing-policy
+codex-agentic-os provider routing-policy \
+  --provider-preference anthropic --provider-preference openai
+```
+
 Report whether each default provider's declared credential variable is non-empty.
 Credential-free local providers report as configured. This is a local environment
 readiness check only: values are never printed and credentials are not validated:
@@ -302,6 +312,14 @@ codex-agentic-os run add-step run-002 step-002b --objective "Summarize output" \
   --state-db .codex-agentic-os/state.sqlite3
 ```
 
+At dispatch, a capability step selects the first configured provider in the
+explicit preference order that declares the capability. The selected
+provider's default model is used unless the step declared `--model`.
+`run execute-next` and `worker run` accept repeated `--provider-preference`
+flags; omitting them uses the inspectable default policy. Fixed-provider
+steps bypass this routing policy. Selection is deterministic for identical
+provider specs, policy order, and message input.
+
 Declare earlier steps from the same run as explicit provider context by repeating
 `--context-step` in the order their persisted outputs should later be resolved. The
 declaration stores and displays step ids only; it does not copy referenced outputs
@@ -490,6 +508,10 @@ resulting status, responsible agent when known, execution kind (`command` or
 `provider`), and step id when the entry is step-scoped; a `step_started` entry
 for a context-referencing provider step additionally carries the resolved
 `context_step_ids` in declared order as evidence that resolution occurred.
+For a capability-routed provider step, the same `step_started` entry carries
+`required_capability`, `resolved_provider`, `resolved_model`, and a stable
+`routing_reason`. These fields persist across restart and contain no
+credentials or request body.
 Entries never include credentials, raw environment values, command arguments,
 provider request bodies, or terminal outputs:
 

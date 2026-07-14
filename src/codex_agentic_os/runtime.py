@@ -10,7 +10,13 @@ import posixpath
 from typing import Callable, Mapping, Protocol, Sequence
 
 from .chat import ChatAdapter, ChatMessage, ChatRequest, ChatResponse
-from .providers import DEFAULT_PROVIDER_SPECS
+from .providers import (
+    DEFAULT_PROVIDER_ROUTING_POLICY,
+    DEFAULT_PROVIDER_SPECS,
+    ProviderRoute,
+    ProviderRoutingPolicy,
+    ProviderSpec,
+)
 from .sandboxes import SandboxKind
 
 from .state import RunHistoryEntry, StateConflictError, StateRecord, StateStore
@@ -646,7 +652,9 @@ class RunCoordinator:
         )
         return self._run(stored[-1])
 
-    def start_next_step(self, run_id: str) -> RunStep | None:
+    def start_next_step(
+        self, run_id: str, *, provider_route: ProviderRoute | None = None
+    ) -> RunStep | None:
         """Start the next queued step, preserving single-step execution order."""
 
         run = self.get(run_id)
@@ -664,6 +672,15 @@ class RunCoordinator:
         )
         if next_step is None:
             return None
+        if provider_route is not None:
+            if (
+                next_step.message is None
+                or next_step.message.required_capability
+                != provider_route.required_capability
+            ):
+                raise ValueError(
+                    "provider route does not match the next capability-routed step"
+                )
         if next_step.approval_status is ApprovalStatus.PENDING:
             raise ApprovalRequiredError(
                 f"step requires approval before dispatch: {next_step.step_id}"
@@ -720,6 +737,22 @@ class RunCoordinator:
                         step_id=next_step.step_id, agent_id=run.agent_id,
                         execution_kind=self._execution_kind(next_step),
                         context_step_ids=next_step.context_step_ids or None,
+                        required_capability=(
+                            None
+                            if provider_route is None
+                            else provider_route.required_capability
+                        ),
+                        resolved_provider=(
+                            None
+                            if provider_route is None
+                            else provider_route.provider.value
+                        ),
+                        resolved_model=(
+                            None if provider_route is None else provider_route.model
+                        ),
+                        routing_reason=(
+                            None if provider_route is None else provider_route.reason
+                        ),
                     ),
                 ),
             )
@@ -728,6 +761,7 @@ class RunCoordinator:
             next_step.step_id,
             StepStatus.RUNNING,
             resolved_context_step_ids=next_step.context_step_ids or None,
+            provider_route=provider_route,
         )
 
     def execute_next_step(
@@ -737,6 +771,8 @@ class RunCoordinator:
         *,
         sandbox_resolver: SandboxPolicyResolver | None = None,
         adapter_resolver: ChatAdapterResolver | None = None,
+        routing_policy: ProviderRoutingPolicy = DEFAULT_PROVIDER_ROUTING_POLICY,
+        provider_specs: Sequence[ProviderSpec] = DEFAULT_PROVIDER_SPECS,
     ) -> tuple[RunStep, AgentRun] | None:
         """Execute and complete the next queued command or provider message."""
 
@@ -784,7 +820,18 @@ class RunCoordinator:
         else:  # Defensive: durable step validation rejects missing execution input.
             raise ValueError(f"next step has no execution input: {next_step.step_id}")
 
-        running_step = self.start_next_step(run_id)
+        provider_route = None
+        if (
+            next_step.message is not None
+            and next_step.message.required_capability is not None
+        ):
+            provider_route = routing_policy.resolve(
+                next_step.message.required_capability,
+                tuple(provider_specs),
+                model=next_step.message.model,
+            )
+
+        running_step = self.start_next_step(run_id, provider_route=provider_route)
         if running_step is None:  # Defensive: next_step proved queued above.
             return None
         if running_step.command is not None:
@@ -795,8 +842,18 @@ class RunCoordinator:
             return self.complete_step_from_result(running_step.step_id, result)
 
         assert adapter_resolver is not None and running_step.message is not None
+        resolved_message = running_step.message
+        if provider_route is not None:
+            resolved_message = ProviderMessage(
+                provider=provider_route.provider.value,
+                content=running_step.message.content,
+                model=provider_route.model,
+                system=running_step.message.system,
+                temperature=running_step.message.temperature,
+                max_tokens=running_step.message.max_tokens,
+            )
         try:
-            adapter = adapter_resolver(running_step.message)
+            adapter = adapter_resolver(resolved_message)
             system_messages = (
                 (ChatMessage("system", running_step.message.system),)
                 if running_step.message.system is not None
@@ -1145,6 +1202,7 @@ class RunCoordinator:
         *,
         output: Mapping[str, object] | None = None,
         resolved_context_step_ids: Sequence[str] | None = None,
+        provider_route: ProviderRoute | None = None,
     ) -> RunStep:
         """Advance a step through an allowed lifecycle edge."""
 
@@ -1159,6 +1217,15 @@ class RunCoordinator:
             raise ValueError(
                 "resolved context step ids are only valid when starting a step"
             )
+        if provider_route is not None:
+            if status is not StepStatus.RUNNING:
+                raise ValueError("provider route is only valid when starting a step")
+            if (
+                current.message is None
+                or current.message.required_capability
+                != provider_route.required_capability
+            ):
+                raise ValueError("provider route does not match the provider step")
         payload: dict[str, object] = {
             "run_id": current.run_id,
             "position": current.position,
@@ -1188,6 +1255,14 @@ class RunCoordinator:
                 agent_id=run.agent_id,
                 execution_kind=self._execution_kind(current),
                 context_step_ids=resolved_context_step_ids,
+                required_capability=(
+                    None if provider_route is None else provider_route.required_capability
+                ),
+                resolved_provider=(
+                    None if provider_route is None else provider_route.provider.value
+                ),
+                resolved_model=(None if provider_route is None else provider_route.model),
+                routing_reason=(None if provider_route is None else provider_route.reason),
             )
         except StateConflictError as error:
             raise ValueError(f"step transition conflict: {step_id}") from error

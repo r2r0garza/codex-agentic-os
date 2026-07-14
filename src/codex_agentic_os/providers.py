@@ -65,6 +65,77 @@ class ProviderSpec:
         return data
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderRoute:
+    """One deterministic capability-routing decision."""
+
+    required_capability: str
+    provider: ProviderKind
+    model: str
+    reason: str
+
+    def to_dict(self) -> dict[str, str]:
+        """Return inspectable, credential-free routing provenance."""
+
+        return {
+            "required_capability": self.required_capability,
+            "provider": self.provider.value,
+            "model": self.model,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRoutingPolicy:
+    """Explicit provider preference order for capability-routed messages."""
+
+    provider_order: tuple[ProviderKind, ...]
+
+    def __post_init__(self) -> None:
+        if len(set(self.provider_order)) != len(self.provider_order):
+            raise ValueError("provider routing policy must not contain duplicates")
+
+    def to_dict(self) -> dict[str, list[str]]:
+        """Return the operator-visible ordered preference policy."""
+
+        return {"provider_order": [kind.value for kind in self.provider_order]}
+
+    def resolve(
+        self,
+        required_capability: str,
+        provider_specs: tuple[ProviderSpec, ...],
+        *,
+        model: str | None = None,
+    ) -> ProviderRoute:
+        """Choose the first configured capable provider in policy order."""
+
+        if not required_capability.strip():
+            raise ValueError("required capability must not be empty")
+        specs_by_kind: dict[ProviderKind, ProviderSpec] = {}
+        for spec in provider_specs:
+            if spec.kind in specs_by_kind:
+                raise ValueError(f"duplicate configured provider: {spec.kind.value}")
+            specs_by_kind[spec.kind] = spec
+        for position, kind in enumerate(self.provider_order, start=1):
+            spec = specs_by_kind.get(kind)
+            if spec is None or required_capability not in spec.capabilities:
+                continue
+            resolved_model = model or spec.model
+            return ProviderRoute(
+                required_capability=required_capability,
+                provider=kind,
+                model=resolved_model,
+                reason=(
+                    f"policy position {position} selected {kind.value} as the first "
+                    f"configured provider declaring capability {required_capability!r}"
+                ),
+            )
+        raise ValueError(
+            "no configured provider satisfies required capability: "
+            f"{required_capability}"
+        )
+
+
 DEFAULT_PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
     ProviderSpec(
         kind=ProviderKind.OPENAI,
@@ -104,4 +175,9 @@ DEFAULT_PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
         capabilities=("general",),
     ),
     ProviderSpec(kind=ProviderKind.OPENAI_COMPATIBLE, model="custom-model"),
+)
+
+
+DEFAULT_PROVIDER_ROUTING_POLICY = ProviderRoutingPolicy(
+    tuple(spec.kind for spec in DEFAULT_PROVIDER_SPECS)
 )

@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 
 from codex_agentic_os.cli import main
-from codex_agentic_os.providers import DEFAULT_PROVIDER_SPECS
+from codex_agentic_os.providers import (
+    DEFAULT_PROVIDER_ROUTING_POLICY,
+    DEFAULT_PROVIDER_SPECS,
+)
 
 
 def test_cli_provider_list_matches_registry_order_and_fields(capsys) -> None:
@@ -52,6 +55,33 @@ def test_cli_provider_list_performs_no_network_or_state_access(monkeypatch, caps
 
     payload = json.loads(capsys.readouterr().out)
     assert len(payload) == len(DEFAULT_PROVIDER_SPECS)
+
+
+def test_cli_provider_routing_policy_reports_order_without_accessing_secrets(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "super-secret-value")
+
+    main([
+        "provider",
+        "routing-policy",
+        "--provider-preference",
+        "anthropic",
+        "--provider-preference",
+        "openai",
+    ])
+
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"provider_order": ["anthropic", "openai"]}
+    assert "super-secret-value" not in output
+
+
+def test_cli_provider_routing_policy_defaults_to_registry_order(capsys) -> None:
+    main(["provider", "routing-policy"])
+
+    assert json.loads(capsys.readouterr().out) == (
+        DEFAULT_PROVIDER_ROUTING_POLICY.to_dict()
+    )
 
 
 def test_cli_provider_credentials_reports_ordered_readiness(monkeypatch, capsys) -> None:

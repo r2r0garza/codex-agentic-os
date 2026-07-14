@@ -36,6 +36,10 @@ class RunHistoryEntry:
     retried_step_id: str | None = None
     context_step_ids: tuple[str, ...] | None = None
     plan_id: str | None = None
+    required_capability: str | None = None
+    resolved_provider: str | None = None
+    resolved_model: str | None = None
+    routing_reason: str | None = None
 
 
 class StateConflictError(ValueError):
@@ -69,6 +73,10 @@ class StateStore:
             execution_kind TEXT,
             retried_step_id TEXT,
             plan_id TEXT,
+            required_capability TEXT,
+            resolved_provider TEXT,
+            resolved_model TEXT,
+            routing_reason TEXT,
             PRIMARY KEY (run_id, sequence)
         )
     """
@@ -119,6 +127,16 @@ class StateStore:
                 )
             if "plan_id" not in history_columns:
                 connection.execute("ALTER TABLE run_history ADD COLUMN plan_id TEXT")
+            for column in (
+                "required_capability",
+                "resolved_provider",
+                "resolved_model",
+                "routing_reason",
+            ):
+                if column not in history_columns:
+                    connection.execute(
+                        f"ALTER TABLE run_history ADD COLUMN {column} TEXT"
+                    )
             connection.commit()
 
     def put(
@@ -241,6 +259,10 @@ class StateStore:
                     retried_step_id=entry.retried_step_id,
                     context_step_ids=entry.context_step_ids,
                     plan_id=entry.plan_id,
+                    required_capability=entry.required_capability,
+                    resolved_provider=entry.resolved_provider,
+                    resolved_model=entry.resolved_model,
+                    routing_reason=entry.routing_reason,
                 )
             connection.commit()
         return tuple(stored)
@@ -652,6 +674,10 @@ class StateStore:
         agent_id: str | None = None,
         execution_kind: str | None = None,
         context_step_ids: Sequence[str] | None = None,
+        required_capability: str | None = None,
+        resolved_provider: str | None = None,
+        resolved_model: str | None = None,
+        routing_reason: str | None = None,
     ) -> StateRecord:
         """Advance one step in a write transaction when it matches an expected state."""
 
@@ -701,6 +727,10 @@ class StateStore:
                     agent_id=agent_id,
                     execution_kind=execution_kind,
                     context_step_ids=context_step_ids,
+                    required_capability=required_capability,
+                    resolved_provider=resolved_provider,
+                    resolved_model=resolved_model,
+                    routing_reason=routing_reason,
                 )
             connection.commit()
         return StateRecord("step", step_id, status, json.loads(encoded), new_revision)
@@ -962,6 +992,10 @@ class StateStore:
                     retried_step_id=entry.retried_step_id,
                     context_step_ids=entry.context_step_ids,
                     plan_id=entry.plan_id,
+                    required_capability=entry.required_capability,
+                    resolved_provider=entry.resolved_provider,
+                    resolved_model=entry.resolved_model,
+                    routing_reason=entry.routing_reason,
                 )
             connection.commit()
         return stored_plan, tuple(stored_steps)
@@ -975,7 +1009,9 @@ class StateStore:
             rows = connection.execute(
                 """
                 SELECT run_id, sequence, transition, status, step_id, agent_id,
-                       execution_kind, retried_step_id, context_step_ids, plan_id
+                       execution_kind, retried_step_id, context_step_ids, plan_id,
+                       required_capability, resolved_provider, resolved_model,
+                       routing_reason
                 FROM run_history WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
@@ -992,6 +1028,10 @@ class StateStore:
                 retried_step_id=row[7],
                 context_step_ids=None if row[8] is None else tuple(json.loads(row[8])),
                 plan_id=row[9],
+                required_capability=row[10],
+                resolved_provider=row[11],
+                resolved_model=row[12],
+                routing_reason=row[13],
             )
             for row in rows
         )
@@ -1087,6 +1127,10 @@ class StateStore:
         retried_step_id: str | None = None,
         context_step_ids: Sequence[str] | None = None,
         plan_id: str | None = None,
+        required_capability: str | None = None,
+        resolved_provider: str | None = None,
+        resolved_model: str | None = None,
+        routing_reason: str | None = None,
     ) -> None:
         """Append one ordered history entry on a caller-owned run mutation transaction."""
 
@@ -1098,8 +1142,10 @@ class StateStore:
             """
             INSERT INTO run_history
                 (run_id, sequence, transition, status, step_id, agent_id,
-                 execution_kind, retried_step_id, context_step_ids, plan_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 execution_kind, retried_step_id, context_step_ids, plan_id,
+                 required_capability, resolved_provider, resolved_model,
+                 routing_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1112,6 +1158,10 @@ class StateStore:
                 retried_step_id,
                 None if context_step_ids is None else json.dumps(list(context_step_ids)),
                 plan_id,
+                required_capability,
+                resolved_provider,
+                resolved_model,
+                routing_reason,
             ),
         )
 

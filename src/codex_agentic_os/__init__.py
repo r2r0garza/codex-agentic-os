@@ -1,6 +1,6 @@
 """Provider-neutral foundations for codex-agentic-os."""
 
-from .providers import ProviderKind, ProviderSpec
+from .providers import ProviderKind, ProviderRoute, ProviderRoutingPolicy, ProviderSpec
 from .sandboxes import ContainerSandbox, SandboxKind, SandboxResult, SandboxSpec
 from .state import StateRecord, StateStore
 from .chat import ChatMessage, ChatRequest, ChatResponse, ChatUsage
@@ -40,6 +40,8 @@ __all__ = [
     "ExecutionResult",
     "ProviderKind",
     "ProviderMessage",
+    "ProviderRoute",
+    "ProviderRoutingPolicy",
     "ProviderSpec",
     "RunCoordinator",
     "RunStatus",
