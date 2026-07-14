@@ -7,3 +7,25 @@ build/
 *.egg-info/
 .DS_Store
 .codex-agentic-os/
+
+# dashboard (Next.js + shadcn/ui frontend)
+dashboard/node_modules
+dashboard/.pnp
+dashboard/.pnp.*
+dashboard/.yarn/*
+!dashboard/.yarn/patches
+!dashboard/.yarn/plugins
+!dashboard/.yarn/releases
+!dashboard/.yarn/versions
+dashboard/coverage
+dashboard/.next/
+dashboard/out/
+*.pem
+dashboard/npm-debug.log*
+dashboard/yarn-debug.log*
+dashboard/yarn-error.log*
+dashboard/pnpm-debug.log*
+dashboard/.env*
+!dashboard/.env.example
+dashboard/*.tsbuildinfo
+dashboard/next-env.d.ts
