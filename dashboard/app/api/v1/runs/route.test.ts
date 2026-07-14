@@ -36,20 +36,28 @@ describe("GET /api/v1/runs proxy", () => {
       new Response(JSON.stringify(runs), {
         status: 200,
         headers: { "content-type": "application/json" },
-      }),
+      })
     )
     vi.stubGlobal("fetch", fetchImpl)
 
     const response = await GET()
 
-    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:9000/api/v1/runs")
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:9000/api/v1/runs",
+      {
+        method: "GET",
+      }
+    )
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual(runs)
   })
 
   it("returns a structured 502 when the backend is unreachable", async () => {
     process.env.API_BASE_URL = "http://127.0.0.1:9000"
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("fetch failed"))
+    )
 
     const response = await GET()
 

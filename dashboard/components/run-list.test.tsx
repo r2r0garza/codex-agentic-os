@@ -18,12 +18,9 @@ afterEach(() => {
 
 describe("RunList", () => {
   it("shows a loading state before the API responds", () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockReturnValue(new Promise(() => {})),
-    )
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => {})))
 
-    render(<RunList />)
+    render(<RunList onSelect={vi.fn()} />)
 
     expect(screen.getByTestId("run-list-loading")).toBeInTheDocument()
   })
@@ -49,10 +46,10 @@ describe("RunList", () => {
     ]
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(runs)))
 
-    render(<RunList />)
+    render(<RunList onSelect={vi.fn()} />)
 
     await waitFor(() =>
-      expect(screen.getByTestId("run-list-table")).toBeInTheDocument(),
+      expect(screen.getByTestId("run-list-table")).toBeInTheDocument()
     )
 
     expect(screen.getByText("run-001")).toBeInTheDocument()
@@ -64,10 +61,10 @@ describe("RunList", () => {
   it("shows an explicit empty state without fabricating rows", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse([])))
 
-    render(<RunList />)
+    render(<RunList onSelect={vi.fn()} />)
 
     await waitFor(() =>
-      expect(screen.getByTestId("run-list-empty")).toBeInTheDocument(),
+      expect(screen.getByTestId("run-list-empty")).toBeInTheDocument()
     )
     expect(screen.queryByTestId("run-list-table")).not.toBeInTheDocument()
   })
@@ -75,13 +72,13 @@ describe("RunList", () => {
   it("shows an explicit error state when the API is unreachable", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockRejectedValue(new TypeError("fetch failed")),
+      vi.fn().mockRejectedValue(new TypeError("fetch failed"))
     )
 
-    render(<RunList />)
+    render(<RunList onSelect={vi.fn()} />)
 
     await waitFor(() =>
-      expect(screen.getByTestId("run-list-error")).toBeInTheDocument(),
+      expect(screen.getByTestId("run-list-error")).toBeInTheDocument()
     )
     expect(screen.queryByTestId("run-list-table")).not.toBeInTheDocument()
   })

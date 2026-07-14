@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { ApiError, fetchRunList } from "@/lib/api"
-import type { RunSummary } from "@/lib/api"
+import { ApiError, fetchRunDetailBundle, fetchRunList } from "@/lib/api"
+import type { RunDetailBundle, RunSummary } from "@/lib/api"
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -29,6 +29,7 @@ describe("fetchRunList", () => {
 
     expect(fetchImpl).toHaveBeenCalledWith(
       "http://127.0.0.1:8080/api/v1/runs",
+      { method: "GET" }
     )
     expect(result).toEqual(runs)
   })
@@ -45,11 +46,11 @@ describe("fetchRunList", () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValue(
-        jsonResponse({ error: "unknown run" }, { status: 404 }),
+        jsonResponse({ error: "unknown run" }, { status: 404 })
       )
 
     await expect(
-      fetchRunList("http://127.0.0.1:8080", fetchImpl),
+      fetchRunList("http://127.0.0.1:8080", fetchImpl)
     ).rejects.toThrow(new ApiError("unknown run"))
   })
 
@@ -57,7 +58,7 @@ describe("fetchRunList", () => {
     const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed"))
 
     await expect(
-      fetchRunList("http://127.0.0.1:8080", fetchImpl),
+      fetchRunList("http://127.0.0.1:8080", fetchImpl)
     ).rejects.toThrow(ApiError)
   })
 
@@ -66,6 +67,64 @@ describe("fetchRunList", () => {
 
     await fetchRunList(undefined, fetchImpl)
 
-    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/runs")
+    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/runs", { method: "GET" })
+  })
+})
+
+describe("fetchRunDetailBundle", () => {
+  it("requests only the four read-only GET contracts for one encoded run id", async () => {
+    const bundle: RunDetailBundle = {
+      detail: {
+        run: {
+          run_id: "run/001",
+          objective: "inspect a mixed run",
+          status: "running",
+          revision: 2,
+          agent_id: "agent-1",
+          output: null,
+        },
+        steps: [],
+      },
+      history: [],
+      approvals: [],
+      usage: {
+        run_id: "run/001",
+        steps: [],
+        aggregate: {
+          steps_with_usage_available: 0,
+          steps_with_usage_unavailable: 0,
+          input_tokens: null,
+          output_tokens: null,
+        },
+      },
+    }
+    const responses = [
+      bundle.detail,
+      bundle.history,
+      bundle.approvals,
+      bundle.usage,
+    ]
+    const fetchImpl = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(jsonResponse(responses.shift()))
+      )
+
+    await expect(
+      fetchRunDetailBundle("run/001", "http://dashboard.test", fetchImpl)
+    ).resolves.toEqual(bundle)
+
+    expect(fetchImpl.mock.calls).toEqual([
+      ["http://dashboard.test/api/v1/runs/run%2F001", { method: "GET" }],
+      [
+        "http://dashboard.test/api/v1/runs/run%2F001/history",
+        { method: "GET" },
+      ],
+      [
+        "http://dashboard.test/api/v1/runs/run%2F001/approvals",
+        { method: "GET" },
+      ],
+      ["http://dashboard.test/api/v1/runs/run%2F001/usage", { method: "GET" }],
+    ])
   })
 })

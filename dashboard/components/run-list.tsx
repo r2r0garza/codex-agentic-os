@@ -3,6 +3,7 @@
 import * as React from "react"
 
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Empty,
   EmptyDescription,
@@ -18,7 +19,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { ApiError, fetchRunList, type RunStatus, type RunSummary } from "@/lib/api"
+import { usePollingLoad } from "@/hooks/use-polling-load"
+import { fetchRunList, type RunStatus } from "@/lib/api"
+
+export const DASHBOARD_POLL_INTERVAL_MS = 2_000
 
 const STATUS_BADGE_VARIANT: Record<
   RunStatus,
@@ -31,36 +35,19 @@ const STATUS_BADGE_VARIANT: Record<
   cancelled: "outline",
 }
 
-type LoadState =
-  | { kind: "loading" }
-  | { kind: "error"; message: string }
-  | { kind: "ready"; runs: RunSummary[] }
+export function StatusBadge({ status }: { status: RunStatus }) {
+  return <Badge variant={STATUS_BADGE_VARIANT[status]}>{status}</Badge>
+}
 
-export function RunList() {
-  const [state, setState] = React.useState<LoadState>({ kind: "loading" })
-
-  React.useEffect(() => {
-    let cancelled = false
-
-    fetchRunList()
-      .then((runs) => {
-        if (!cancelled) {
-          setState({ kind: "ready", runs })
-        }
-      })
-      .catch((error: unknown) => {
-        if (cancelled) {
-          return
-        }
-        const message =
-          error instanceof ApiError ? error.message : "unable to load runs"
-        setState({ kind: "error", message })
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
+export function RunList({
+  onSelect,
+  pollIntervalMs = DASHBOARD_POLL_INTERVAL_MS,
+}: {
+  onSelect: (runId: string) => void
+  pollIntervalMs?: number
+}) {
+  const load = React.useCallback(() => fetchRunList(), [])
+  const state = usePollingLoad(load, pollIntervalMs)
 
   if (state.kind === "loading") {
     return (
@@ -83,7 +70,7 @@ export function RunList() {
     )
   }
 
-  if (state.runs.length === 0) {
+  if (state.data.length === 0) {
     return (
       <Empty data-testid="run-list-empty">
         <EmptyHeader>
@@ -104,19 +91,27 @@ export function RunList() {
           <TableHead>Objective</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Agent</TableHead>
+          <TableHead className="text-right">Inspect</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
-        {state.runs.map((run) => (
+        {state.data.map((run) => (
           <TableRow key={run.run_id}>
             <TableCell className="font-mono">{run.run_id}</TableCell>
             <TableCell>{run.objective}</TableCell>
             <TableCell>
-              <Badge variant={STATUS_BADGE_VARIANT[run.status]}>
-                {run.status}
-              </Badge>
+              <StatusBadge status={run.status} />
             </TableCell>
             <TableCell>{run.agent_id ?? "unassigned"}</TableCell>
+            <TableCell className="text-right">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onSelect(run.run_id)}
+              >
+                View
+              </Button>
+            </TableCell>
           </TableRow>
         ))}
       </TableBody>
