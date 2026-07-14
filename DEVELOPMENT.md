@@ -615,7 +615,12 @@ served under a stable `/api/v1` base path:
 
 - `GET /api/v1/runs` — the same payload as `run list`.
 - `GET /api/v1/runs/{run_id}` — the same payload as `run inspect`,
-  including ordered steps.
+  including ordered steps, except that a completed step's captured
+  terminal output (`stdout`/`stderr`) and provider response
+  (`content`/`raw`) are each replaced with `"<redacted>"`. Declared step
+  input (command argv, provider `message.content`/`system`) is shown
+  exactly as `run inspect` shows it. See Decision 0008 for why the HTTP
+  surface redacts captured output that the CLI does not.
 - `GET /api/v1/runs/{run_id}/history` — the same payload as `run history`.
 - `GET /api/v1/runs/{run_id}/approvals` — the same sanitized payload as
   `run approvals`.
@@ -623,10 +628,14 @@ served under a stable `/api/v1` base path:
   aggregate as `run usage`, including explicitly unavailable usage.
 
 An unrecognized path or unknown run id returns a structured `{"error":
-...}` JSON body with `404`; any non-`GET` method returns the same shape
-with `405`. There are no mutation routes of any kind. The server runs in
-the foreground until interrupted (Ctrl-C or SIGTERM), exiting cleanly like
-`run watch` and `worker run`:
+...}` JSON body with `404`; any non-`GET` method — including methods with
+no built-in handler such as `OPTIONS`, `TRACE`, or `CONNECT` — returns the
+same shape with `405` and an `Allow: GET` header. Every other
+server-detected failure (an unparseable request line, an unsupported HTTP
+version) also returns this `{"error": ...}` JSON shape rather than the
+stdlib's default HTML error page. There are no mutation routes of any
+kind. The server runs in the foreground until interrupted (Ctrl-C or
+SIGTERM), exiting cleanly like `run watch` and `worker run`:
 
 ```bash
 codex-agentic-os api serve --port 8080

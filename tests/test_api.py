@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import signal
+import socket
 import threading
 import urllib.error
 import urllib.request
@@ -11,6 +12,7 @@ import urllib.request
 import pytest
 
 from codex_agentic_os.api import build_server, is_loopback_bind_host, serve_until_stopped
+from codex_agentic_os.chat import ChatResponse, ChatUsage
 from codex_agentic_os.cli import main
 from codex_agentic_os.payloads import (
     _approval_payload,
@@ -24,8 +26,10 @@ from codex_agentic_os.runtime import (
     ProviderMessage,
     RunCoordinator,
     RunStatus,
+    SandboxPolicy,
     StepStatus,
 )
+from codex_agentic_os.sandboxes import SandboxKind, SandboxResult
 from codex_agentic_os.state import StateStore
 
 
@@ -129,6 +133,64 @@ def _seed_approval_and_usage(database) -> RunCoordinator:
                 "unavailable_reason": None,
             },
         },
+    )
+    return coordinator
+
+
+def _seed_completed_steps_with_sensitive_output(database) -> RunCoordinator:
+    """Seed a run with a completed command step and a completed provider step.
+
+    Both steps carry raw values the HTTP API must never serialize (captured
+    terminal output, a resolved passthrough environment value, and provider
+    request/response text) while the CLI's own inspection commands continue
+    to show them, matching the read-only HTTP redaction contract this module
+    tests against.
+    """
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-sensitive", objective="Inspect sensitive evidence")
+    coordinator.add_step(
+        "run-sensitive",
+        "command-1",
+        objective="Run command",
+        command=("true",),
+        sandbox_policy=SandboxPolicy(
+            kind=SandboxKind.DOCKER, env_passthrough=("API_TOKEN",)
+        ),
+    )
+    coordinator.add_step(
+        "run-sensitive",
+        "provider-1",
+        objective="Ask provider",
+        message=ProviderMessage(
+            provider="ollama",
+            content="private request prompt",
+            system="private system prompt",
+        ),
+    )
+    coordinator.transition("run-sensitive", RunStatus.RUNNING)
+    coordinator.start_next_step("run-sensitive")
+    coordinator.complete_step_from_result(
+        "command-1",
+        SandboxResult(
+            (
+                "docker", "run", "--env", "API_TOKEN=runtime-only-secret",
+                "python:3.12-slim", "true",
+            ),
+            0,
+            "private stdout",
+            "private stderr",
+        ),
+    )
+    coordinator.start_next_step("run-sensitive")
+    coordinator.complete_step_from_chat_response(
+        "provider-1",
+        ChatResponse(
+            content="private response text",
+            model="served-model",
+            raw={"echo": "private raw envelope"},
+            usage=ChatUsage(available=True, input_tokens=1, output_tokens=1),
+        ),
     )
     return coordinator
 
@@ -467,3 +529,201 @@ def test_cli_api_serve_stops_cleanly_on_shutdown_signal(
     payload = json.loads(capsys.readouterr().out)
     assert payload["host"] == "127.0.0.1"
     assert isinstance(payload["port"], int)
+
+
+def test_http_api_run_detail_redacts_captured_terminal_and_provider_output(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_completed_steps_with_sensitive_output(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        body = _get_json(port, "/api/v1/runs/run-sensitive")
+
+    steps = {step["step_id"]: step for step in body["steps"]}
+    command_output = steps["command-1"]["output"]
+    assert command_output["stdout"] == "<redacted>"
+    assert command_output["stderr"] == "<redacted>"
+    assert command_output["exit_code"] == 0
+    assert command_output["command"] == [
+        "docker", "run", "--env", "API_TOKEN", "python:3.12-slim", "true",
+    ]
+    assert steps["command-1"]["command"] == ["true"]
+
+    provider_step = steps["provider-1"]
+    # Declared step input (the prompt the operator authored) stays visible,
+    # matching the CLI, exactly like command argv above.
+    assert provider_step["message"]["content"] == "private request prompt"
+    assert provider_step["message"]["system"] == "private system prompt"
+    assert provider_step["message"]["provider"] == "ollama"
+    # Captured provider response output is redacted.
+    assert provider_step["output"]["content"] == "<redacted>"
+    assert provider_step["output"]["raw"] == "<redacted>"
+    assert provider_step["output"]["model"] == "served-model"
+    assert provider_step["output"]["usage"] == {
+        "available": True,
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "raw": None,
+        "unavailable_reason": None,
+    }
+
+
+def test_http_api_run_detail_never_serializes_sensitive_raw_values(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_completed_steps_with_sensitive_output(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/v1/runs/run-sensitive"
+        ) as response:
+            raw_body = response.read().decode("utf-8")
+
+    for sensitive_value in (
+        "private stdout",
+        "private stderr",
+        "private response text",
+        "private raw envelope",
+        "runtime-only-secret",
+    ):
+        assert sensitive_value not in raw_body
+    # Declared step input is expected to be visible, matching the CLI.
+    assert "private request prompt" in raw_body
+
+
+def test_cli_run_inspect_shows_full_detail_while_http_redacts_captured_output(
+    tmp_path, capsys
+) -> None:
+    """The CLI keeps full local-operator detail; only the HTTP surface redacts it.
+
+    This is a deliberate divergence from exact CLI/HTTP contract parity,
+    recorded in .decisions/0008: the HTTP loopback API is a broader
+    co-resident-process surface than the interactive CLI, so it redacts a
+    completed step's captured terminal/provider output that the CLI still
+    shows. Declared step input (command argv, provider message content)
+    stays visible on both surfaces.
+    """
+
+    database = tmp_path / "state.sqlite3"
+    _seed_completed_steps_with_sensitive_output(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    main(["run", "inspect", "run-sensitive", "--state-db", str(database)])
+    cli_payload = json.loads(capsys.readouterr().out)
+    cli_steps = {step["step_id"]: step for step in cli_payload["steps"]}
+    assert cli_steps["command-1"]["output"]["stdout"] == "private stdout"
+    assert cli_steps["provider-1"]["output"]["content"] == "private response text"
+
+    with _running_server(coordinator) as port:
+        http_payload = _get_json(port, "/api/v1/runs/run-sensitive")
+
+    http_steps = {step["step_id"]: step for step in http_payload["steps"]}
+    assert http_steps["command-1"]["output"]["stdout"] == "<redacted>"
+    assert http_steps["provider-1"]["output"]["content"] == "<redacted>"
+    # Declared input matches exactly between the two surfaces.
+    assert (
+        http_steps["provider-1"]["message"]
+        == cli_steps["provider-1"]["message"]
+    )
+    assert http_payload != cli_payload
+
+
+def _raw_http_response(port: int, request_line: bytes) -> bytes:
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+        connection.sendall(request_line)
+        connection.settimeout(5)
+        chunks = []
+        try:
+            while True:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        except TimeoutError:
+            pass
+        return b"".join(chunks)
+
+
+@pytest.mark.parametrize("method", ["OPTIONS", "TRACE", "CONNECT", "FOOBAR"])
+def test_http_api_unimplemented_methods_return_structured_405_without_mutation(
+    tmp_path, method
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_database(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+    before = _run_list_payload(coordinator)
+
+    with _running_server(coordinator) as port:
+        response = _raw_http_response(
+            port, f"{method} /api/v1/runs HTTP/1.1\r\nHost: x\r\n\r\n".encode()
+        )
+
+    header_block, _, body = response.partition(b"\r\n\r\n")
+    assert b"405 Method Not Allowed" in header_block
+    assert b"Content-Type: application/json" in header_block
+    assert b"Allow: GET" in header_block
+    assert json.loads(body) == {"error": f"unsupported method: {method}"}
+    assert _run_list_payload(RunCoordinator(StateStore(database, read_only=True))) == before
+
+
+def test_http_api_malformed_request_line_returns_structured_error_without_html(
+    tmp_path,
+) -> None:
+    """An unparseable request line gets the API's JSON error shape, not HTML.
+
+    ``BaseHTTPRequestHandler`` detects this failure before a real HTTP
+    version is established, so (per the stdlib's own HTTP/0.9 framing rules)
+    the wire response here is the bare error body with no status line or
+    headers — that framing quirk is unrelated to this handler's error
+    contract. What this test proves is the body itself: the established
+    ``{"error": ...}`` JSON shape, never the stdlib's default HTML error
+    page or an unhandled traceback.
+    """
+
+    database = tmp_path / "state.sqlite3"
+    _seed_database(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+
+    with _running_server(coordinator) as port:
+        response = _raw_http_response(port, b"not a valid request line at all\r\n\r\n")
+
+    decoded = response.decode("utf-8", errors="replace")
+    assert "<html" not in decoded.lower()
+    assert "Traceback" not in decoded
+    parsed = json.loads(response)
+    assert "error" in parsed
+    assert "Bad request version" in parsed["error"]
+
+
+@pytest.mark.parametrize("suffix", ["", "/history", "/approvals", "/usage"])
+def test_http_api_mutation_methods_rejected_on_run_scoped_routes(
+    tmp_path, suffix
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    _seed_database(database)
+    coordinator = RunCoordinator(StateStore(database, read_only=True))
+    before = _run_list_payload(coordinator)
+
+    with _running_server(coordinator) as port:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/v1/runs/run-1{suffix}", method="POST"
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+
+    assert error.value.code == 405
+    assert error.value.headers.get("Allow") == "GET"
+    assert json.loads(error.value.read()) == {"error": "unsupported method: POST"}
+    assert _run_list_payload(RunCoordinator(StateStore(database, read_only=True))) == before
+
+
+def test_http_api_route_inventory_exposes_no_mutation_handler() -> None:
+    from codex_agentic_os.api import _ReadOnlyAPIRequestHandler
+
+    mutation_methods = ("POST", "PUT", "PATCH", "DELETE", "HEAD")
+    for method in mutation_methods:
+        handler = getattr(_ReadOnlyAPIRequestHandler, f"do_{method}")
+        assert handler is _ReadOnlyAPIRequestHandler._reject_mutation
+    assert _ReadOnlyAPIRequestHandler.do_GET is not _ReadOnlyAPIRequestHandler._reject_mutation

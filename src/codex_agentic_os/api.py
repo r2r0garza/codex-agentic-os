@@ -31,6 +31,9 @@ from .runtime import RunCoordinator
 API_BASE_PATH = "/api/v1"
 DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 
+_REDACTED = "<redacted>"
+_REDACTED_OUTPUT_KEYS = ("stdout", "stderr", "content", "raw")
+
 _RUNS_PATH = f"{API_BASE_PATH}/runs"
 _RUN_DETAIL_PATTERN = re.compile(rf"^{re.escape(_RUNS_PATH)}/(?P<run_id>[^/]+)$")
 _RUN_HISTORY_PATTERN = re.compile(rf"^{re.escape(_RUNS_PATH)}/(?P<run_id>[^/]+)/history$")
@@ -52,6 +55,30 @@ def is_loopback_bind_host(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _redact_step_for_http(step_payload: dict[str, object]) -> dict[str, object]:
+    """Strip a completed step's captured terminal/provider output for HTTP.
+
+    ``_step_payload`` (shared with the CLI's ``run inspect``/``inspect-step``)
+    keeps a completed step's captured stdout/stderr and provider response
+    text/raw envelope, because a local operator invoking the CLI directly
+    already has that trust level. The loopback HTTP API is a broader surface
+    reachable by any co-resident process, so it redacts those specific
+    captured-result values before serving a run's step detail. Declared step
+    inputs (command argv and provider message content) stay visible over
+    HTTP exactly as the CLI shows them: they are operator-authored intent
+    the operator already knows, not captured execution results, and
+    command argv never carries resolved secret values (only passthrough
+    names survive dispatch-time substitution).
+    """
+
+    output = step_payload.get("output")
+    if isinstance(output, dict):
+        for key in _REDACTED_OUTPUT_KEYS:
+            if key in output:
+                output[key] = _REDACTED
+    return step_payload
 
 
 class _ReadOnlyAPIRequestHandler(BaseHTTPRequestHandler):
@@ -100,7 +127,9 @@ class _ReadOnlyAPIRequestHandler(BaseHTTPRequestHandler):
         if self.coordinator.get(run_id) is None:
             self._respond_error(HTTPStatus.NOT_FOUND, f"run does not exist: {run_id}")
             return
-        self._respond(HTTPStatus.OK, _run_payload(self.coordinator, run_id))
+        payload = _run_payload(self.coordinator, run_id)
+        payload["steps"] = [_redact_step_for_http(step) for step in payload["steps"]]
+        self._respond(HTTPStatus.OK, payload)
 
     def _respond_history(self, run_id: str) -> None:
         if self.coordinator.get(run_id) is None:
@@ -138,6 +167,34 @@ class _ReadOnlyAPIRequestHandler(BaseHTTPRequestHandler):
     do_PATCH = _reject_mutation
     do_DELETE = _reject_mutation
     do_HEAD = _reject_mutation
+
+    def send_error(  # noqa: N802 - overriding BaseHTTPRequestHandler's stdlib name
+        self, code: int, message: str | None = None, explain: str | None = None
+    ) -> None:
+        """Return the established structured JSON error for stdlib-triggered failures.
+
+        ``BaseHTTPRequestHandler`` calls this directly (bypassing every route
+        handler above) for conditions no ``do_*`` method ever sees: an
+        unparseable request line, an unsupported protocol version, or an
+        HTTP method with no ``do_*`` handler at all (``OPTIONS``, ``TRACE``,
+        ``CONNECT``, or any other verb). Left to the base implementation,
+        those responses are an HTML error page instead of this API's
+        ``{"error": ...}`` JSON contract. A missing ``do_*`` handler is a
+        mutation-shaped failure exactly like the methods rejected above, so
+        it is routed through the same structured 405 response; every other
+        stdlib-triggered failure gets a structured error at its original
+        status.
+        """
+
+        if code == HTTPStatus.NOT_IMPLEMENTED:
+            self._reject_mutation()
+            return
+        try:
+            status = HTTPStatus(code)
+        except ValueError:
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
+        self.close_connection = True
+        self._respond_error(status, message or status.phrase)
 
 
 class _LoopbackHTTPServer(HTTPServer):
