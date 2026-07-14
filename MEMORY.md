@@ -1,5 +1,17 @@
 # Automation Memory
 
+- Run: 2026-07-14T17:34:37Z — retrospective run (scheduled).
+- Active milestone at start: Sprint 18 "Read-only operator web dashboard" (#18). All four implementation issues (#112-#115) were closed, so the run selected retrospective mode and created retrospective issue #116; no implementation issue was selected or created.
+- Retrospective: every exit criterion passed. The Next.js + shadcn/ui dashboard renders run list/status plus ordered steps, lifecycle history, pending approvals, and usage through GET-only polling; explicit API failures replace stale data; Decision 0008's HTTP redaction boundary is preserved; DEVELOPMENT.md documents paired startup; and the repository-owned review harness demonstrates the vertical workflow. Created and closed #116 with the evidence, appended the passing disposition to milestone #18, and closed Sprint 18 with no remediation required.
+- Operator review: reran `scripts/dashboard-operator-review.sh` against isolated durable state and a real worker/Docker command execution. The browser showed `dashboard-review` running, `command-step` first/succeeded, `approval-step` second/queued, worker lifecycle provenance, “Publish the reviewed result” visibly pending, and provider usage explicitly unavailable. The product DOM had only “Back to runs,” no forms or inputs, no approve/reject/cancel/retry labels, and no visible `<redacted>` literal. Ctrl-C stopped both servers and the database SHA-256 digest remained unchanged.
+- Verification: activated `.venv`; full `pytest` 720 passed in 13.10s; dashboard `pnpm test` 23 passed, `pnpm typecheck` clean, and `pnpm build` clean; `sh -n scripts/dashboard-operator-review.sh`; `codex-agentic-os index check` current; `git diff --check` clean.
+- Durable state: retrospective #116 is closed and Sprint 18 is closed on GitHub; this MEMORY handoff is the run's only repository change and is committed/pushed as the durable record.
+- Blocked review: repository-wide open `blocked` search is empty. Resulting active milestone Sprint 19 has 0 open and 0 ready issues.
+- Roadmap horizon: 11 ordered open milestones before closure (Sprint 18 through Sprint 28) and 10 after (Sprint 19 through Sprint 28), above the three-sprint threshold; no planning handoff or roadmap issue was needed.
+- Next eligible action: replenishment-only review for Sprint 19 against its web approval/intervention objective and exit criteria, creating only milestone-scoped executable slices. Final target `main`; after this MEMORY handoff commit, the worktree is clean except for the preserved unrelated untracked `.claude/` directory.
+
+---
+
 - Run: 2026-07-14T16:36:09Z — implementation run (scheduled).
 - Active milestone: Sprint 18 "Read-only operator web dashboard" (#18). Selected #115 (priority:3), the sole unblocked `agent-ready` issue; dependency #114 was closed.
 - Completed: added `scripts/dashboard-operator-review.sh`, a repository-owned review harness that activates `.venv`, creates isolated durable state, registers and starts a real worker, executes the ordered command step through Docker, verifies the following provider step is pending approval, stops the worker, and serves the resulting state through the loopback API and dashboard. The harness verifies the database SHA-256 digest is unchanged while the read-only surfaces run. DEVELOPMENT.md now records the exact launch command, expected browser evidence, cleanup, and supported local overrides. Added Plan 0106.
@@ -45,13 +57,3 @@
 - Retrospective state: Sprint 18 still has three open issues (#113/#114/#115), so close-or-remediate review is not yet eligible.
 - Roadmap horizon: 11 ordered open milestones before and after this run (Sprint 18 through Sprint 28), above the three-sprint threshold; no planning handoff or roadmap issue was needed.
 - Next eligible action: implement #113 (dashboard run-detail view with polling and unreachable-API error state) in Sprint 18. Final target `main`; worktree dirty only for this MEMORY update before its durable handoff commit.
-
----
-
-- Run: 2026-07-14T14:33:04Z — retrospective run (scheduled).
-- Active milestone at start: Sprint 17.1 "HTTP declared-input redaction remediation" (#29). All milestone implementation issues were closed, so the run selected retrospective mode and created retrospective issue #111; no implementation issue was selected or created.
-- Retrospective: every exit criterion passed. Commit `b760b21` and issue #109 redact declared command argv and provider `message.content`/`system` from HTTP run detail while retaining ordered steps and non-sensitive metadata; lifecycle and mixed-run regressions cover declared/captured redaction and the CLI retains full local detail. DEVELOPMENT.md and Decision 0008 match the corrected boundary. Created and closed #111 with the evidence, appended the passing disposition to milestone #29, and closed Sprint 17.1 with no remediation required.
-- Verification: activated `.venv`; current full suite `720 passed in 10.96s`; `codex-agentic-os index check` reported current (27 files, 1072 symbols, 6388 relationships); `git diff --check` clean. Retrospective UAT evidence from #109 remains the real CLI-started loopback subprocess review against a temporary mixed database, confirming HTTP redaction, unchanged CLI detail, and clean SIGINT exit.
-- Blocked review: repository-wide open `blocked` search is empty. Resulting active milestone Sprint 18 has 0 open and 0 ready issues.
-- Roadmap horizon: 12 ordered open milestones before closure (Sprint 17.1, then Sprint 18 through Sprint 28) and 11 after (Sprint 18 through Sprint 28), above the three-sprint threshold; no planning handoff or roadmap issue was needed.
-- Next eligible action: replenishment-only review for Sprint 18 against its dashboard objective and exit criteria, creating only milestone-scoped executable slices. Final target `main`; the retrospective GitHub state is durable and this MEMORY update is ready for its handoff commit and push.
