@@ -411,6 +411,33 @@ codex-agentic-os run add-step run-002 step-003 --objective "Publish result" \
   --approval-required --state-db .codex-agentic-os/state.sqlite3 -- publish-result
 ```
 
+Declare a child-run delegation step with `--delegate-objective`, an alternative execution
+input mutually exclusive with a command or provider message. `--delegate-target-agent`
+optionally pre-assigns a registered agent to the spawned child run; supplying it without
+`--delegate-objective` fails before mutation:
+
+```bash
+codex-agentic-os run add-step run-002 step-006 --objective "Delegate the review" \
+  --delegate-objective "Review the proposed change" --delegate-target-agent agent-2 \
+  --state-db .codex-agentic-os/state.sqlite3
+```
+
+`run execute-next` dispatches a queued delegation step atomically: it creates one new
+child run (id `{step_id}-child`) durably linked to the parent run and step, transitions
+the parent run to `running` if it was still queued, and leaves the parent step `running`
+with the child run id recorded as `delegated_run_id` — never as `succeeded`, since
+completing the parent step from the child's terminal outcome is a later slice. The child
+run appears in `run list`/`run inspect` like any other run, with `parent_run_id` and
+`parent_step_id` identifying its parent; it is claimable and executable through the
+entirely unchanged existing lifecycle, including approvals, artifacts, and history. A
+competing or repeated dispatch of the same step cannot spawn a second child: the parent
+step's own compare-and-swap revision check inside the atomic dispatch transaction rejects
+it. Calling `run execute-next` again while a delegation step is still pending its child
+reports `{"execution": {"attempted": false}}` (no queued step remains to dispatch); the
+underlying `RunCoordinator.execute_next_step` raises `DelegationPendingError` in that
+state, which the worker loop treats like an approval or context-reference gate — it moves
+on to other claimable work instead of crashing.
+
 Record a sandbox result through the structural execution-result boundary. A zero exit
 completes the step successfully and succeeds the run when every step is complete; a
 nonzero exit fails both the step and run:

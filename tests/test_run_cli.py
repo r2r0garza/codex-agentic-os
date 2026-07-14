@@ -58,6 +58,8 @@ def test_cli_creates_queued_run_and_matches_inspection(
             "agent_id": agent_id,
             "objective": "Build durable work",
             "output": None,
+            "parent_run_id": None,
+            "parent_step_id": None,
             "revision": 1,
             "run_id": "run-1",
             "status": "queued",
@@ -468,6 +470,57 @@ def test_cli_add_step_rejects_provider_and_capability_together_without_mutation(
     assert RunCoordinator(StateStore(database)).list_steps("run-1") == ()
 
 
+def test_cli_add_step_and_execute_next_dispatch_delegation_step(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    RunCoordinator(StateStore(database)).create("run-1", objective="Delegate the review")
+
+    main(
+        [
+            "run", "add-step", "run-1", "delegate", "--objective", "Delegate the review",
+            "--delegate-objective", "Review the change", "--delegate-target-agent", "agent-1",
+            "--state-db", str(database),
+        ]
+    )
+    added = json.loads(capsys.readouterr().out)
+    assert added["steps"][0]["delegation"] == {
+        "child_objective": "Review the change", "target_agent_id": "agent-1",
+    }
+    assert "delegated_run_id" not in added["steps"][0]
+
+    main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    dispatched = json.loads(capsys.readouterr().out)
+    delegate_step = dispatched["steps"][0]
+    assert delegate_step["status"] == "running"
+    assert delegate_step["delegated_run_id"] == "delegate-child"
+
+    main(["run", "inspect", "delegate-child", "--state-db", str(database)])
+    child = json.loads(capsys.readouterr().out)
+    assert child["run"]["objective"] == "Review the change"
+    assert child["run"]["agent_id"] == "agent-1"
+    assert child["run"]["parent_run_id"] == "run-1"
+    assert child["run"]["parent_step_id"] == "delegate"
+    assert child["run"]["status"] == "queued"
+
+
+def test_cli_add_step_rejects_delegate_target_agent_without_objective(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    RunCoordinator(StateStore(database)).create("run-1", objective="Delegate the review")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "add-step", "run-1", "delegate", "--objective", "Delegate the review",
+                "--delegate-target-agent", "agent-1", "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "--delegate-target-agent requires --delegate-objective" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).list_steps("run-1") == ()
+
+
 def test_cli_add_step_rejects_unknown_capability_without_mutation(tmp_path, capsys) -> None:
     database = tmp_path / "state.sqlite3"
     RunCoordinator(StateStore(database)).create("run-1", objective="Ask a model")
@@ -545,7 +598,7 @@ def test_cli_add_step_rejects_bare_double_dash_without_message(tmp_path, capsys)
         )
 
     assert exit_info.value.code == 2
-    assert "exactly one of command or provider message" in capsys.readouterr().err
+    assert "exactly one of command, provider message, or delegation" in capsys.readouterr().err
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get("run-1") == original_run
     assert reloaded.list_steps("run-1") == ()
@@ -1155,6 +1208,7 @@ def test_cli_lists_runs_in_identifier_order_without_mutation(tmp_path, capsys) -
     assert [run["run_id"] for run in payload] == ["run-a", "run-b"]
     assert payload[0] == {
         "agent_id": "agent-1", "objective": "First", "output": None,
+        "parent_run_id": None, "parent_step_id": None,
         "revision": 1, "run_id": "run-a", "status": "queued",
     }
     reloaded = RunCoordinator(StateStore(database))
@@ -1386,6 +1440,8 @@ def test_cli_inspects_run_and_steps_in_position_order(tmp_path, capsys) -> None:
         "agent_id": "agent-1",
         "objective": "Inspect durable state",
         "output": None,
+        "parent_run_id": None,
+        "parent_step_id": None,
         "revision": 2,
         "run_id": "run-1",
         "status": "running",

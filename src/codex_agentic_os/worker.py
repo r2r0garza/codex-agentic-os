@@ -15,6 +15,7 @@ from .runtime import (
     ApprovalRequiredError,
     ChatAdapterResolver,
     ContextReferencesUnresolvedError,
+    DelegationPendingError,
     RunCoordinator,
     RunStatus,
     SandboxExecutor,
@@ -150,7 +151,11 @@ def run_worker(
                     adapter_resolver=adapter_resolver,
                     routing_policy=routing_policy,
                 )
-            except (ApprovalRequiredError, ContextReferencesUnresolvedError):
+            except (
+                ApprovalRequiredError,
+                ContextReferencesUnresolvedError,
+                DelegationPendingError,
+            ):
                 blocked = True
                 break
             if result is None:

@@ -625,6 +625,154 @@ class StateStore:
             StateRecord("run", run_id, "queued", reopened_run_payload, reopened_run_revision),
         )
 
+    def dispatch_delegation_step(
+        self,
+        step_id: str,
+        child_run_id: str,
+        *,
+        expected_step_revision: int,
+        step_payload: Mapping[str, object],
+        run_id: str,
+        expected_run_status: str,
+        expected_run_revision: int,
+        run_payload: Mapping[str, object] | None,
+        child_payload: Mapping[str, object],
+        target_agent_id: str | None,
+    ) -> tuple[StateRecord, StateRecord, StateRecord]:
+        """Atomically dispatch one queued delegation step and insert its linked child run.
+
+        Reading the parent step and run under one ``BEGIN IMMEDIATE`` write
+        lock, then inserting the new child run and updating the parent step
+        (and, when it was still queued, the parent run) in the same
+        transaction, guarantees a competing dispatch of the same queued step
+        conflicts on the step's expected revision rather than racing to
+        create two child runs. ``run_payload`` is ``None`` when the parent
+        run is already running and needs no rewrite.
+        """
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        self._validate_identity("step", step_id)
+        self._validate_identity("run", run_id)
+        self._validate_identity("run", child_run_id)
+        if expected_step_revision < 1:
+            raise ValueError("expected step revision must be positive")
+        if expected_run_revision < 1:
+            raise ValueError("expected run revision must be positive")
+        if not expected_run_status.strip():
+            raise ValueError("expected run status must not be empty")
+        if target_agent_id is not None and not target_agent_id.strip():
+            raise ValueError("target agent id must not be empty")
+        encoded_step = self._encode_payload(step_payload)
+        encoded_child = self._encode_payload(child_payload)
+        encoded_run = None if run_payload is None else self._encode_payload(run_payload)
+        self.initialize()
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            step_row = connection.execute(
+                "SELECT status, revision FROM state_records WHERE kind = 'step' AND key = ?",
+                (step_id,),
+            ).fetchone()
+            if step_row is None:
+                raise KeyError(f"state record does not exist: step/{step_id}")
+            step_status, step_revision = str(step_row[0]), int(step_row[1])
+            if step_status != "queued" or step_revision != expected_step_revision:
+                raise StateConflictError(
+                    f"state step delegation dispatch conflict: {step_id}"
+                )
+
+            run_row = connection.execute(
+                "SELECT status, payload, revision FROM state_records WHERE kind = 'run' AND key = ?",
+                (run_id,),
+            ).fetchone()
+            if run_row is None:  # Defensive: durable step records must reference an existing run.
+                raise KeyError(f"state record does not exist: run/{run_id}")
+            run_status, run_encoded, run_revision = (
+                str(run_row[0]), str(run_row[1]), int(run_row[2])
+            )
+            if run_status != expected_run_status or run_revision != expected_run_revision:
+                raise StateConflictError(f"state run transition conflict: {run_id}")
+            run_agent_id = json.loads(run_encoded).get("agent_id")
+
+            if target_agent_id is not None and connection.execute(
+                "SELECT 1 FROM state_records WHERE kind = 'agent' AND key = ?",
+                (target_agent_id,),
+            ).fetchone() is None:
+                raise StateConflictError(
+                    f"state delegation target agent is not registered: {target_agent_id}"
+                )
+
+            if connection.execute(
+                "SELECT 1 FROM state_records WHERE kind = 'run' AND key = ?",
+                (child_run_id,),
+            ).fetchone() is not None:
+                raise StateConflictError(f"state record already exists: run/{child_run_id}")
+
+            connection.execute(
+                """
+                INSERT INTO state_records (kind, key, status, payload, revision)
+                VALUES ('run', ?, 'queued', ?, 1)
+                """,
+                (child_run_id, encoded_child),
+            )
+            self._append_run_history(
+                connection,
+                child_run_id,
+                transition="created",
+                status="queued",
+                agent_id=target_agent_id,
+                execution_kind=None,
+            )
+
+            new_step_revision = step_revision + 1
+            connection.execute(
+                """
+                UPDATE state_records SET status = 'running', payload = ?, revision = ?
+                WHERE kind = 'step' AND key = ?
+                """,
+                (encoded_step, new_step_revision, step_id),
+            )
+
+            if run_payload is not None:
+                final_run_status = "running"
+                final_run_payload = json.loads(encoded_run)
+                final_run_revision = run_revision + 1
+                connection.execute(
+                    """
+                    UPDATE state_records SET status = 'running', payload = ?, revision = ?
+                    WHERE kind = 'run' AND key = ?
+                    """,
+                    (encoded_run, final_run_revision, run_id),
+                )
+                self._append_run_history(
+                    connection,
+                    run_id,
+                    transition="run_started",
+                    status="running",
+                    agent_id=run_agent_id,
+                    execution_kind=None,
+                )
+            else:
+                final_run_status = run_status
+                final_run_payload = json.loads(run_encoded)
+                final_run_revision = run_revision
+            self._append_run_history(
+                connection,
+                run_id,
+                transition="step_delegated",
+                status="running",
+                step_id=step_id,
+                agent_id=run_agent_id,
+                execution_kind="delegation",
+            )
+            connection.commit()
+        return (
+            StateRecord("step", step_id, "running", json.loads(encoded_step), new_step_revision),
+            StateRecord("run", run_id, final_run_status, final_run_payload, final_run_revision),
+            StateRecord("run", child_run_id, "queued", json.loads(encoded_child), 1),
+        )
+
     def transition_run(
         self,
         run_id: str,

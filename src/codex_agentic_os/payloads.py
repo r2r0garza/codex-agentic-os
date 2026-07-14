@@ -62,6 +62,10 @@ def _step_payload(
         payload.pop("artifact_declarations")
     if step.response_artifact_name is None:
         payload.pop("response_artifact_name")
+    if step.delegation is None:
+        payload.pop("delegation")
+    if step.delegated_run_id is None:
+        payload.pop("delegated_run_id")
     if artifacts:
         payload["artifacts"] = [_artifact_record_payload(artifact) for artifact in artifacts]
     payload["status"] = step.status.value
@@ -180,7 +184,11 @@ def _approval_payload(
                 "approval_status": (
                     None if step.approval_status is None else step.approval_status.value
                 ),
-                "execution_kind": "command" if step.command is not None else "provider",
+                "execution_kind": (
+                    "command"
+                    if step.command is not None
+                    else "delegation" if step.delegation is not None else "provider"
+                ),
                 "requesting_agent_id": run.agent_id,
                 "deciding_agent_id": deciding_agents.get(step.step_id),
             }

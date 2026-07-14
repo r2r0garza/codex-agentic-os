@@ -83,6 +83,17 @@ class ContextReferencesUnresolvedError(ValueError):
     """Raised when dispatch reaches a provider step with unresolved context references."""
 
 
+class DelegationPendingError(ValueError):
+    """Raised when dispatch reaches a run whose delegation step awaits its child run.
+
+    A delegation step stays ``running`` after its child run is atomically
+    spawned; it does not resolve to a terminal step outcome until a later
+    slice observes the child's terminal status. This error lets callers like
+    the worker loop distinguish that legitimate parked state from the
+    unexpected "another step is already running" conflict.
+    """
+
+
 class PlanProposalError(ValueError):
     """Raised when a provider's plan proposal is malformed or unparseable.
 
@@ -127,6 +138,8 @@ class AgentRun:
     revision: int
     agent_id: str | None = None
     output: Mapping[str, object] | None = None
+    parent_run_id: str | None = None
+    parent_step_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +178,14 @@ class ArtifactRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DelegationSpec:
+    """Durable declaration of one step's child-run delegation."""
+
+    child_objective: str
+    target_agent_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RunStep:
     """Typed view of a durable, ordered unit of work within a run."""
 
@@ -184,6 +205,8 @@ class RunStep:
     sandbox_policy: SandboxPolicy | None = None
     artifact_declarations: tuple[ArtifactDeclaration, ...] = ()
     response_artifact_name: str | None = None
+    delegation: DelegationSpec | None = None
+    delegated_run_id: str | None = None
 
     @property
     def failure_kind(self) -> StepFailureKind | None:
@@ -607,9 +630,7 @@ class RunCoordinator:
             raise ValueError(f"invalid run transition: {current.status} -> {status}")
         if output is not None and status not in {RunStatus.SUCCEEDED, RunStatus.FAILED}:
             raise ValueError("run output is only valid for succeeded or failed runs")
-        payload: dict[str, object] = {"objective": current.objective}
-        if current.agent_id is not None:
-            payload["agent_id"] = current.agent_id
+        payload: dict[str, object] = self._base_run_payload(current)
         if output is not None:
             payload["output"] = dict(output)
         try:
@@ -707,13 +728,15 @@ class RunCoordinator:
                 payload["message"] = self._message_payload(step.message)
             if step.sandbox_policy is not None:
                 payload["sandbox_policy"] = self._sandbox_policy_payload(step.sandbox_policy)
+            if step.delegation is not None:
+                payload["delegation"] = self._delegation_payload(step.delegation)
+            if step.delegated_run_id is not None:
+                payload["delegated_run_id"] = step.delegated_run_id
             self._add_context_step_ids_payload(payload, step)
             self._add_approval_payload(payload, step)
             records.append(("step", step.step_id, StepStatus.CANCELLED, payload))
 
-        run_payload: dict[str, object] = {"objective": current.objective}
-        if current.agent_id is not None:
-            run_payload["agent_id"] = current.agent_id
+        run_payload: dict[str, object] = self._base_run_payload(current)
         records.append(("run", run_id, RunStatus.CANCELLED, run_payload))
         stored = self.store.put_many(
             records,
@@ -758,6 +781,11 @@ class RunCoordinator:
         )
         if next_step is None:
             return None
+        if next_step.delegation is not None:
+            raise ValueError(
+                "delegation step must be dispatched through execute_next_step, "
+                f"which atomically spawns its linked child run: {next_step.step_id}"
+            )
         if provider_route is not None:
             if (
                 next_step.message is None
@@ -784,9 +812,7 @@ class RunCoordinator:
                     f"{next_step.step_id} ({', '.join(unresolved)})"
                 )
         if run.status is RunStatus.QUEUED:
-            run_payload: dict[str, object] = {"objective": run.objective}
-            if run.agent_id is not None:
-                run_payload["agent_id"] = run.agent_id
+            run_payload: dict[str, object] = self._base_run_payload(run)
             step_payload: dict[str, object] = {
                 "run_id": next_step.run_id,
                 "position": next_step.position,
@@ -875,13 +901,23 @@ class RunCoordinator:
             raise ValueError(f"cannot execute a step for terminal run: {run_id}")
 
         steps = self.list_steps(run_id)
-        if any(step.status is StepStatus.RUNNING for step in steps):
+        running_step = next(
+            (step for step in steps if step.status is StepStatus.RUNNING), None
+        )
+        if running_step is not None:
+            if running_step.delegation is not None:
+                raise DelegationPendingError(
+                    "step is delegated to a pending child run: "
+                    f"{running_step.step_id} -> {running_step.delegated_run_id}"
+                )
             raise ValueError(f"run already has a running step: {run_id}")
         next_step = next(
             (step for step in steps if step.status is StepStatus.QUEUED), None
         )
         if next_step is None:
             return None
+        if next_step.delegation is not None:
+            return self._dispatch_delegation_step(run, next_step)
         resolved_executor = executor
         if next_step.command is not None:
             if next_step.sandbox_policy is not None:
@@ -973,6 +1009,69 @@ class RunCoordinator:
             return self.fail_step_from_error(running_step.step_id, error)
         return self.complete_step_from_chat_response(running_step.step_id, response)
 
+    def _dispatch_delegation_step(
+        self, run: AgentRun, next_step: RunStep
+    ) -> tuple[RunStep, AgentRun]:
+        """Atomically dispatch one queued delegation step and spawn its linked child run.
+
+        Leaves the step ``running`` with its child run's id recorded; a
+        later slice completes the parent step from the child's terminal
+        outcome. Duplicate or competing dispatch of the same step is
+        prevented by the step's own compare-and-swap revision check inside
+        :meth:`StateStore.dispatch_delegation_step`.
+        """
+
+        assert next_step.delegation is not None
+        if next_step.approval_status is ApprovalStatus.PENDING:
+            raise ApprovalRequiredError(
+                f"step requires approval before dispatch: {next_step.step_id}"
+            )
+        target_agent_id = next_step.delegation.target_agent_id
+        if target_agent_id is not None:
+            self._require_registered_agent(target_agent_id)
+        child_run_id = f"{next_step.step_id}-child"
+
+        step_payload: dict[str, object] = {
+            "run_id": next_step.run_id,
+            "position": next_step.position,
+            "objective": next_step.objective,
+            "delegation": self._delegation_payload(next_step.delegation),
+            "delegated_run_id": child_run_id,
+        }
+        self._add_context_step_ids_payload(step_payload, next_step)
+        self._add_approval_payload(step_payload, next_step)
+
+        child_payload: dict[str, object] = {
+            "objective": next_step.delegation.child_objective,
+            "parent_run_id": next_step.run_id,
+            "parent_step_id": next_step.step_id,
+        }
+        if target_agent_id is not None:
+            child_payload["agent_id"] = target_agent_id
+
+        run_payload: dict[str, object] | None = None
+        if run.status is RunStatus.QUEUED:
+            run_payload = self._base_run_payload(run)
+
+        try:
+            step_record, run_record, _child_record = self.store.dispatch_delegation_step(
+                next_step.step_id,
+                child_run_id,
+                expected_step_revision=next_step.revision,
+                step_payload=step_payload,
+                run_id=run.run_id,
+                expected_run_status=run.status.value,
+                expected_run_revision=run.revision,
+                run_payload=run_payload,
+                child_payload=child_payload,
+                target_agent_id=target_agent_id,
+            )
+        except StateConflictError as error:
+            raise ValueError(
+                f"delegation dispatch conflict: {next_step.step_id}"
+            ) from error
+        return self._step(step_record), self._run(run_record)
+
     def add_step(
         self,
         run_id: str,
@@ -987,6 +1086,7 @@ class RunCoordinator:
         sandbox_policy: SandboxPolicy | Mapping[str, object] | None = None,
         artifacts: Sequence[ArtifactDeclaration | Mapping[str, object]] | None = None,
         response_artifact_name: str | None = None,
+        delegation: DelegationSpec | Mapping[str, object] | None = None,
     ) -> RunStep:
         """Append a queued step to a non-terminal run."""
 
@@ -999,8 +1099,16 @@ class RunCoordinator:
             raise ValueError("step objective must not be empty")
         normalized_command = self._validate_command(command, timeout)
         normalized_message = self._validate_message(message)
-        if (normalized_command is None) == (normalized_message is None):
-            raise ValueError("step requires exactly one of command or provider message")
+        normalized_delegation = self._validate_delegation(delegation)
+        if sum(
+            value is not None
+            for value in (normalized_command, normalized_message, normalized_delegation)
+        ) != 1:
+            raise ValueError(
+                "step requires exactly one of command, provider message, or delegation"
+            )
+        if normalized_delegation is not None and normalized_delegation.target_agent_id is not None:
+            self._require_registered_agent(normalized_delegation.target_agent_id)
         normalized_context_step_ids = self._validate_context_step_ids(
             run_id,
             context_step_ids,
@@ -1037,6 +1145,8 @@ class RunCoordinator:
             payload["artifacts"] = self._artifact_declarations_payload(normalized_artifacts)
         if normalized_response_artifact_name is not None:
             payload["response_artifact_name"] = normalized_response_artifact_name
+        if normalized_delegation is not None:
+            payload["delegation"] = self._delegation_payload(normalized_delegation)
         try:
             record = self.store.append_step(
                 step_id,
@@ -1355,6 +1465,10 @@ class RunCoordinator:
             )
         if current.response_artifact_name is not None:
             payload["response_artifact_name"] = current.response_artifact_name
+        if current.delegation is not None:
+            payload["delegation"] = self._delegation_payload(current.delegation)
+        if current.delegated_run_id is not None:
+            payload["delegated_run_id"] = current.delegated_run_id
         self._add_context_step_ids_payload(payload, current)
         self._add_approval_payload(payload, current)
         if output is not None:
@@ -1454,12 +1568,8 @@ class RunCoordinator:
         }
         step_payload = self._decision_payload(current, ApprovalStatus.REJECTED)
         step_payload["output"] = output
-        run_payload: dict[str, object] = {
-            "objective": run.objective,
-            "output": {"failed_step_id": step_id, "error": output["error"]},
-        }
-        if run.agent_id is not None:
-            run_payload["agent_id"] = run.agent_id
+        run_payload: dict[str, object] = self._base_run_payload(run)
+        run_payload["output"] = {"failed_step_id": step_id, "error": output["error"]}
 
         try:
             stored = self.store.put_many(
@@ -1568,12 +1678,8 @@ class RunCoordinator:
             step = self.transition_step(step_id, step_status, output=output)
             return step, run
 
-        run_payload: dict[str, object] = {
-            "objective": run.objective,
-            "output": run_output,
-        }
-        if run.agent_id is not None:
-            run_payload["agent_id"] = run.agent_id
+        run_payload: dict[str, object] = self._base_run_payload(run)
+        run_payload["output"] = run_output
         stored = self.store.put_many(
             (
                 ("step", step_id, step_status, step_payload),
@@ -1646,12 +1752,8 @@ class RunCoordinator:
         if not final:
             step = self.transition_step(step_id, StepStatus.SUCCEEDED, output=output)
             return step, run
-        run_payload: dict[str, object] = {
-            "objective": run.objective,
-            "output": {"completed_steps": len(self.list_steps(run.run_id))},
-        }
-        if run.agent_id is not None:
-            run_payload["agent_id"] = run.agent_id
+        run_payload: dict[str, object] = self._base_run_payload(run)
+        run_payload["output"] = {"completed_steps": len(self.list_steps(run.run_id))}
         stored = self.store.put_many(
             (
                 ("step", step_id, StepStatus.SUCCEEDED, step_payload),
@@ -1717,12 +1819,8 @@ class RunCoordinator:
         self._add_context_step_ids_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
-        run_payload: dict[str, object] = {
-            "objective": run.objective,
-            "output": {"failed_step_id": step_id, "error": str(error)},
-        }
-        if run.agent_id is not None:
-            run_payload["agent_id"] = run.agent_id
+        run_payload: dict[str, object] = self._base_run_payload(run)
+        run_payload["output"] = {"failed_step_id": step_id, "error": str(error)}
         stored = self.store.put_many(
             (
                 ("step", step_id, StepStatus.FAILED, step_payload),
@@ -1794,18 +1892,18 @@ class RunCoordinator:
             )
         if current.response_artifact_name is not None:
             step_payload["response_artifact_name"] = current.response_artifact_name
+        if current.delegation is not None:
+            step_payload["delegation"] = self._delegation_payload(current.delegation)
+        if current.delegated_run_id is not None:
+            step_payload["delegated_run_id"] = current.delegated_run_id
         self._add_context_step_ids_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
-        run_payload: dict[str, object] = {
-            "objective": run.objective,
-            "output": {
-                "failed_step_id": step_id,
-                "recovery_reason": reason.value,
-            },
+        run_payload: dict[str, object] = self._base_run_payload(run)
+        run_payload["output"] = {
+            "failed_step_id": step_id,
+            "recovery_reason": reason.value,
         }
-        if run.agent_id is not None:
-            run_payload["agent_id"] = run.agent_id
         stored = self.store.put_many(
             (
                 ("step", step_id, StepStatus.FAILED, step_payload),
@@ -1837,12 +1935,20 @@ class RunCoordinator:
         objective = record.payload.get("objective")
         agent_id = record.payload.get("agent_id")
         output = record.payload.get("output")
+        parent_run_id = record.payload.get("parent_run_id")
+        parent_step_id = record.payload.get("parent_step_id")
         if not isinstance(objective, str):
             raise ValueError(f"run record has invalid objective: {record.key}")
         if agent_id is not None and not isinstance(agent_id, str):
             raise ValueError(f"run record has invalid agent id: {record.key}")
         if output is not None and not isinstance(output, dict):
             raise ValueError(f"run record has invalid output: {record.key}")
+        if parent_run_id is not None and not isinstance(parent_run_id, str):
+            raise ValueError(f"run record has invalid parent run id: {record.key}")
+        if parent_step_id is not None and not isinstance(parent_step_id, str):
+            raise ValueError(f"run record has invalid parent step id: {record.key}")
+        if (parent_run_id is None) != (parent_step_id is None):
+            raise ValueError(f"run record has inconsistent parent linkage: {record.key}")
         try:
             status = RunStatus(record.status)
         except ValueError as error:
@@ -1854,7 +1960,22 @@ class RunCoordinator:
             revision=record.revision,
             agent_id=agent_id,
             output=output,
+            parent_run_id=parent_run_id,
+            parent_step_id=parent_step_id,
         )
+
+    @staticmethod
+    def _base_run_payload(run: AgentRun) -> dict[str, object]:
+        """Build the run payload fields every lifecycle rewrite must preserve."""
+
+        payload: dict[str, object] = {"objective": run.objective}
+        if run.agent_id is not None:
+            payload["agent_id"] = run.agent_id
+        if run.parent_run_id is not None:
+            payload["parent_run_id"] = run.parent_run_id
+        if run.parent_step_id is not None:
+            payload["parent_step_id"] = run.parent_step_id
+        return payload
 
     @staticmethod
     def _step(record: StateRecord) -> RunStep:
@@ -1871,6 +1992,8 @@ class RunCoordinator:
         response_artifact_name = record.payload.get("response_artifact_name")
         approval_required = record.payload.get("approval_required", False)
         approval_status_value = record.payload.get("approval_status")
+        delegation = record.payload.get("delegation")
+        delegated_run_id = record.payload.get("delegated_run_id")
         if not isinstance(run_id, str) or not run_id:
             raise ValueError(f"step record has invalid run id: {record.key}")
         if not isinstance(position, int) or isinstance(position, bool) or position < 1:
@@ -1881,11 +2004,21 @@ class RunCoordinator:
             raise ValueError(f"step record has invalid output: {record.key}")
         normalized_command = RunCoordinator._validate_command(command, timeout)
         normalized_message = RunCoordinator._validate_message(message)
+        normalized_delegation = RunCoordinator._validate_delegation(delegation)
         normalized_context_step_ids = RunCoordinator._validate_stored_context_step_ids(
             context_step_ids, has_message=normalized_message is not None
         )
-        if normalized_command is not None and normalized_message is not None:
+        if sum(
+            value is not None
+            for value in (normalized_command, normalized_message, normalized_delegation)
+        ) > 1:
             raise ValueError(f"step record has ambiguous execution input: {record.key}")
+        if delegated_run_id is not None and (
+            not isinstance(delegated_run_id, str) or not delegated_run_id
+        ):
+            raise ValueError(f"step record has invalid delegated run id: {record.key}")
+        if delegated_run_id is not None and normalized_delegation is None:
+            raise ValueError(f"step record has an orphaned delegated run id: {record.key}")
         normalized_sandbox_policy = RunCoordinator._validate_sandbox_policy(
             sandbox_policy, has_command=normalized_command is not None
         )
@@ -1929,6 +2062,8 @@ class RunCoordinator:
             sandbox_policy=normalized_sandbox_policy,
             artifact_declarations=normalized_artifacts,
             response_artifact_name=normalized_response_artifact_name,
+            delegation=normalized_delegation,
+            delegated_run_id=delegated_run_id,
         )
 
     @staticmethod
@@ -2010,6 +2145,10 @@ class RunCoordinator:
             )
         if step.response_artifact_name is not None:
             payload["response_artifact_name"] = step.response_artifact_name
+        if step.delegation is not None:
+            payload["delegation"] = RunCoordinator._delegation_payload(step.delegation)
+        if step.delegated_run_id is not None:
+            payload["delegated_run_id"] = step.delegated_run_id
         payload["approval_required"] = step.approval_required
         payload["approval_status"] = approval_status
         return payload
@@ -2017,6 +2156,37 @@ class RunCoordinator:
     @staticmethod
     def _message_payload(message: ProviderMessage) -> dict[str, object]:
         return {key: value for key, value in asdict(message).items() if value is not None}
+
+    @staticmethod
+    def _delegation_payload(delegation: DelegationSpec) -> dict[str, object]:
+        return {key: value for key, value in asdict(delegation).items() if value is not None}
+
+    @staticmethod
+    def _validate_delegation(
+        delegation: DelegationSpec | Mapping[str, object] | object | None,
+    ) -> DelegationSpec | None:
+        if delegation is None:
+            return None
+        if isinstance(delegation, DelegationSpec):
+            values = asdict(delegation)
+        elif isinstance(delegation, Mapping):
+            allowed = {"child_objective", "target_agent_id"}
+            if set(delegation) - allowed:
+                raise ValueError("step delegation has unknown fields")
+            values = dict(delegation)
+        else:
+            raise ValueError("step delegation must be an object")
+        child_objective = values.get("child_objective")
+        target_agent_id = values.get("target_agent_id")
+        if not isinstance(child_objective, str) or not child_objective.strip():
+            raise ValueError("step delegation child objective must be a non-empty string")
+        if target_agent_id is not None and (
+            not isinstance(target_agent_id, str) or not target_agent_id.strip()
+        ):
+            raise ValueError("step delegation target agent id must be a non-empty string")
+        return DelegationSpec(
+            child_objective=child_objective, target_agent_id=target_agent_id
+        )
 
     @staticmethod
     def _parse_plan_proposal(content: str, plan_id: str) -> tuple[PlanStepProposal, ...]:
@@ -2215,7 +2385,11 @@ class RunCoordinator:
     def _execution_kind(step: RunStep) -> str:
         """Return the non-sensitive execution category persisted in history."""
 
-        return "command" if step.command is not None else "provider"
+        if step.command is not None:
+            return "command"
+        if step.delegation is not None:
+            return "delegation"
+        return "provider"
 
     def _superseded_step_ids(self, run_id: str) -> frozenset[str]:
         """Return failed attempts durably superseded by explicit retries."""

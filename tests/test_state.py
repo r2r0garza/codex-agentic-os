@@ -644,3 +644,119 @@ def test_existing_database_schema_is_upgraded_for_steps(tmp_path) -> None:
 
     assert store.get("run", "run-1") is not None
     assert store.get("step", "step-1") is not None
+
+
+def test_dispatch_delegation_step_inserts_child_run_and_starts_parent(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("run", "run-1", status="queued", payload={"objective": "Delegate"})
+    step = store.insert(
+        "step", "delegate", status="queued",
+        payload={
+            "run_id": "run-1", "position": 1, "objective": "Delegate the review",
+            "approval_required": False,
+            "delegation": {"child_objective": "Review the change"},
+        },
+    )
+    run = store.get("run", "run-1")
+
+    new_step, updated_run, child_run = store.dispatch_delegation_step(
+        "delegate", "delegate-child",
+        expected_step_revision=step.revision,
+        step_payload={
+            "run_id": "run-1", "position": 1, "objective": "Delegate the review",
+            "approval_required": False,
+            "delegation": {"child_objective": "Review the change"},
+            "delegated_run_id": "delegate-child",
+        },
+        run_id="run-1",
+        expected_run_status=run.status,
+        expected_run_revision=run.revision,
+        run_payload={"objective": "Delegate"},
+        child_payload={
+            "objective": "Review the change",
+            "parent_run_id": "run-1",
+            "parent_step_id": "delegate",
+        },
+        target_agent_id=None,
+    )
+
+    assert new_step.status == "running"
+    assert new_step.payload["delegated_run_id"] == "delegate-child"
+    assert updated_run.status == "running"
+    assert updated_run.revision == run.revision + 1
+    assert child_run.status == "queued"
+    assert child_run.payload == {
+        "objective": "Review the change",
+        "parent_run_id": "run-1",
+        "parent_step_id": "delegate",
+    }
+    assert store.get("run", "delegate-child") == child_run
+    child_history = store.list_run_history("delegate-child")
+    assert child_history[0].transition == "created"
+    parent_history = store.list_run_history("run-1")
+    assert any(entry.transition == "step_delegated" for entry in parent_history)
+
+
+def test_dispatch_delegation_step_rejects_stale_step_revision_without_mutation(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("run", "run-1", status="queued", payload={"objective": "Delegate"})
+    step = store.insert(
+        "step", "delegate", status="queued",
+        payload={
+            "run_id": "run-1", "position": 1, "objective": "Delegate the review",
+            "approval_required": False,
+            "delegation": {"child_objective": "Review the change"},
+        },
+    )
+    run = store.get("run", "run-1")
+
+    with pytest.raises(StateConflictError, match="delegation dispatch conflict"):
+        store.dispatch_delegation_step(
+            "delegate", "delegate-child",
+            expected_step_revision=step.revision + 1,
+            step_payload={"run_id": "run-1", "position": 1, "objective": "x"},
+            run_id="run-1",
+            expected_run_status=run.status,
+            expected_run_revision=run.revision,
+            run_payload={"objective": "Delegate"},
+            child_payload={"objective": "Review the change"},
+            target_agent_id=None,
+        )
+
+    assert store.get("step", "delegate").status == "queued"
+    assert store.get("run", "delegate-child") is None
+
+
+def test_dispatch_delegation_step_rejects_duplicate_child_run_id(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert("run", "run-1", status="queued", payload={"objective": "Delegate"})
+    store.insert("run", "delegate-child", status="queued", payload={"objective": "Taken"})
+    step = store.insert(
+        "step", "delegate", status="queued",
+        payload={
+            "run_id": "run-1", "position": 1, "objective": "Delegate the review",
+            "approval_required": False,
+            "delegation": {"child_objective": "Review the change"},
+        },
+    )
+    run = store.get("run", "run-1")
+
+    with pytest.raises(StateConflictError, match="state record already exists: run/delegate-child"):
+        store.dispatch_delegation_step(
+            "delegate", "delegate-child",
+            expected_step_revision=step.revision,
+            step_payload={"run_id": "run-1", "position": 1, "objective": "x"},
+            run_id="run-1",
+            expected_run_status=run.status,
+            expected_run_revision=run.revision,
+            run_payload={"objective": "Delegate"},
+            child_payload={"objective": "Review the change"},
+            target_agent_id=None,
+        )
+
+    assert store.get("step", "delegate").status == "queued"

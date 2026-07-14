@@ -34,6 +34,7 @@ from .runtime import (
     ArtifactDeclaration,
     ArtifactRecord,
     ClaimStaleness,
+    DelegationSpec,
     PlanDraft,
     PlanStepProposal,
     ProviderMessage,
@@ -265,6 +266,19 @@ def _parser() -> argparse.ArgumentParser:
         "--response-artifact",
         metavar="NAME",
         help="capture a successful provider step's normalized response as a named artifact",
+    )
+    add_step.add_argument(
+        "--delegate-objective",
+        metavar="OBJECTIVE",
+        help=(
+            "declare a child-run delegation step with this objective for the "
+            "spawned child run; mutually exclusive with a command or provider message"
+        ),
+    )
+    add_step.add_argument(
+        "--delegate-target-agent",
+        metavar="AGENT_ID",
+        help="optional registered agent pre-assigned to the delegation step's spawned child run",
     )
     plan.add_argument("run_id")
     plan.add_argument("plan_id")
@@ -1002,6 +1016,16 @@ def main(argv: Sequence[str] | None = None) -> None:
                             network_enabled=arguments.network,
                         )
                     )
+                delegation = None
+                if arguments.delegate_objective is not None:
+                    delegation = DelegationSpec(
+                        child_objective=arguments.delegate_objective,
+                        target_agent_id=arguments.delegate_target_agent,
+                    )
+                elif arguments.delegate_target_agent is not None:
+                    raise ValueError(
+                        "--delegate-target-agent requires --delegate-objective"
+                    )
                 coordinator.add_step(
                     arguments.run_id,
                     arguments.step_id,
@@ -1014,6 +1038,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     sandbox_policy=sandbox_policy,
                     artifacts=_parse_artifacts(arguments.artifact) or None,
                     response_artifact_name=arguments.response_artifact,
+                    delegation=delegation,
                 )
                 run_id = arguments.run_id
             elif arguments.run_command == "plan":
@@ -1336,6 +1361,18 @@ def main(argv: Sequence[str] | None = None) -> None:
                     payload = _run_payload(coordinator, arguments.run_id)
                     payload["execution"] = {"attempted": False}
                     print(json.dumps(payload, indent=2, sort_keys=True))
+                    return
+                if next_step.delegation is not None:
+                    result = coordinator.execute_next_step(arguments.run_id)
+                    run_id = arguments.run_id
+                    if result is None:
+                        payload = _run_payload(coordinator, run_id)
+                        payload["execution"] = {"attempted": False}
+                        print(json.dumps(payload, indent=2, sort_keys=True))
+                        return
+                    print(
+                        json.dumps(_run_payload(coordinator, run_id), indent=2, sort_keys=True)
+                    )
                     return
                 sandbox_flags_supplied = any(
                     (

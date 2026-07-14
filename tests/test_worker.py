@@ -524,3 +524,44 @@ def test_run_worker_command_step_without_persisted_policy_fails_without_ad_hoc_e
     assert resolver_calls == []
     step = coordinator.get_step("only")
     assert step is not None and step.status is StepStatus.QUEUED
+
+
+def test_run_worker_dispatches_delegation_step_then_moves_on_without_crashing(
+    tmp_path,
+) -> None:
+    from codex_agentic_os.runtime import DelegationSpec
+
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-delegating", objective="Delegate", agent_id="agent-1")
+    coordinator.add_step(
+        "run-delegating",
+        "delegate",
+        objective="Delegate the review",
+        delegation=DelegationSpec(child_objective="Review the change"),
+    )
+    coordinator.create("run-ready", objective="Deliver", agent_id="agent-1")
+    coordinator.add_step("run-ready", "only", objective="Only", command=("true",))
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        executor=_Executor(),
+        should_continue=_bounded_should_continue(6),
+    )
+
+    assert "delegate" in summary.executed_step_ids
+    assert "only" in summary.executed_step_ids
+    delegate_step = coordinator.get_step("delegate")
+    assert delegate_step is not None and delegate_step.status is StepStatus.RUNNING
+    assert delegate_step.delegated_run_id == "delegate-child"
+    child = coordinator.get("delegate-child")
+    assert child is not None and child.status is RunStatus.QUEUED
+    ready_run = coordinator.get("run-ready")
+    assert ready_run is not None and ready_run.status is RunStatus.SUCCEEDED
