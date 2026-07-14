@@ -35,6 +35,7 @@ class RunHistoryEntry:
     step_id: str | None = None
     retried_step_id: str | None = None
     context_step_ids: tuple[str, ...] | None = None
+    plan_id: str | None = None
 
 
 class StateConflictError(ValueError):
@@ -67,6 +68,7 @@ class StateStore:
             agent_id TEXT,
             execution_kind TEXT,
             retried_step_id TEXT,
+            plan_id TEXT,
             PRIMARY KEY (run_id, sequence)
         )
     """
@@ -115,6 +117,8 @@ class StateStore:
                 connection.execute(
                     "ALTER TABLE run_history ADD COLUMN context_step_ids TEXT"
                 )
+            if "plan_id" not in history_columns:
+                connection.execute("ALTER TABLE run_history ADD COLUMN plan_id TEXT")
             connection.commit()
 
     def put(
@@ -236,6 +240,7 @@ class StateStore:
                     execution_kind=entry.execution_kind,
                     retried_step_id=entry.retried_step_id,
                     context_step_ids=entry.context_step_ids,
+                    plan_id=entry.plan_id,
                 )
             connection.commit()
         return tuple(stored)
@@ -854,6 +859,113 @@ class StateStore:
             connection.commit()
         return StateRecord("step", step_id, status, stored_payload, 1)
 
+    def decide_plan(
+        self,
+        plan_id: str,
+        run_id: str,
+        *,
+        status: str,
+        payload: Mapping[str, object],
+        expected_plan_status: str,
+        expected_plan_revision: int,
+        expected_run_status: str,
+        expected_run_revision: int,
+        steps: Sequence[tuple[str, str, Mapping[str, object]]] = (),
+        history: Sequence[RunHistoryEntry] = (),
+    ) -> tuple[StateRecord, tuple[StateRecord, ...]]:
+        """Atomically decide one draft and optionally materialize its queued steps."""
+
+        if self.read_only:
+            raise ValueError("state store is read-only")
+        self._validate_identity("plan", plan_id, status)
+        self._validate_identity("run", run_id)
+        encoded_plan = self._encode_payload(payload)
+        prepared_steps: list[tuple[str, str, str]] = []
+        for step_id, step_status, step_payload in steps:
+            self._validate_identity("step", step_id, step_status)
+            base_payload = dict(step_payload)
+            base_payload.pop("run_id", None)
+            base_payload.pop("position", None)
+            prepared_steps.append(
+                (step_id, step_status, self._encode_payload(base_payload))
+            )
+        if len({step_id for step_id, _, _ in prepared_steps}) != len(prepared_steps):
+            raise ValueError("materialized plan step ids must be unique")
+
+        self.initialize()
+        stored_steps: list[StateRecord] = []
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for kind, key, expected_status, expected_revision in (
+                ("plan", plan_id, expected_plan_status, expected_plan_revision),
+                ("run", run_id, expected_run_status, expected_run_revision),
+            ):
+                row = connection.execute(
+                    "SELECT status, revision FROM state_records WHERE kind = ? AND key = ?",
+                    (kind, key),
+                ).fetchone()
+                if (
+                    row is None
+                    or str(row[0]) != expected_status
+                    or int(row[1]) != expected_revision
+                ):
+                    raise StateConflictError(f"state {kind} transition conflict: {key}")
+
+            for step_id, _, _ in prepared_steps:
+                if connection.execute(
+                    "SELECT 1 FROM state_records WHERE kind = 'step' AND key = ?",
+                    (step_id,),
+                ).fetchone() is not None:
+                    raise StateConflictError(
+                        f"state record already exists: step/{step_id}"
+                    )
+
+            rows = connection.execute(
+                "SELECT payload FROM state_records WHERE kind = 'step'"
+            ).fetchall()
+            positions = [
+                int(document["position"])
+                for (encoded,) in rows
+                if (document := json.loads(str(encoded))).get("run_id") == run_id
+            ]
+            next_position = max(positions, default=0) + 1
+            for offset, (step_id, step_status, encoded_base) in enumerate(prepared_steps):
+                stored_payload = {
+                    **json.loads(encoded_base),
+                    "run_id": run_id,
+                    "position": next_position + offset,
+                }
+                encoded_step = self._encode_payload(stored_payload)
+                connection.execute(
+                    """
+                    INSERT INTO state_records (kind, key, status, payload, revision)
+                    VALUES ('step', ?, ?, ?, 1)
+                    """,
+                    (step_id, step_status, encoded_step),
+                )
+                stored_steps.append(
+                    StateRecord("step", step_id, step_status, stored_payload, 1)
+                )
+
+            stored_plan = self._put_on_connection(
+                connection, "plan", plan_id, status, encoded_plan
+            )
+            for entry in history:
+                self._append_run_history(
+                    connection,
+                    entry.run_id,
+                    transition=entry.transition,
+                    status=entry.status,
+                    step_id=entry.step_id,
+                    agent_id=entry.agent_id,
+                    execution_kind=entry.execution_kind,
+                    retried_step_id=entry.retried_step_id,
+                    context_step_ids=entry.context_step_ids,
+                    plan_id=entry.plan_id,
+                )
+            connection.commit()
+        return stored_plan, tuple(stored_steps)
+
     def list_run_history(self, run_id: str) -> tuple[RunHistoryEntry, ...]:
         """Return one run's durable history entries in stable sequence order."""
 
@@ -863,7 +975,7 @@ class StateStore:
             rows = connection.execute(
                 """
                 SELECT run_id, sequence, transition, status, step_id, agent_id,
-                       execution_kind, retried_step_id, context_step_ids
+                       execution_kind, retried_step_id, context_step_ids, plan_id
                 FROM run_history WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
@@ -879,6 +991,7 @@ class StateStore:
                 execution_kind=row[6],
                 retried_step_id=row[7],
                 context_step_ids=None if row[8] is None else tuple(json.loads(row[8])),
+                plan_id=row[9],
             )
             for row in rows
         )
@@ -973,6 +1086,7 @@ class StateStore:
         step_id: str | None = None,
         retried_step_id: str | None = None,
         context_step_ids: Sequence[str] | None = None,
+        plan_id: str | None = None,
     ) -> None:
         """Append one ordered history entry on a caller-owned run mutation transaction."""
 
@@ -984,8 +1098,8 @@ class StateStore:
             """
             INSERT INTO run_history
                 (run_id, sequence, transition, status, step_id, agent_id,
-                 execution_kind, retried_step_id, context_step_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 execution_kind, retried_step_id, context_step_ids, plan_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -997,6 +1111,7 @@ class StateStore:
                 execution_kind,
                 retried_step_id,
                 None if context_step_ids is None else json.dumps(list(context_step_ids)),
+                plan_id,
             ),
         )
 

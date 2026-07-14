@@ -94,6 +94,12 @@ def _parser() -> argparse.ArgumentParser:
     inspect_plan = run_commands.add_parser(
         "inspect-plan", help="show one durable plan draft, read-only"
     )
+    accept_plan = run_commands.add_parser(
+        "accept-plan", help="atomically accept one plan draft and queue all proposed steps"
+    )
+    reject_plan = run_commands.add_parser(
+        "reject-plan", help="atomically reject one plan draft without queuing steps"
+    )
     list_runs = run_commands.add_parser("list", help="list durable runs")
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
     history = run_commands.add_parser(
@@ -228,6 +234,23 @@ def _parser() -> argparse.ArgumentParser:
         default=Path(".codex-agentic-os/state.sqlite3"),
         help="path to the runtime state database",
     )
+    for command in (accept_plan, reject_plan):
+        command.add_argument("plan_id")
+        command.add_argument(
+            "--expected-revision",
+            type=int,
+            required=True,
+            help="the draft's current revision, as read from prior inspection",
+        )
+        command.add_argument(
+            "--agent-id", help="registered agent recording the operator decision"
+        )
+        command.add_argument(
+            "--state-db",
+            type=Path,
+            default=Path(".codex-agentic-os/state.sqlite3"),
+            help="path to the runtime state database",
+        )
     list_runs.add_argument(
         "--status",
         action="append",
@@ -543,6 +566,8 @@ def _plan_draft_payload(draft: PlanDraft) -> dict[str, object]:
         payload["evidence"] = dict(draft.evidence)
     if draft.error is not None:
         payload["error"] = draft.error
+    if draft.decision_agent_id is not None:
+        payload["decision_agent_id"] = draft.decision_agent_id
     return payload
 
 
@@ -562,7 +587,13 @@ def _plan_step_proposal_payload(step: PlanStepProposal) -> dict[str, object]:
 def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, object]]:
     """Return one run's durable history entries in stable sequence order."""
 
-    return [asdict(entry) for entry in entries]
+    payloads = []
+    for entry in entries:
+        payload = asdict(entry)
+        if entry.plan_id is None:
+            payload.pop("plan_id")
+        payloads.append(payload)
+    return payloads
 
 
 def _approval_payload(
@@ -964,6 +995,22 @@ def main(argv: Sequence[str] | None = None) -> None:
                 draft = coordinator.get_plan(arguments.plan_id)
                 if draft is None:
                     raise ValueError(f"plan does not exist: {arguments.plan_id}")
+                print(json.dumps(_plan_draft_payload(draft), indent=2, sort_keys=True))
+                return
+            elif arguments.run_command == "accept-plan":
+                draft, _ = coordinator.accept_plan(
+                    arguments.plan_id,
+                    expected_revision=arguments.expected_revision,
+                    agent_id=arguments.agent_id,
+                )
+                print(json.dumps(_plan_draft_payload(draft), indent=2, sort_keys=True))
+                return
+            elif arguments.run_command == "reject-plan":
+                draft = coordinator.reject_plan(
+                    arguments.plan_id,
+                    expected_revision=arguments.expected_revision,
+                    agent_id=arguments.agent_id,
+                )
                 print(json.dumps(_plan_draft_payload(draft), indent=2, sort_keys=True))
                 return
             elif arguments.run_command == "list":

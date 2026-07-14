@@ -218,6 +218,7 @@ class PlanDraft:
     steps: tuple[PlanStepProposal, ...] = ()
     evidence: Mapping[str, object] | None = None
     error: str | None = None
+    decision_agent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -965,11 +966,150 @@ class RunCoordinator:
         record = self.store.get("plan", plan_id)
         return None if record is None else self._plan_draft(record)
 
+    def accept_plan(
+        self,
+        plan_id: str,
+        *,
+        expected_revision: int,
+        agent_id: str | None = None,
+    ) -> tuple[PlanDraft, tuple[RunStep, ...]]:
+        """Atomically accept one draft and materialize all proposed steps."""
+
+        record, draft, run = self._reviewable_plan_decision(
+            plan_id, expected_revision=expected_revision, agent_id=agent_id
+        )
+        step_records = tuple(
+            (
+                step.step_id,
+                StepStatus.QUEUED,
+                self._materialized_plan_step_payload(step),
+            )
+            for step in draft.steps
+        )
+        payload = dict(record.payload)
+        if agent_id is not None:
+            payload["decision_agent_id"] = agent_id
+        try:
+            stored_plan, stored_steps = self.store.decide_plan(
+                plan_id,
+                run.run_id,
+                status="accepted",
+                payload=payload,
+                expected_plan_status="draft",
+                expected_plan_revision=expected_revision,
+                expected_run_status=run.status,
+                expected_run_revision=run.revision,
+                steps=step_records,
+                history=(
+                    RunHistoryEntry(
+                        run.run_id,
+                        0,
+                        "plan_accepted",
+                        "accepted",
+                        agent_id=agent_id,
+                        plan_id=plan_id,
+                    ),
+                ),
+            )
+        except StateConflictError as error:
+            if "state record already exists: step/" in str(error):
+                step_id = str(error).rsplit("/", 1)[-1]
+                raise ValueError(f"plan step already exists: {step_id}") from error
+            raise ValueError(f"plan acceptance conflict: {plan_id}") from error
+        return self._plan_draft(stored_plan), tuple(
+            self._step(step) for step in stored_steps
+        )
+
+    def reject_plan(
+        self,
+        plan_id: str,
+        *,
+        expected_revision: int,
+        agent_id: str | None = None,
+    ) -> PlanDraft:
+        """Atomically reject one draft without materializing any steps."""
+
+        record, _, run = self._reviewable_plan_decision(
+            plan_id, expected_revision=expected_revision, agent_id=agent_id
+        )
+        payload = dict(record.payload)
+        if agent_id is not None:
+            payload["decision_agent_id"] = agent_id
+        try:
+            stored_plan, stored_steps = self.store.decide_plan(
+                plan_id,
+                run.run_id,
+                status="rejected",
+                payload=payload,
+                expected_plan_status="draft",
+                expected_plan_revision=expected_revision,
+                expected_run_status=run.status,
+                expected_run_revision=run.revision,
+                history=(
+                    RunHistoryEntry(
+                        run.run_id,
+                        0,
+                        "plan_rejected",
+                        "rejected",
+                        agent_id=agent_id,
+                        plan_id=plan_id,
+                    ),
+                ),
+            )
+        except StateConflictError as error:
+            raise ValueError(f"plan rejection conflict: {plan_id}") from error
+        assert stored_steps == ()
+        return self._plan_draft(stored_plan)
+
     def get_step(self, step_id: str) -> RunStep | None:
         """Return a step when it exists."""
 
         record = self.store.get("step", step_id)
         return None if record is None else self._step(record)
+
+    def _reviewable_plan_decision(
+        self,
+        plan_id: str,
+        *,
+        expected_revision: int,
+        agent_id: str | None,
+    ) -> tuple[StateRecord, PlanDraft, AgentRun]:
+        if expected_revision <= 0:
+            raise ValueError("expected plan revision must be positive")
+        record = self.store.get("plan", plan_id)
+        if record is None:
+            raise KeyError(f"plan does not exist: {plan_id}")
+        if record.status != "draft":
+            raise ValueError(f"plan is not a reviewable draft: {plan_id}")
+        if record.revision != expected_revision:
+            raise ValueError(f"plan decision conflict: {plan_id}")
+        draft = self._plan_draft(record)
+        run = self.get(draft.run_id)
+        if run is None:
+            raise KeyError(f"run does not exist: {draft.run_id}")
+        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            raise ValueError(f"run must be active to decide a plan: {run.run_id}")
+        if agent_id is not None:
+            self._require_registered_agent(agent_id)
+        return record, draft, run
+
+    @staticmethod
+    def _materialized_plan_step_payload(step: PlanStepProposal) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "objective": step.objective,
+            "approval_required": False,
+        }
+        if step.command is not None:
+            payload["command"] = list(step.command)
+        if step.timeout is not None:
+            payload["timeout"] = step.timeout
+        if step.message is not None:
+            payload["message"] = RunCoordinator._message_payload(step.message)
+        if step.sandbox_policy is not None:
+            payload["sandbox_policy"] = RunCoordinator._sandbox_policy_payload(
+                step.sandbox_policy
+            )
+        return payload
 
     def list_steps(self, run_id: str) -> tuple[RunStep, ...]:
         """Return a run's steps in durable position order."""
@@ -1768,6 +1908,7 @@ class RunCoordinator:
             steps=steps,
             evidence=payload.get("evidence"),
             error=payload.get("error"),
+            decision_agent_id=payload.get("decision_agent_id"),
         )
 
     def _validate_context_step_ids(

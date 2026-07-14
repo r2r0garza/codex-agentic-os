@@ -2890,6 +2890,16 @@ PLAN_PROPOSAL_CONTENT = (
 )
 
 
+def _propose_test_plan(coordinator, plan_id="plan-1"):
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(content=PLAN_PROPOSAL_CONTENT)
+
+    return coordinator.propose_plan(
+        "run-1", plan_id, adapter_resolver=lambda message: Adapter(), provider="ollama"
+    )
+
+
 def test_propose_plan_persists_draft_with_ordered_steps_and_evidence(tmp_path) -> None:
     database = tmp_path / "state.sqlite3"
     requests = []
@@ -3295,3 +3305,189 @@ def test_get_plan_reconstructs_executable_payload_after_restart(tmp_path) -> Non
             message=ProviderMessage(provider="ollama", content="Summarize the diff"),
         ),
     )
+
+
+def test_accept_plan_atomically_materializes_ordered_steps_with_provenance(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    coordinator.add_step("run-1", "manual", objective="Existing", command=("true",))
+    _propose_test_plan(coordinator)
+
+    accepted, steps = coordinator.accept_plan(
+        "plan-1", expected_revision=1, agent_id="agent-1"
+    )
+
+    assert accepted.status == "accepted"
+    assert accepted.revision == 2
+    assert accepted.decision_agent_id == "agent-1"
+    assert [step.step_id for step in steps] == ["plan-1-step-1", "plan-1-step-2"]
+    assert [step.position for step in steps] == [2, 3]
+    assert all(step.status is StepStatus.QUEUED for step in steps)
+    assert steps[0].command == ("pytest",)
+    assert steps[0].sandbox_policy == SandboxPolicy(kind=SandboxKind.DOCKER)
+    assert steps[1].message == ProviderMessage(
+        provider="ollama", content="Summarize the diff"
+    )
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get_plan("plan-1") == accepted
+    decision = reloaded.list_history("run-1")[-1]
+    assert decision.transition == "plan_accepted"
+    assert decision.status == "accepted"
+    assert decision.plan_id == "plan-1"
+    assert decision.agent_id == "agent-1"
+
+
+def test_reject_plan_records_provenance_and_materializes_no_steps(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    _propose_test_plan(coordinator)
+
+    rejected = coordinator.reject_plan(
+        "plan-1", expected_revision=1, agent_id="agent-2"
+    )
+
+    assert rejected.status == "rejected"
+    assert rejected.revision == 2
+    assert rejected.decision_agent_id == "agent-2"
+    assert coordinator.list_steps("run-1") == ()
+    decision = coordinator.list_history("run-1")[-1]
+    assert decision.transition == "plan_rejected"
+    assert decision.plan_id == "plan-1"
+    assert decision.agent_id == "agent-2"
+
+
+def test_plan_decision_rejects_stale_revision_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    original = _propose_test_plan(coordinator)
+    before_history = coordinator.list_history("run-1")
+
+    with pytest.raises(ValueError, match="plan decision conflict: plan-1"):
+        coordinator.accept_plan("plan-1", expected_revision=2)
+
+    assert coordinator.get_plan("plan-1") == original
+    assert coordinator.list_steps("run-1") == ()
+    assert coordinator.list_history("run-1") == before_history
+
+
+def test_competing_plan_decisions_have_exactly_one_atomic_winner(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    _propose_test_plan(coordinator)
+
+    def accept():
+        return RunCoordinator(StateStore(database)).accept_plan(
+            "plan-1", expected_revision=1
+        )
+
+    def reject():
+        return RunCoordinator(StateStore(database)).reject_plan(
+            "plan-1", expected_revision=1
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(accept), pool.submit(reject)]
+    outcomes = []
+    for future in futures:
+        try:
+            outcomes.append(("success", future.result()))
+        except ValueError as error:
+            outcomes.append(("conflict", str(error)))
+
+    assert [kind for kind, _ in outcomes].count("success") == 1
+    assert [kind for kind, _ in outcomes].count("conflict") == 1
+    reloaded = RunCoordinator(StateStore(database))
+    plan = reloaded.get_plan("plan-1")
+    assert plan.revision == 2
+    if plan.status == "accepted":
+        assert [step.step_id for step in reloaded.list_steps("run-1")] == [
+            "plan-1-step-1",
+            "plan-1-step-2",
+        ]
+    else:
+        assert plan.status == "rejected"
+        assert reloaded.list_steps("run-1") == ()
+    decisions = [
+        entry
+        for entry in reloaded.list_history("run-1")
+        if entry.transition in {"plan_accepted", "plan_rejected"}
+    ]
+    assert len(decisions) == 1
+
+
+def test_accept_plan_rejects_existing_step_identity_without_partial_mutation(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    original = _propose_test_plan(coordinator)
+    manual = coordinator.add_step(
+        "run-1", "plan-1-step-2", objective="Manual collision", command=("true",)
+    )
+    before_history = coordinator.list_history("run-1")
+
+    with pytest.raises(ValueError, match="plan step already exists: plan-1-step-2"):
+        coordinator.accept_plan("plan-1", expected_revision=1)
+
+    assert coordinator.get_plan("plan-1") == original
+    assert coordinator.list_steps("run-1") == (manual,)
+    assert coordinator.get_step("plan-1-step-1") is None
+    assert coordinator.list_history("run-1") == before_history
+
+
+def test_accepted_plan_step_executes_through_existing_lifecycle(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ship the feature")
+    _propose_test_plan(coordinator)
+    coordinator.accept_plan("plan-1", expected_revision=1)
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "passed", "")
+
+    step, run = coordinator.execute_next_step(
+        "run-1", sandbox_resolver=lambda policy: Executor()
+    )
+
+    assert step.step_id == "plan-1-step-1"
+    assert step.status is StepStatus.SUCCEEDED
+    assert run.status is RunStatus.RUNNING
+    assert any(
+        entry.transition == "step_succeeded" and entry.step_id == step.step_id
+        for entry in coordinator.list_history("run-1")
+    )
+
+
+@pytest.mark.parametrize("decision", ["accept", "reject"])
+def test_plan_decision_rejects_missing_invalid_and_already_decided_drafts(
+    tmp_path, decision
+) -> None:
+    database = tmp_path / f"{decision}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+    method = coordinator.accept_plan if decision == "accept" else coordinator.reject_plan
+
+    with pytest.raises(KeyError, match="plan does not exist: missing"):
+        method("missing", expected_revision=1)
+
+    StateStore(database).insert(
+        "plan",
+        "invalid",
+        status="invalid",
+        payload={"run_id": "run-1", "objective": "bad", "error": "malformed"},
+    )
+    with pytest.raises(ValueError, match="plan is not a reviewable draft: invalid"):
+        method("invalid", expected_revision=1)
+
+    _propose_test_plan(coordinator)
+    coordinator.reject_plan("plan-1", expected_revision=1)
+    with pytest.raises(ValueError, match="plan is not a reviewable draft: plan-1"):
+        method("plan-1", expected_revision=2)

@@ -3317,3 +3317,119 @@ def test_cli_inspect_plan_rejects_missing_database_without_creating_it(
     assert exit_info.value.code == 2
     assert "state database does not exist" in capsys.readouterr().err
     assert not database.exists()
+
+
+def test_cli_accept_plan_materializes_steps_and_prints_decision(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(content=PLAN_PROPOSAL_CONTENT)
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+    main(
+        [
+            "run", "plan", "run-1", "draft-1", "--provider", "ollama",
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    main(
+        [
+            "run", "accept-plan", "draft-1", "--expected-revision", "1",
+            "--agent-id", "agent-1", "--state-db", str(database),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "accepted"
+    assert payload["revision"] == 2
+    assert payload["decision_agent_id"] == "agent-1"
+    assert payload["steps"] == PLAN_PROPOSAL_STEPS_PAYLOAD
+    reloaded = RunCoordinator(StateStore(database))
+    assert [step.step_id for step in reloaded.list_steps("run-1")] == [
+        "draft-1-step-1",
+        "draft-1-step-2",
+    ]
+    assert reloaded.list_history("run-1")[-1].plan_id == "draft-1"
+
+
+def test_cli_reject_plan_records_decision_without_steps(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(content=PLAN_PROPOSAL_CONTENT)
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+    main(
+        [
+            "run", "plan", "run-1", "draft-1", "--provider", "ollama",
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    main(
+        [
+            "run", "reject-plan", "draft-1", "--expected-revision", "1",
+            "--state-db", str(database),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "rejected"
+    assert payload["revision"] == 2
+    assert "decision_agent_id" not in payload
+    assert RunCoordinator(StateStore(database)).list_steps("run-1") == ()
+
+
+@pytest.mark.parametrize("command", ["accept-plan", "reject-plan"])
+def test_cli_plan_decision_rejects_stale_revision_without_mutation(
+    tmp_path, monkeypatch, capsys, command
+) -> None:
+    from codex_agentic_os.chat import ChatResponse
+
+    database = tmp_path / f"{command}.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship the feature")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(content=PLAN_PROPOSAL_CONTENT)
+
+    monkeypatch.setattr("codex_agentic_os.cli.adapter_for", lambda spec: Adapter())
+    main(
+        [
+            "run", "plan", "run-1", "draft-1", "--provider", "ollama",
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", command, "draft-1", "--expected-revision", "2",
+                "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "plan decision conflict: draft-1" in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get_plan("draft-1").status == "draft"
+    assert reloaded.list_steps("run-1") == ()

@@ -367,10 +367,10 @@ codex-agentic-os run plan run-002 draft-2 --provider ollama \
 ```
 
 A well-formed proposal is durably persisted as a `draft` plan awaiting an explicit
-operator acceptance decision (acceptance and rejection are not implemented yet). A
-malformed or unparseable proposal is instead persisted as an `invalid` plan carrying the
-raw provider response as evidence, and the command fails explicitly (exit code 2) naming
-the recorded plan id; the run's step queue is unchanged either way.
+operator acceptance decision. A malformed or unparseable proposal is instead persisted
+as an `invalid` plan carrying the raw provider response as evidence, and the command
+fails explicitly (exit code 2) naming the recorded plan id; the run's step queue is
+unchanged either way.
 
 Inspect a durable plan draft without modifying runtime state, showing every proposed
 step's objective, execution kind, materialized step id, and executable payload (command
@@ -384,6 +384,26 @@ The same JSON shape `run plan` prints on success is reused here, so a `draft` st
 reviewable and an `invalid` status carries its recorded error and raw evidence. A plan id
 with no durable record fails explicitly (exit code 2) without creating a database, draft,
 run, or step.
+
+Accept or reject the inspected draft by supplying its current revision. Acceptance
+atomically queues every proposed step in stable order and marks the plan `accepted`;
+rejection marks it `rejected` and queues nothing. Both commands compare-and-swap the
+reviewed draft and attached run snapshots, so a stale or competing decision fails
+without partially materializing steps or overwriting the winning decision. Acceptance
+also rejects a materialized step id that already exists. An optional registered agent id
+is recorded with the plan-identified run-history decision:
+
+```bash
+codex-agentic-os run accept-plan draft-1 --expected-revision 1 \
+  --agent-id operator-1 --state-db .codex-agentic-os/state.sqlite3
+codex-agentic-os run reject-plan draft-2 --expected-revision 1 \
+  --agent-id operator-1 --state-db .codex-agentic-os/state.sqlite3
+```
+
+The command prints the standard plan JSON with its terminal status, incremented
+revision, and `decision_agent_id` when one was supplied. Accepted steps enter the same
+queued approval, eligibility, execution, retry, and history paths as manually added
+steps; there is no planner-specific execution path.
 
 Inspect a durable run and its ordered steps without modifying runtime state:
 
