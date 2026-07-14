@@ -11,6 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Sequence
 
+from .api import build_server, is_loopback_bind_host, serve_until_stopped
 from .chat import ChatMessage, ChatRequest, adapter_for
 from .index import (
     build_clean_index,
@@ -44,6 +45,13 @@ from .runtime import (
     SandboxPolicy,
     StepRecoveryReason,
     StepStatus,
+)
+from .payloads import (
+    _artifact_record_payload,
+    _history_payload,
+    _run_list_payload,
+    _run_payload,
+    _step_payload,
 )
 from .sandboxes import ContainerSandbox, SandboxKind, SandboxSpec, default_sandboxes
 from .state import StateStore
@@ -544,6 +552,30 @@ def _parser() -> argparse.ArgumentParser:
         help="path to the runtime state database",
     )
 
+    api = commands.add_parser("api", help="run a local read-only operator HTTP API")
+    api_commands = api.add_subparsers(dest="api_command", required=True)
+    api_serve = api_commands.add_parser(
+        "serve",
+        help=(
+            "start a loopback-only HTTP server exposing read-only run "
+            "listing, run detail, and run history endpoints"
+        ),
+    )
+    api_serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="explicit loopback bind host, e.g. 127.0.0.1 or ::1 (default: 127.0.0.1)",
+    )
+    api_serve.add_argument(
+        "--port", type=int, required=True, help="loopback bind port"
+    )
+    api_serve.add_argument(
+        "--state-db",
+        type=Path,
+        default=Path(".codex-agentic-os/state.sqlite3"),
+        help="path to the runtime state database",
+    )
+
     provider = commands.add_parser("provider", help="inspect configured model providers")
     provider_commands = provider.add_subparsers(dest="provider_command", required=True)
     provider_commands.add_parser("list", help="list default provider specs")
@@ -625,38 +657,6 @@ def _parse_env(values: Sequence[str]) -> tuple[tuple[str, str], ...]:
     return tuple(pairs)
 
 
-def _run_payload(coordinator: RunCoordinator, run_id: str) -> dict[str, object]:
-    """Return a JSON-compatible, ordered view of one durable run."""
-
-    run = coordinator.get(run_id)
-    if run is None:
-        raise ValueError(f"run does not exist: {run_id}")
-    run_data = asdict(run)
-    run_data["status"] = run.status.value
-    retry_lineage = {
-        entry.retried_step_id: entry.step_id
-        for entry in coordinator.list_history(run_id)
-        if entry.transition == "step_retried"
-        and entry.retried_step_id is not None
-        and entry.step_id is not None
-    }
-    retried_from = {
-        new_step_id: prior_step_id
-        for prior_step_id, new_step_id in retry_lineage.items()
-    }
-    steps = []
-    for step in coordinator.list_steps(run_id):
-        steps.append(
-            _step_payload(
-                step,
-                retried_from_step_id=retried_from.get(step.step_id),
-                retried_into_step_id=retry_lineage.get(step.step_id),
-                artifacts=coordinator.list_artifacts(run_id, step_id=step.step_id),
-            )
-        )
-    return {"run": run_data, "steps": steps}
-
-
 def _plan_draft_payload(draft: PlanDraft) -> dict[str, object]:
     """Return a JSON-compatible, ordered view of one durable plan draft."""
 
@@ -687,26 +687,6 @@ def _plan_step_proposal_payload(step: PlanStepProposal) -> dict[str, object]:
     else:
         payload["sandbox_policy"]["kind"] = step.sandbox_policy.kind.value
     return payload
-
-
-def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, object]]:
-    """Return one run's durable history entries in stable sequence order."""
-
-    payloads = []
-    for entry in entries:
-        payload = asdict(entry)
-        for optional_field in (
-            "plan_id",
-            "required_capability",
-            "resolved_provider",
-            "resolved_model",
-            "routing_reason",
-            "artifact_name",
-        ):
-            if getattr(entry, optional_field) is None:
-                payload.pop(optional_field)
-        payloads.append(payload)
-    return payloads
 
 
 _WATCH_TERMINAL_RUN_STATUSES = frozenset(
@@ -882,24 +862,6 @@ def _staleness_payload(evaluation: ClaimStaleness) -> dict[str, object]:
     return asdict(evaluation)
 
 
-def _artifact_record_payload(artifact: ArtifactRecord) -> dict[str, object]:
-    """Return the standard JSON-compatible, redacted view of one artifact record."""
-
-    payload: dict[str, object] = {
-        "artifact_id": artifact.artifact_id,
-        "name": artifact.name,
-        "status": artifact.status.value,
-        "source_path": artifact.source_path,
-    }
-    if artifact.content_hash is not None:
-        payload["content_hash"] = artifact.content_hash
-    if artifact.size_bytes is not None:
-        payload["size_bytes"] = artifact.size_bytes
-    if artifact.size_limit_bytes is not None:
-        payload["size_limit_bytes"] = artifact.size_limit_bytes
-    return payload
-
-
 def _artifact_listing_payload(artifacts: Sequence[ArtifactRecord]) -> list[dict[str, object]]:
     """Return one run's redacted artifact records with explicit run/step provenance."""
 
@@ -910,69 +872,6 @@ def _artifact_listing_payload(artifacts: Sequence[ArtifactRecord]) -> list[dict[
         payload["step_id"] = artifact.step_id
         payloads.append(payload)
     return payloads
-
-
-def _step_payload(
-    step: RunStep,
-    *,
-    retried_from_step_id: str | None = None,
-    retried_into_step_id: str | None = None,
-    artifacts: Sequence[ArtifactRecord] = (),
-) -> dict[str, object]:
-    """Return the standard JSON-compatible view of one durable step."""
-
-    payload = asdict(step)
-    # Approval presentation is introduced with the dedicated Sprint 6 CLI slice.
-    payload.pop("approval_required")
-    payload.pop("approval_status")
-    if step.message is None:
-        payload.pop("message")
-    if not step.context_step_ids:
-        payload.pop("context_step_ids")
-    if step.sandbox_policy is None:
-        payload.pop("sandbox_policy")
-    else:
-        payload["sandbox_policy"]["kind"] = step.sandbox_policy.kind.value
-    if not step.artifact_declarations:
-        payload.pop("artifact_declarations")
-    if step.response_artifact_name is None:
-        payload.pop("response_artifact_name")
-    if artifacts:
-        payload["artifacts"] = [_artifact_record_payload(artifact) for artifact in artifacts]
-    payload["status"] = step.status.value
-    if step.status is StepStatus.FAILED:
-        payload["failure_kind"] = (
-            None if step.failure_kind is None else step.failure_kind.value
-        )
-        payload["retry_eligible"] = step.retry_eligible
-    if retried_from_step_id is not None:
-        payload["retried_from_step_id"] = retried_from_step_id
-    if retried_into_step_id is not None:
-        payload["retried_into_step_id"] = retried_into_step_id
-    return payload
-
-
-def _run_list_payload(
-    coordinator: RunCoordinator,
-    statuses: Sequence[RunStatus] | None = None,
-    agent_id: str | None = None,
-    unassigned: bool = False,
-) -> list[dict[str, object]]:
-    """Return JSON-compatible run summaries in stable identifier order."""
-
-    included_statuses = None if statuses is None else set(statuses)
-    summaries = []
-    for run in coordinator.list_runs():
-        if included_statuses is not None and run.status not in included_statuses:
-            continue
-        if agent_id is not None and run.agent_id != agent_id:
-            continue
-        if unassigned and run.agent_id is not None:
-            continue
-        summary = asdict(run)
-        summary["status"] = run.status.value
-        summaries.append(summary)
-    return summaries
 
 
 def _agent_payload(agent: Agent) -> dict[str, object]:
@@ -1682,6 +1581,29 @@ def main(argv: Sequence[str] | None = None) -> None:
                     sort_keys=True,
                 )
             )
+        elif arguments.command == "api":
+            if not is_loopback_bind_host(arguments.host):
+                raise ValueError(
+                    "HTTP API host must be an explicit loopback address, not "
+                    f"{arguments.host!r}"
+                )
+            if not arguments.state_db.is_file():
+                raise ValueError(f"state database does not exist: {arguments.state_db}")
+            coordinator = RunCoordinator(StateStore(arguments.state_db, read_only=True))
+            server = build_server(coordinator, arguments.host, arguments.port)
+            should_continue, restore_shutdown_signals = _install_worker_shutdown_signals()
+            print(
+                json.dumps(
+                    {"host": arguments.host, "port": server.server_address[1]},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            try:
+                serve_until_stopped(server, should_continue=should_continue)
+            finally:
+                server.server_close()
+                restore_shutdown_signals()
         elif arguments.command == "provider":
             if arguments.provider_command == "list":
                 providers: object = [

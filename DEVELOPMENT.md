@@ -604,6 +604,31 @@ codex-agentic-os run watch run-002 --interval 2 --after-sequence 41
 codex-agentic-os run watch run-002 --interval 2 --state-db /path/to/state.sqlite3
 ```
 
+`codex-agentic-os api serve --port PORT` starts a local, read-only HTTP
+server that reuses the exact `run list`/`run inspect`/`run history` JSON
+contracts over loopback HTTP, so operator interfaces beyond the CLI can be
+built on stable contracts. `--host` must be an explicit loopback literal
+such as `127.0.0.1` (the default) or `::1`; a hostname like `localhost` or
+any non-loopback address is rejected before a socket is ever opened. The
+state database is opened read-only. Routes are served under a stable
+`/api/v1` base path:
+
+- `GET /api/v1/runs` — the same payload as `run list`.
+- `GET /api/v1/runs/{run_id}` — the same payload as `run inspect`,
+  including ordered steps.
+- `GET /api/v1/runs/{run_id}/history` — the same payload as `run history`.
+
+An unrecognized path or unknown run id returns a structured `{"error":
+...}` JSON body with `404`; any non-`GET` method returns the same shape
+with `405`. There are no mutation routes of any kind. The server runs in
+the foreground until interrupted (Ctrl-C or SIGTERM), exiting cleanly like
+`run watch` and `worker run`:
+
+```bash
+codex-agentic-os api serve --port 8080
+codex-agentic-os api serve --host ::1 --port 8080 --state-db /path/to/state.sqlite3
+```
+
 Show one run's provider usage evidence in durable step order plus a
 run-level token aggregate. Each provider step reports its status, provider,
 resolved model, and a `usage` block (`available`, `input_tokens`,
