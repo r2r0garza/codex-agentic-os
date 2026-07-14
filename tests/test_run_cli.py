@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import signal
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -19,6 +21,10 @@ from codex_agentic_os.runtime import (
 )
 from codex_agentic_os.sandboxes import ContainerSandbox, SandboxKind, SandboxResult
 from codex_agentic_os.state import StateStore
+
+
+class _StopLoop(Exception):
+    """Sentinel raised by a fake sleeper to bound an otherwise-live poll loop."""
 
 
 def RunCoordinator(store: StateStore) -> _RunCoordinator:
@@ -2766,6 +2772,176 @@ def test_cli_history_does_not_mutate_run_or_step_state(tmp_path, capsys) -> None
     reloaded = RunCoordinator(StateStore(database))
     assert reloaded.get("run-1") == original_run
     assert reloaded.get_step("step-1") == original_step
+
+
+def test_cli_watch_prints_new_entries_once_and_stops_at_terminal_status(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Observe live")
+
+    sleep_calls: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        mutator = RunCoordinator(StateStore(database))
+        if len(sleep_calls) == 1:
+            mutator.transition("run-1", RunStatus.RUNNING)
+        else:
+            mutator.transition("run-1", RunStatus.SUCCEEDED)
+
+    monkeypatch.setattr("codex_agentic_os.cli.time.sleep", fake_sleep)
+
+    main(["run", "watch", "run-1", "--interval", "5", "--state-db", str(database)])
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert [entry["event"] for entry in lines] == ["history", "history", "history"]
+    assert [entry["sequence"] for entry in lines] == [1, 2, 3]
+    assert [entry["status"] for entry in lines] == ["queued", "running", "succeeded"]
+    assert sleep_calls == [5, 5]
+
+
+def test_cli_watch_surfaces_pending_approval_once_without_repeating(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Observe blocked work")
+    coordinator.add_step(
+        "run-1",
+        "gate",
+        objective="Needs sign-off",
+        command=("true",),
+        approval_required=True,
+    )
+
+    sleep_calls: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        if len(sleep_calls) >= 3:
+            raise _StopLoop()
+
+    monkeypatch.setattr("codex_agentic_os.cli.time.sleep", fake_sleep)
+
+    with pytest.raises(_StopLoop):
+        main(["run", "watch", "run-1", "--interval", "1", "--state-db", str(database)])
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    blocked = [entry for entry in lines if entry["event"] == "blocked"]
+    assert len(blocked) == 1
+    assert blocked[0] == {
+        "event": "blocked",
+        "run_id": "run-1",
+        "step_id": "gate",
+        "position": 1,
+        "objective": "Needs sign-off",
+        "reason": "approval_pending",
+    }
+    assert sleep_calls == [1, 1, 1]
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get_step("gate").approval_status.value == "pending"
+
+
+def test_cli_watch_rejects_non_positive_interval_without_opening_database(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "watch", "run-1", "--interval", "0",
+                "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "watch interval must be a positive number of seconds" in capsys.readouterr().err
+    assert not database.exists()
+
+
+def test_cli_watch_rejects_missing_run_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    StateStore(database).initialize()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "watch", "missing", "--interval", "1",
+                "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "run does not exist: missing" in capsys.readouterr().err
+
+
+def test_cli_watch_rejects_missing_database_without_creating_it(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "watch", "run-1", "--interval", "1",
+                "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "state database does not exist" in capsys.readouterr().err
+    assert not database.exists()
+
+
+def test_cli_watch_does_not_mutate_run_or_step_state(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Inspect live")
+    coordinator.add_step("run-1", "step-1", objective="Work", command=("true",))
+    coordinator.transition("run-1", RunStatus.RUNNING)
+    coordinator.transition("run-1", RunStatus.FAILED, output={"reason": "stopped"})
+
+    original_run = coordinator.get("run-1")
+    original_step = coordinator.get_step("step-1")
+
+    main(["run", "watch", "run-1", "--interval", "1", "--state-db", str(database)])
+    capsys.readouterr()
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.get_step("step-1") == original_step
+
+
+@pytest.mark.parametrize("target_signal", [signal.SIGINT, signal.SIGTERM])
+def test_cli_watch_stops_cleanly_on_shutdown_signal(
+    tmp_path, monkeypatch, capsys, target_signal
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Observe until interrupted")
+
+    def fake_sleep(seconds: float) -> None:
+        os.kill(os.getpid(), target_signal)
+
+    monkeypatch.setattr("codex_agentic_os.cli.time.sleep", fake_sleep)
+
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    main(["run", "watch", "run-1", "--interval", "1", "--state-db", str(database)])
+
+    assert signal.getsignal(signal.SIGINT) is previous_sigint
+    assert signal.getsignal(signal.SIGTERM) is previous_sigterm
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert [entry["event"] for entry in lines] == ["history"]
+
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1").status == RunStatus.QUEUED
 
 
 def test_cli_usage_reports_available_and_unavailable_usage_in_order(

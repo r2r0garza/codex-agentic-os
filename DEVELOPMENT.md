@@ -580,6 +580,25 @@ codex-agentic-os run history run-002 --state-db /path/to/state.sqlite3
 History inspection requires an existing database and run; it fails without
 creating a database and without mutating state.
 
+`run watch RUN_ID --interval SECONDS` polls the same durable history read
+model on the given positive interval and prints one JSON object per line —
+each new history entry exactly once in sequence order, reusing the `run
+history` redaction contract — until the run reaches a terminal status or the
+operator interrupts the command (Ctrl-C or SIGTERM), at which point the
+command exits cleanly without error. A watch session tracks its own
+in-process sequence cursor, so no entry already printed this session repeats.
+When the next queued step is blocked on a pending approval, the session
+prints one `{"event": "blocked", ...}` notice identifying the blocking step;
+it is not repeated on later polls unless a different step becomes blocked.
+Watching requires an existing database and run and a positive `--interval`,
+validated before the database is opened; it never creates a database or
+mutates run, step, history, approval, artifact, usage, or agent state:
+
+```bash
+codex-agentic-os run watch run-002 --interval 2
+codex-agentic-os run watch run-002 --interval 2 --state-db /path/to/state.sqlite3
+```
+
 Show one run's provider usage evidence in durable step order plus a
 run-level token aggregate. Each provider step reports its status, provider,
 resolved model, and a `usage` block (`available`, `input_tokens`,

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import signal
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Sequence
@@ -28,6 +29,7 @@ from .providers import (
 from .runtime import (
     Agent,
     AgentRegistry,
+    ApprovalStatus,
     ArtifactDeclaration,
     ArtifactRecord,
     ClaimStaleness,
@@ -112,6 +114,10 @@ def _parser() -> argparse.ArgumentParser:
     inspect = run_commands.add_parser("inspect", help="show a run and its ordered steps")
     history = run_commands.add_parser(
         "history", help="show one run's durable lifecycle history in order"
+    )
+    watch = run_commands.add_parser(
+        "watch",
+        help="poll one run's durable history live until it reaches a terminal status",
     )
     approvals = run_commands.add_parser(
         "approvals", help="show one run's sanitized step approval requests"
@@ -382,6 +388,7 @@ def _parser() -> argparse.ArgumentParser:
     for command in (
         inspect,
         history,
+        watch,
         approvals,
         staleness,
         usage_command,
@@ -413,6 +420,12 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         required=True,
         help="positive staleness threshold in seconds compared against the owner's heartbeat",
+    )
+    watch.add_argument(
+        "--interval",
+        type=float,
+        required=True,
+        help="positive polling interval in seconds between history checks",
     )
     list_artifacts_command.add_argument(
         "--step", dest="step_id", help="only list artifacts declared or captured by one step"
@@ -688,6 +701,73 @@ def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, objec
                 payload.pop(optional_field)
         payloads.append(payload)
     return payloads
+
+
+_WATCH_TERMINAL_RUN_STATUSES = frozenset(
+    {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}
+)
+
+
+def _watch_blocked_step(coordinator: RunCoordinator, run_id: str) -> RunStep | None:
+    """Return the next queued step blocking dispatch on a pending approval, if any."""
+
+    for step in coordinator.list_steps(run_id):
+        if step.status is StepStatus.QUEUED:
+            return step if step.approval_status is ApprovalStatus.PENDING else None
+    return None
+
+
+def _watch_run(
+    coordinator: RunCoordinator,
+    run_id: str,
+    *,
+    interval: float,
+    emit: Callable[[dict[str, object]], None],
+    sleeper: Callable[[float], None] | None = None,
+    should_continue: Callable[[], bool] = lambda: True,
+) -> None:
+    """Poll one run's durable history until it is terminal or interrupted.
+
+    Reuses ``RunCoordinator.list_history``/``list_steps`` only, so a watch
+    session never creates or mutates state. Each durable entry is emitted
+    exactly once per session, tracked by its sequence number; a step blocked
+    on a pending approval is emitted once when first observed rather than on
+    every poll tick, so a long-blocked run does not repeat the same notice.
+    """
+
+    if sleeper is None:
+        sleeper = time.sleep
+    last_sequence = 0
+    announced_blocked_step_id: str | None = None
+    while should_continue():
+        for entry in coordinator.list_history(run_id):
+            if entry.sequence <= last_sequence:
+                continue
+            emit({"event": "history", **_history_payload([entry])[0]})
+            last_sequence = entry.sequence
+        blocked_step = _watch_blocked_step(coordinator, run_id)
+        if blocked_step is None:
+            announced_blocked_step_id = None
+        elif blocked_step.step_id != announced_blocked_step_id:
+            emit(
+                {
+                    "event": "blocked",
+                    "run_id": run_id,
+                    "step_id": blocked_step.step_id,
+                    "position": blocked_step.position,
+                    "objective": blocked_step.objective,
+                    "reason": "approval_pending",
+                }
+            )
+            announced_blocked_step_id = blocked_step.step_id
+        run = coordinator.get(run_id)
+        if run is None:
+            raise ValueError(f"run does not exist: {run_id}")
+        if run.status in _WATCH_TERMINAL_RUN_STATUSES:
+            return
+        if not should_continue():
+            return
+        sleeper(interval)
 
 
 def _approval_payload(
@@ -1000,6 +1080,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     repository = Path.cwd()
     try:
         if arguments.command == "run":
+            if arguments.run_command == "watch" and arguments.interval <= 0:
+                raise ValueError("watch interval must be a positive number of seconds")
             if arguments.run_command != "create" and not arguments.state_db.is_file():
                 raise ValueError(f"state database does not exist: {arguments.state_db}")
             read_only = arguments.run_command in {
@@ -1008,6 +1090,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "inspect-plan",
                 "list",
                 "history",
+                "watch",
                 "approvals",
                 "staleness",
                 "usage",
@@ -1231,6 +1314,23 @@ def main(argv: Sequence[str] | None = None) -> None:
                         sort_keys=True,
                     )
                 )
+                return
+            elif arguments.run_command == "watch":
+                if coordinator.get(arguments.run_id) is None:
+                    raise ValueError(f"run does not exist: {arguments.run_id}")
+                should_continue, restore_shutdown_signals = (
+                    _install_worker_shutdown_signals()
+                )
+                try:
+                    _watch_run(
+                        coordinator,
+                        arguments.run_id,
+                        interval=arguments.interval,
+                        emit=lambda payload: print(json.dumps(payload, sort_keys=True)),
+                        should_continue=should_continue,
+                    )
+                finally:
+                    restore_shutdown_signals()
                 return
             elif arguments.run_command == "approvals":
                 print(
