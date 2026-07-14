@@ -356,6 +356,31 @@ codex-agentic-os run export-artifact run-002 --name archive --step step-005 \
   --destination /path/to/release.tar.gz --state-db .codex-agentic-os/state.sqlite3
 ```
 
+Declare a named tool on a provider-message step with `--tool JSON`, repeatable for
+multiple tools. Each tool is `{"name": "...", "command": ["<argv0>", ...],
+"description": "<optional>", "parameters": {<optional JSON schema object>}}`; `name`
+must be a valid identifier, unique among the step's tools, and `command` a non-empty
+list of non-empty strings. A tool-declaring provider step also requires a persisted
+`--sandbox` policy — the same durable policy a command step uses — since a declared
+tool's command later executes through that same sandbox boundary. Declaring a
+sandbox policy on a provider step that declares no tools remains rejected exactly as
+before:
+
+```bash
+codex-agentic-os run add-step run-002 step-007 --objective "Summarize with a tool" \
+  --provider ollama --message "Summarize the repository" \
+  --sandbox docker --mount /path/to/repository:/workspace \
+  --tool '{"name": "list_files", "command": ["ls", "-la"], "description": "List workspace files"}' \
+  --state-db .codex-agentic-os/state.sqlite3
+```
+
+`run inspect` and `run inspect-step` show each step's `tool_declarations` (name,
+command, optional description, optional parameters) and, when present, its
+`sandbox_policy`; a provider step declaring no tools omits both keys exactly as
+before. Only the declaration is persisted here — dispatch does not yet map these
+tools into an adapter's native tool/function request shape or execute a
+model-requested tool call; both are a later sprint slice.
+
 ```bash
 codex-agentic-os run add-step run-002 step-002b --objective "Summarize output" \
   --capability general --message "Summarize the test output" \

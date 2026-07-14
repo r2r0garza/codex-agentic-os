@@ -58,6 +58,8 @@ def _step_payload(
         payload.pop("sandbox_policy")
     else:
         payload["sandbox_policy"]["kind"] = step.sandbox_policy.kind.value
+    if not step.tool_declarations:
+        payload.pop("tool_declarations")
     if not step.artifact_declarations:
         payload.pop("artifact_declarations")
     if step.response_artifact_name is None:

@@ -30,6 +30,7 @@ from codex_agentic_os.runtime import (
     StepFailureKind,
     StepRecoveryReason,
     StepStatus,
+    ToolDeclaration,
 )
 from codex_agentic_os.sandboxes import SandboxKind, SandboxResult
 from codex_agentic_os.state import StateStore
@@ -4566,6 +4567,200 @@ def test_read_artifact_content_rejects_missing_local_storage(tmp_path) -> None:
     (coordinator._artifact_storage_dir / artifact.artifact_id).unlink()
     with pytest.raises(ValueError, match="missing from local storage"):
         coordinator.read_artifact_content(artifact.artifact_id)
+
+
+def test_add_step_persists_tool_declarations_across_restart(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ask a model to use a tool")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+
+    created = coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Summarize with a tool",
+        message=ProviderMessage(provider="local", content="Hello"),
+        sandbox_policy=policy,
+        tools=[
+            ToolDeclaration(
+                name="list_files",
+                command=("ls", "-la"),
+                description="List workspace files",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+    )
+
+    assert created.tool_declarations == (
+        ToolDeclaration(
+            name="list_files",
+            command=("ls", "-la"),
+            description="List workspace files",
+            parameters={"type": "object", "properties": {}},
+        ),
+    )
+    reloaded = RunCoordinator(StateStore(database)).get_step("model")
+    assert reloaded is not None
+    assert reloaded.tool_declarations == created.tool_declarations
+    assert reloaded.sandbox_policy == policy
+
+
+def test_add_step_without_tools_has_no_tool_declarations(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model")
+
+    created = coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Summarize",
+        message=ProviderMessage(provider="local", content="Hello"),
+    )
+
+    assert created.tool_declarations == ()
+    assert created.sandbox_policy is None
+
+
+def test_tool_declarations_require_a_persisted_sandbox_policy(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    run = coordinator.create("run-1", objective="Ask a model")
+
+    with pytest.raises(ValueError, match="require a persisted sandbox policy"):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize",
+            message=ProviderMessage(provider="local", content="Hello"),
+            tools=[ToolDeclaration(name="list_files", command=("ls",))],
+        )
+
+    assert coordinator.get("run-1") == run
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_tool_declarations_are_rejected_for_command_steps(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Build feature")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+
+    with pytest.raises(
+        ValueError, match="only valid for provider-message steps"
+    ):
+        coordinator.add_step(
+            "run-1",
+            "command",
+            objective="Produce a file",
+            command=("true",),
+            sandbox_policy=policy,
+            tools=[ToolDeclaration(name="list_files", command=("ls",))],
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_sandbox_policy_is_valid_for_tool_declaring_provider_steps(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model to use a tool")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+
+    step = coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Summarize with a tool",
+        message=ProviderMessage(provider="local", content="Hello"),
+        sandbox_policy=policy,
+        tools=[ToolDeclaration(name="list_files", command=("ls",))],
+    )
+
+    assert step.sandbox_policy == policy
+
+
+def test_sandbox_policy_still_rejected_for_provider_steps_without_tools(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+
+    with pytest.raises(ValueError, match="only valid for command steps"):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize",
+            message=ProviderMessage(provider="local", content="Hello"),
+            sandbox_policy=policy,
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+@pytest.mark.parametrize(
+    ("tools", "message"),
+    [
+        ([{"name": "", "command": ["ls"]}], "must be a valid identifier"),
+        ([{"name": "bad name", "command": ["ls"]}], "must be a valid identifier"),
+        (
+            [
+                {"name": "same", "command": ["ls"]},
+                {"name": "same", "command": ["pwd"]},
+            ],
+            "name is not unique: same",
+        ),
+        ([{"name": "listing", "command": []}], "non-empty strings"),
+        ([{"name": "listing", "command": None}], "sequence of arguments"),
+        ([{"name": "listing", "command": ["ls"], "description": "  "}], "non-empty string"),
+        (
+            [{"name": "listing", "command": ["ls"], "parameters": ["not", "a", "dict"]}],
+            "must be a JSON object",
+        ),
+        (
+            [{"name": "listing", "command": ["ls"], "unexpected": "field"}],
+            "unknown fields",
+        ),
+    ],
+)
+def test_tool_declaration_validation_rejects_invalid_input_without_mutation(
+    tmp_path, tools, message
+) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+
+    with pytest.raises(ValueError, match=message):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize",
+            message=ProviderMessage(provider="local", content="Hello"),
+            sandbox_policy=policy,
+            tools=tools,
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_tool_declarations_survive_provider_step_failure_and_recovery(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model to use a tool")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+    tools = [ToolDeclaration(name="list_files", command=("ls",))]
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Summarize with a tool",
+        message=ProviderMessage(provider="local", content="Hello"),
+        sandbox_policy=policy,
+        tools=tools,
+    )
+    coordinator.start_next_step("run-1")
+
+    failed_step, failed_run = coordinator.fail_step_from_error(
+        "model", RuntimeError("adapter unavailable")
+    )
+    assert failed_step.tool_declarations == tuple(tools)
+    assert failed_step.sandbox_policy == policy
+    assert failed_run.status is RunStatus.FAILED
+
+    reloaded = RunCoordinator(StateStore(coordinator.store.path)).get_step("model")
+    assert reloaded.tool_declarations == tuple(tools)
+    assert reloaded.sandbox_policy == policy
 
 
 def test_add_step_rejects_delegation_combined_with_command_or_message(tmp_path) -> None:

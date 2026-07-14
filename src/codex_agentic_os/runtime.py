@@ -186,6 +186,21 @@ class DelegationSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolDeclaration:
+    """Durable declaration of one named tool a provider step may invoke.
+
+    Bound to a persisted sandboxed command template that executes under the
+    declaring step's own sandbox policy once a model requests this tool by
+    name; only the declaration is persisted here, not its execution.
+    """
+
+    name: str
+    command: tuple[str, ...]
+    description: str | None = None
+    parameters: Mapping[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RunStep:
     """Typed view of a durable, ordered unit of work within a run."""
 
@@ -203,6 +218,7 @@ class RunStep:
     approval_required: bool = False
     approval_status: ApprovalStatus | None = None
     sandbox_policy: SandboxPolicy | None = None
+    tool_declarations: tuple[ToolDeclaration, ...] = ()
     artifact_declarations: tuple[ArtifactDeclaration, ...] = ()
     response_artifact_name: str | None = None
     delegation: DelegationSpec | None = None
@@ -764,6 +780,8 @@ class RunCoordinator:
                 payload["message"] = self._message_payload(step.message)
             if step.sandbox_policy is not None:
                 payload["sandbox_policy"] = self._sandbox_policy_payload(step.sandbox_policy)
+            if step.tool_declarations:
+                payload["tools"] = self._tool_declarations_payload(step.tool_declarations)
             if step.delegation is not None:
                 payload["delegation"] = self._delegation_payload(step.delegation)
             if step.delegated_run_id is not None:
@@ -873,6 +891,10 @@ class RunCoordinator:
             if next_step.sandbox_policy is not None:
                 step_payload["sandbox_policy"] = self._sandbox_policy_payload(
                     next_step.sandbox_policy
+                )
+            if next_step.tool_declarations:
+                step_payload["tools"] = self._tool_declarations_payload(
+                    next_step.tool_declarations
                 )
             if next_step.artifact_declarations:
                 step_payload["artifacts"] = self._artifact_declarations_payload(
@@ -1258,6 +1280,7 @@ class RunCoordinator:
         context_step_ids: Sequence[str] | None = None,
         approval_required: bool = False,
         sandbox_policy: SandboxPolicy | Mapping[str, object] | None = None,
+        tools: Sequence[ToolDeclaration | Mapping[str, object]] | None = None,
         artifacts: Sequence[ArtifactDeclaration | Mapping[str, object]] | None = None,
         response_artifact_name: str | None = None,
         delegation: DelegationSpec | Mapping[str, object] | None = None,
@@ -1292,7 +1315,14 @@ class RunCoordinator:
         if not isinstance(approval_required, bool):
             raise ValueError("approval_required must be a boolean")
         normalized_sandbox_policy = self._validate_sandbox_policy(
-            sandbox_policy, has_command=normalized_command is not None
+            sandbox_policy,
+            has_command=normalized_command is not None,
+            has_tools=bool(tools),
+        )
+        normalized_tools = self._validate_tool_declarations(
+            tools,
+            has_message=normalized_message is not None,
+            sandbox_policy=normalized_sandbox_policy,
         )
         normalized_artifacts = self._validate_artifact_declarations(
             artifacts, sandbox_policy=normalized_sandbox_policy
@@ -1316,6 +1346,8 @@ class RunCoordinator:
             payload["context_step_ids"] = list(normalized_context_step_ids)
         if normalized_sandbox_policy is not None:
             payload["sandbox_policy"] = self._sandbox_policy_payload(normalized_sandbox_policy)
+        if normalized_tools:
+            payload["tools"] = self._tool_declarations_payload(normalized_tools)
         if normalized_artifacts:
             payload["artifacts"] = self._artifact_declarations_payload(normalized_artifacts)
         if normalized_response_artifact_name is not None:
@@ -1634,6 +1666,8 @@ class RunCoordinator:
             payload["message"] = self._message_payload(current.message)
         if current.sandbox_policy is not None:
             payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
+        if current.tool_declarations:
+            payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
         if current.artifact_declarations:
             payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -1824,6 +1858,8 @@ class RunCoordinator:
             step_payload["message"] = self._message_payload(current.message)
         if current.sandbox_policy is not None:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
+        if current.tool_declarations:
+            step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
         if current.artifact_declarations:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -1913,6 +1949,10 @@ class RunCoordinator:
             "message": self._message_payload(current.message),
             "output": output,
         }
+        if current.sandbox_policy is not None:
+            step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
+        if current.tool_declarations:
+            step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
         if current.response_artifact_name is not None:
             step_payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(step_payload, current)
@@ -1985,6 +2025,8 @@ class RunCoordinator:
             step_payload["message"] = self._message_payload(current.message)
         if current.sandbox_policy is not None:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
+        if current.tool_declarations:
+            step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
         if current.artifact_declarations:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -2067,6 +2109,8 @@ class RunCoordinator:
             step_payload["message"] = self._message_payload(current.message)
         if current.sandbox_policy is not None:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
+        if current.tool_declarations:
+            step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
         if current.artifact_declarations:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -2169,6 +2213,7 @@ class RunCoordinator:
         message = record.payload.get("message")
         context_step_ids = record.payload.get("context_step_ids")
         sandbox_policy = record.payload.get("sandbox_policy")
+        tools = record.payload.get("tools")
         artifacts = record.payload.get("artifacts")
         response_artifact_name = record.payload.get("response_artifact_name")
         approval_required = record.payload.get("approval_required", False)
@@ -2201,7 +2246,14 @@ class RunCoordinator:
         if delegated_run_id is not None and normalized_delegation is None:
             raise ValueError(f"step record has an orphaned delegated run id: {record.key}")
         normalized_sandbox_policy = RunCoordinator._validate_sandbox_policy(
-            sandbox_policy, has_command=normalized_command is not None
+            sandbox_policy,
+            has_command=normalized_command is not None,
+            has_tools=bool(tools),
+        )
+        normalized_tools = RunCoordinator._validate_tool_declarations(
+            tools,
+            has_message=normalized_message is not None,
+            sandbox_policy=normalized_sandbox_policy,
         )
         normalized_artifacts = RunCoordinator._validate_artifact_declarations(
             artifacts, sandbox_policy=normalized_sandbox_policy
@@ -2241,6 +2293,7 @@ class RunCoordinator:
             approval_required=approval_required,
             approval_status=approval_status,
             sandbox_policy=normalized_sandbox_policy,
+            tool_declarations=normalized_tools,
             artifact_declarations=normalized_artifacts,
             response_artifact_name=normalized_response_artifact_name,
             delegation=normalized_delegation,
@@ -2319,6 +2372,10 @@ class RunCoordinator:
         if step.sandbox_policy is not None:
             payload["sandbox_policy"] = RunCoordinator._sandbox_policy_payload(
                 step.sandbox_policy
+            )
+        if step.tool_declarations:
+            payload["tools"] = RunCoordinator._tool_declarations_payload(
+                step.tool_declarations
             )
         if step.artifact_declarations:
             payload["artifacts"] = RunCoordinator._artifact_declarations_payload(
@@ -2716,11 +2773,15 @@ class RunCoordinator:
         policy: SandboxPolicy | Mapping[str, object] | object | None,
         *,
         has_command: bool,
+        has_tools: bool = False,
     ) -> SandboxPolicy | None:
         if policy is None:
             return None
-        if not has_command:
-            raise ValueError("sandbox policy is only valid for command steps")
+        if not has_command and not has_tools:
+            raise ValueError(
+                "sandbox policy is only valid for command steps or "
+                "tool-declaring provider steps"
+            )
         if isinstance(policy, SandboxPolicy):
             values = asdict(policy)
         elif isinstance(policy, Mapping):
@@ -2776,6 +2837,107 @@ class RunCoordinator:
             env_passthrough=env_passthrough,
             network_enabled=network_enabled,
         )
+
+    @staticmethod
+    def _tool_declarations_payload(
+        declarations: Sequence[ToolDeclaration],
+    ) -> list[dict[str, object]]:
+        payloads: list[dict[str, object]] = []
+        for declaration in declarations:
+            payload: dict[str, object] = {
+                "name": declaration.name,
+                "command": list(declaration.command),
+            }
+            if declaration.description is not None:
+                payload["description"] = declaration.description
+            if declaration.parameters is not None:
+                payload["parameters"] = dict(declaration.parameters)
+            payloads.append(payload)
+        return payloads
+
+    @staticmethod
+    def _validate_tool_declarations(
+        tools: Sequence[ToolDeclaration | Mapping[str, object]] | object | None,
+        *,
+        has_message: bool,
+        sandbox_policy: SandboxPolicy | None,
+    ) -> tuple[ToolDeclaration, ...]:
+        if tools is None:
+            return ()
+        if isinstance(tools, (str, bytes)) or not isinstance(tools, Sequence):
+            raise ValueError("step tool declarations must be a sequence")
+        if not tools:
+            return ()
+        if not has_message:
+            raise ValueError(
+                "tool declarations are only valid for provider-message steps"
+            )
+        if sandbox_policy is None:
+            raise ValueError("tool declarations require a persisted sandbox policy")
+        normalized: list[ToolDeclaration] = []
+        seen_names: set[str] = set()
+        for item in tools:
+            if isinstance(item, ToolDeclaration):
+                name = item.name
+                command = item.command
+                description = item.description
+                parameters = item.parameters
+            elif isinstance(item, Mapping):
+                allowed = {"name", "command", "description", "parameters"}
+                if set(item) - allowed:
+                    raise ValueError("step tool declaration has unknown fields")
+                name = item.get("name")
+                command = item.get("command")
+                description = item.get("description")
+                parameters = item.get("parameters")
+            else:
+                raise ValueError("step tool declaration must be an object")
+            if not isinstance(name, str) or not name.isidentifier():
+                raise ValueError(
+                    "step tool declaration name must be a valid identifier"
+                )
+            if name in seen_names:
+                raise ValueError(f"step tool declaration name is not unique: {name}")
+            seen_names.add(name)
+            if (
+                command is None
+                or isinstance(command, (str, bytes))
+                or not isinstance(command, Sequence)
+            ):
+                raise ValueError(
+                    "step tool declaration command must be a sequence of arguments"
+                )
+            normalized_command = tuple(command)
+            if not normalized_command or any(
+                not isinstance(argument, str) or not argument
+                for argument in normalized_command
+            ):
+                raise ValueError(
+                    "step tool declaration command arguments must be non-empty strings"
+                )
+            if description is not None and (
+                not isinstance(description, str) or not description.strip()
+            ):
+                raise ValueError(
+                    "step tool declaration description must be a non-empty string"
+                )
+            if parameters is not None:
+                if not isinstance(parameters, Mapping) or any(
+                    not isinstance(key, str) for key in parameters
+                ):
+                    raise ValueError(
+                        "step tool declaration parameters must be a JSON object"
+                    )
+                parameters = dict(parameters)
+            normalized.append(
+                ToolDeclaration(
+                    name=name,
+                    command=normalized_command,
+                    description=description,
+                    parameters=parameters,
+                )
+            )
+        return tuple(normalized)
 
     @staticmethod
     def _artifact_declarations_payload(

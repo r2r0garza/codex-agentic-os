@@ -47,6 +47,7 @@ from .runtime import (
     SandboxPolicy,
     StepRecoveryReason,
     StepStatus,
+    ToolDeclaration,
 )
 from .payloads import (
     _approval_payload,
@@ -267,6 +268,17 @@ def _parser() -> argparse.ArgumentParser:
         "--response-artifact",
         metavar="NAME",
         help="capture a successful provider step's normalized response as a named artifact",
+    )
+    add_step.add_argument(
+        "--tool",
+        action="append",
+        default=[],
+        metavar="JSON",
+        help=(
+            'declare a named tool for a provider-message step as a JSON object '
+            '{"name": ..., "command": [...], "description": ..., "parameters": ...}; '
+            "requires a persisted sandbox policy; repeat for multiple tools"
+        ),
     )
     add_step.add_argument(
         "--delegate-objective",
@@ -648,6 +660,43 @@ def _parse_artifacts(values: Sequence[str]) -> tuple[ArtifactDeclaration, ...]:
         if not separator or not name or not path:
             raise ValueError("artifact must be NAME=PATH with non-empty name and path")
         declarations.append(ArtifactDeclaration(name=name, path=path))
+    return tuple(declarations)
+
+
+def _parse_tools(values: Sequence[str]) -> tuple[ToolDeclaration, ...]:
+    """Parse each declared tool from a JSON object argument."""
+
+    declarations = []
+    for value in values:
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError("tool declaration must be valid JSON") from error
+        if not isinstance(parsed, dict):
+            raise ValueError("tool declaration must be a JSON object")
+        allowed = {"name", "command", "description", "parameters"}
+        if set(parsed) - allowed:
+            raise ValueError("tool declaration has unknown fields")
+        name = parsed.get("name")
+        command = parsed.get("command")
+        if not isinstance(name, str) or not name:
+            raise ValueError("tool declaration requires a non-empty name")
+        if (
+            not isinstance(command, list)
+            or not command
+            or not all(isinstance(argument, str) for argument in command)
+        ):
+            raise ValueError(
+                "tool declaration requires a non-empty command list of strings"
+            )
+        declarations.append(
+            ToolDeclaration(
+                name=name,
+                command=tuple(command),
+                description=parsed.get("description"),
+                parameters=parsed.get("parameters"),
+            )
+        )
     return tuple(declarations)
 
 
@@ -1037,6 +1086,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     context_step_ids=arguments.context_step,
                     approval_required=arguments.approval_required,
                     sandbox_policy=sandbox_policy,
+                    tools=_parse_tools(arguments.tool) or None,
                     artifacts=_parse_artifacts(arguments.artifact) or None,
                     response_artifact_name=arguments.response_artifact,
                     delegation=delegation,

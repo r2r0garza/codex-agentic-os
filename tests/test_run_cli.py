@@ -908,6 +908,115 @@ def test_cli_add_step_rejects_invalid_artifact_declarations_without_mutation(
     assert reloaded.list_steps("run-1") == ()
 
 
+def test_cli_adds_provider_step_with_tool_declaration_and_matches_inspection(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ask a model to use a tool")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Summarize with a tool",
+            "--provider", "local", "--message", "Hello",
+            "--sandbox", "docker", "--mount", "/host/data:/workspace",
+            "--tool",
+            json.dumps(
+                {
+                    "name": "list_files",
+                    "command": ["ls", "-la"],
+                    "description": "List workspace files",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ),
+            "--state-db", str(database),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"][0]["tool_declarations"] == [
+        {
+            "name": "list_files",
+            "command": ["ls", "-la"],
+            "description": "List workspace files",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ]
+    assert payload["steps"][0]["sandbox_policy"]["kind"] == "docker"
+
+    main(["run", "inspect-step", "step-1", "--state-db", str(database)])
+    assert json.loads(capsys.readouterr().out) == payload["steps"][0]
+
+
+def test_cli_add_step_without_tool_flags_has_no_tool_declarations(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ask a model")
+
+    main(
+        [
+            "run", "add-step", "run-1", "step-1", "--objective", "Summarize",
+            "--provider", "local", "--message", "Hello",
+            "--state-db", str(database),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "tool_declarations" not in payload["steps"][0]
+    assert "sandbox_policy" not in payload["steps"][0]
+
+
+@pytest.mark.parametrize(
+    ("extra_arguments", "message"),
+    [
+        (
+            ["--tool", "not-json"],
+            "tool declaration must be valid JSON",
+        ),
+        (
+            ["--tool", json.dumps(["not", "an", "object"])],
+            "tool declaration must be a JSON object",
+        ),
+        (
+            ["--tool", json.dumps({"command": ["ls"]})],
+            "requires a non-empty name",
+        ),
+        (
+            ["--tool", json.dumps({"name": "listing"})],
+            "requires a non-empty command list of strings",
+        ),
+        (
+            ["--provider", "local", "--message", "Hello", "--tool", json.dumps(
+                {"name": "listing", "command": ["ls"]}
+            )],
+            "require a persisted sandbox policy",
+        ),
+    ],
+)
+def test_cli_add_step_rejects_invalid_tool_declarations_without_mutation(
+    tmp_path, capsys, extra_arguments, message
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    original_run = coordinator.create("run-1", objective="Original")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "add-step", "run-1", "step-1", "--objective", "Work",
+                *extra_arguments, "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+    reloaded = RunCoordinator(StateStore(database))
+    assert reloaded.get("run-1") == original_run
+    assert reloaded.list_steps("run-1") == ()
+
+
 def test_cli_execute_next_captures_declared_artifact_from_mounted_workspace(
     tmp_path, monkeypatch, capsys
 ) -> None:
