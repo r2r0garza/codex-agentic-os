@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-15T03:12:39Z — implementation plus close-or-remediate review (scheduled).
+- Active milestone at start: Sprint 23 "Declarative execution policy gates" (#23). Selected #138 (priority:2, `agent-ready`), the sole unblocked ready issue.
+- Completed: added 8 focused runtime regressions proving execution policy rule changes never retroactively alter an already pending, approved, rejected, or terminal step's `policy_rule_id`/`policy_reason` or add a duplicate `step_policy_gated` history entry; proving a manually flagged `approval_required` step is unaffected by a matching policy rule; and reconstructing a held-then-approved step's policy decision from a fresh `StateStore`/`RunCoordinator` standing in for a process restart. Added `scripts/policy-gated-network-review.sh`, a Docker/`jq`-based executable review that holds a network-enabled command step via a matching `sandbox_network_access` rule under a real `worker run` process, approves and executes it through the normal worker/dispatch path, then reconstructs the triggering rule id/reason from `run history` in fresh CLI processes after the worker exits (no live provider credentials needed). Added Plan 0124 and documented the review script in DEVELOPMENT.md.
+- Verification: activated `.venv`; 68 policy tests passed (60 existing + 8 new); full `pytest` passed 916 (up from 910); `scripts/policy-gated-network-review.sh` passed against local Docker; index rebuilt to 28 files / 1395 symbols / 8114 relationships and `index check` reported current; `git diff --check` passed.
+- Durable state: implementation commit `67a492a` pushed to `origin/main`; #138 auto-closed by the commit's "Closes #138" keyword, with verification evidence added as a follow-up comment. Blocked review found zero open `blocked` issues repo-wide. Sprint 23 was retrospective-ready (all three issues #136-#138 closed): created and closed retrospective #139 with all five exit criteria passing against commits `c8996bb`/`7999966`/`67a492a`, Plans 0122-0124, Decision 0009, focused/full tests, the end-to-end review script, and documentation. Sprint 23 milestone closed with no remediation; Sprint 24 "Durable cross-run agent memory" (#24) is now active with zero issues (replenishment-only next action).
+- Roadmap horizon: 20 ordered open milestones before Sprint 23 closure and 19 after (Sprint 24 through Sprint 42), above the three-sprint threshold; no planning handoff was needed.
+- Next eligible action: replenishment-only review for Sprint 24 against its durable cross-run agent memory objective and exit criteria (milestone currently has no issues). Final target `main`; after the MEMORY handoff commit, the worktree is clean except for the preserved unrelated untracked `.claude/` directory.
+
+---
+
 - Run: 2026-07-15T02:42:04Z — implementation plus close-or-remediate review (scheduled).
 - Active milestone: Sprint 23 "Declarative execution policy gates" (#23). Selected #137 (priority:1, `agent-ready`), the sole unblocked ready issue.
 - Completed: enabled finite-criterion policy rules now evaluate at the queued-step dispatch boundary for command, provider, tool-declaring, and delegation work. The deterministic lowest `(precedence, rule_id)` match durably converts the step into the existing pending approval state and records the safe rule id/reason in step state and `step_policy_gated` history before any side effect. Dispatch compare-and-swaps both the step revision and evaluated rule-id snapshot, so concurrent rule creation forces retry; approved/rejected decisions are never reevaluated. Existing approval CLI/API flows remain the decision path, while disabled and non-matching rules preserve dispatch behavior. Added Plan 0123 and updated DEVELOPMENT.md.
@@ -34,9 +44,3 @@
 - Run: 2026-07-15T01:38:07Z — implementation run (scheduled).
 - Sprint 22; selected and closed #133 in pushed commit `26c6bf2`. Replacement workers resume an `executed` tool-loop boundary from stored turns without repeating sandbox execution; proactive and CAS-conflict cancellation stop cleanly. Full `pytest` passed 858; index current at 27 files / 1328 symbols / 7732 relationships; diff check passed.
 - Blocked review unblocked #134; horizon stayed 21; next action was #134. Final `main` state was clean except preserved `.claude/`.
-
----
-
-- Run: 2026-07-15T00:38:07Z — implementation run (scheduled).
-- Sprint 22; selected and closed #132 in pushed commit `7cd5ba6`. Added durable ordered tool iterations, bounded execution, replay, and budget/undeclared rejection evidence. Full `pytest` passed 853; index current at 27 files / 1289 symbols / 7611 relationships; diff check passed.
-- Blocked review unblocked #133 and left #134 blocked; horizon stayed 21; next action was #133. Final `main` state was clean except preserved `.claude/`.
