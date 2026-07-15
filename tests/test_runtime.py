@@ -5548,6 +5548,7 @@ def _add_tool_step(
     step_id: str,
     *,
     sandbox_policy: SandboxPolicy | None = None,
+    tool_iteration_budget: int = 1,
 ) -> None:
     coordinator.add_step(
         run_id,
@@ -5556,7 +5557,7 @@ def _add_tool_step(
         message=ProviderMessage(provider="local", content="List files"),
         sandbox_policy=sandbox_policy or SandboxPolicy(kind=SandboxKind.DOCKER),
         tools=[ToolDeclaration(name="list_files", command=("ls", "-la"))],
-        tool_iteration_budget=1,
+        tool_iteration_budget=tool_iteration_budget,
     )
 
 
@@ -5713,7 +5714,8 @@ def test_execute_next_step_fails_definitively_on_undeclared_tool_call(tmp_path) 
 
     assert step.status is StepStatus.FAILED
     assert "undeclared tool" in step.output["error"]
-    assert step.tool_call is None
+    assert step.tool_call.phase is ToolCallPhase.REJECTED_UNDECLARED
+    assert step.tool_iterations[0].response["content"] == ""
     assert run.status is RunStatus.FAILED
     activity = [
         entry
@@ -5797,11 +5799,11 @@ def test_execute_next_step_fails_when_tool_call_has_no_sandbox_resolver(tmp_path
 
     assert step.status is StepStatus.FAILED
     assert "sandbox resolver" in step.output["error"]
-    assert step.tool_call is None
+    assert step.tool_call.phase is ToolCallPhase.REQUESTED
     assert run.status is RunStatus.FAILED
 
 
-def test_execute_next_step_fails_on_second_tool_call_in_followup(tmp_path) -> None:
+def test_execute_next_step_fails_when_tool_iteration_budget_is_exhausted(tmp_path) -> None:
     coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
     coordinator.create("run-1", objective="Summarize files")
     _add_tool_step(coordinator, "run-1", "step-1")
@@ -5819,9 +5821,77 @@ def test_execute_next_step_fails_on_second_tool_call_in_followup(tmp_path) -> No
     )
 
     assert step.status is StepStatus.FAILED
-    assert "second tool call" in step.output["error"]
-    assert step.tool_call.phase is ToolCallPhase.EXECUTED
+    assert "tool iteration budget exhausted" in step.output["error"]
+    assert [iteration.tool_call.phase for iteration in step.tool_iterations] == [
+        ToolCallPhase.EXECUTED,
+        ToolCallPhase.REJECTED_BUDGET,
+    ]
     assert run.status is RunStatus.FAILED
+
+
+def test_execute_next_step_runs_multiple_ordered_tool_iterations(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Inspect twice")
+    _add_tool_step(
+        coordinator, "run-1", "step-1", tool_iteration_budget=2
+    )
+
+    execute_calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            fresh = RunCoordinator(StateStore(database)).get_step("step-1")
+            execute_calls.append(
+                (tuple(argv), len(fresh.tool_iterations), fresh.tool_call.phase)
+            )
+            return SandboxResult(tuple(argv), 0, f"result-{len(execute_calls)}", "")
+
+    requests = []
+
+    class Adapter:
+        def complete(self, request):
+            requests.append(request)
+            if len(requests) <= 2:
+                return ChatResponse(
+                    f"calling-{len(requests)}",
+                    model="fixture-model",
+                    tool_call=ChatToolCall(
+                        name="list_files",
+                        arguments={"round": len(requests)},
+                        call_id=f"call-{len(requests)}",
+                    ),
+                )
+            return ChatResponse("done", model="fixture-model")
+
+    step, run = coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda _: Adapter(),
+        sandbox_resolver=lambda _: Executor(),
+    )
+
+    assert execute_calls == [
+        (("ls", "-la"), 1, ToolCallPhase.REQUESTED),
+        (("ls", "-la"), 2, ToolCallPhase.REQUESTED),
+    ]
+    assert len(requests) == 3
+    assert [message.role for message in requests[-1].messages[-4:]] == [
+        "assistant", "tool", "assistant", "tool"
+    ]
+    assert "result-1" in requests[-1].messages[-3].content
+    assert "result-2" in requests[-1].messages[-1].content
+    assert all("ls" not in message.content for message in requests[-1].messages)
+    assert [
+        (iteration.response["content"], iteration.tool_call.phase)
+        for iteration in step.tool_iterations
+    ] == [
+        ("calling-1", ToolCallPhase.EXECUTED),
+        ("calling-2", ToolCallPhase.EXECUTED),
+    ]
+    assert step.output["content"] == "done"
+    assert len(step.output["tool_iterations"]) == 2
+    assert run.status is RunStatus.SUCCEEDED
+    assert RunCoordinator(StateStore(database)).get_step("step-1").tool_iterations == step.tool_iterations
 
 
 def test_recovery_after_requested_phase_does_not_reexecute_tool(tmp_path) -> None:

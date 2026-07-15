@@ -399,35 +399,42 @@ deterministically to an empty object schema; a schema whose root is explicitly
 non-object is rejected before transport.
 
 When a model's response requests a declared tool by name, `execute_next_step`
-durably persists the request (name, arguments, provider call id) before any
+durably appends an ordered iteration containing the complete normalized model
+response and request (name, arguments, provider call id) before any
 sandboxed command runs, executes that tool's declared command template
 unmodified — the model's requested arguments are recorded as evidence only and
 are never interpolated into the executed command — through the step's own
-persisted sandbox policy, durably persists the command result, then issues one
-follow-up request carrying the tool result and completes the step from the
-final response. Both phases are written while the step stays `running`, so an
+persisted sandbox policy, durably persists the command result, then issues the
+next request carrying every prior assistant/tool turn. The bounded loop repeats
+until the model returns a final response. A budget of `N` permits at most `N`
+sandbox tool executions; if the model requests another tool after those
+executions, that response is persisted as `rejected_budget`, no command runs,
+and the step/run fail definitively with the complete ordered evidence. Both
+phases are written while the step stays `running`, so an
 interruption between them leaves an inspectable `tool_call` (`phase`
 `requested` or `executed`) for `run recover`; recovery always fails the step
 definitively and never resumes or re-executes the tool, exactly like recovery
 for a command or provider step. A model request for a tool name the step
-never declared, a tool call with no sandbox resolver available, or a second
-tool call in the follow-up response all fail the step definitively without
-executing a command. `run inspect`/`run inspect-step` show a step's `tool_call`
-(tool name, arguments, phase, and, once executed, command, exit code, stdout,
-stderr) whenever one is durable; a step with no tool call omits the key
-exactly as before. `worker run` and `run execute-next` both pass the same
+never declared or a tool call with no sandbox resolver available fails the
+step definitively without executing a command. Provider responses containing
+multiple simultaneous calls remain rejected by every adapter before dispatch.
+`run inspect`/`run inspect-step` show `tool_iterations` in order, including
+each normalized provider response and call outcome, plus `tool_call` as a
+compatibility alias for the latest call; a step with no tool call omits both
+keys exactly as before. `worker run` and `run execute-next` both pass the same
 persisted sandbox resolver used for command steps; `run execute-next` only
 supplies it when the next step declares tools.
 
 `run history` records the non-sensitive tool name plus a bounded outcome for
-each durable phase: `requested`, `succeeded`, `failed`, or
-`rejected_undeclared`. It never duplicates model arguments, command argv,
+each durable phase: `requested`, `succeeded`, `failed`,
+`rejected_undeclared`, or `rejected_budget`. It never duplicates model arguments, command argv,
 environment values, provider request bodies, stdout, or stderr. An undeclared
 request's rejection entry is atomic with the definitive step/run failure and
 remains eligible for the established failed-step retry classification. Trusted
 local CLI inspection still shows the full durable step record; the loopback
-HTTP run-detail surface redacts tool declaration commands and tool-call
-arguments, commands, stdout, and stderr under Decision 0008.
+HTTP run-detail surface redacts tool declaration commands, every iteration's
+provider content/raw response, and tool-call arguments, commands, stdout, and
+stderr under Decision 0008.
 
 ```bash
 codex-agentic-os run add-step run-002 step-002b --objective "Summarize output" \

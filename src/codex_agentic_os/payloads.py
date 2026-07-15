@@ -62,10 +62,13 @@ def _step_payload(
         payload.pop("tool_declarations")
     if step.tool_iteration_budget is None:
         payload.pop("tool_iteration_budget")
-    if step.tool_call is None:
-        payload.pop("tool_call")
+    if not step.tool_iterations:
+        payload.pop("tool_iterations")
     else:
-        payload["tool_call"]["phase"] = step.tool_call.phase.value
+        for iteration in payload["tool_iterations"]:
+            iteration["tool_call"]["phase"] = iteration["tool_call"]["phase"].value
+        # Preserve the established trusted single-round view as a latest-call alias.
+        payload["tool_call"] = dict(payload["tool_iterations"][-1]["tool_call"])
     if not step.artifact_declarations:
         payload.pop("artifact_declarations")
     if step.response_artifact_name is None:

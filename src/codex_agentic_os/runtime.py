@@ -218,6 +218,8 @@ class ToolCallPhase(StrEnum):
 
     REQUESTED = "requested"
     EXECUTED = "executed"
+    REJECTED_UNDECLARED = "rejected_undeclared"
+    REJECTED_BUDGET = "rejected_budget"
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +234,14 @@ class ToolCallRecord:
     exit_code: int | None = None
     stdout: str | None = None
     stderr: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolIterationRecord:
+    """One ordered provider response and its requested tool-call outcome."""
+
+    response: Mapping[str, object]
+    tool_call: ToolCallRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,11 +264,17 @@ class RunStep:
     sandbox_policy: SandboxPolicy | None = None
     tool_declarations: tuple[ToolDeclaration, ...] = ()
     tool_iteration_budget: int | None = None
-    tool_call: ToolCallRecord | None = None
+    tool_iterations: tuple[ToolIterationRecord, ...] = ()
     artifact_declarations: tuple[ArtifactDeclaration, ...] = ()
     response_artifact_name: str | None = None
     delegation: DelegationSpec | None = None
     delegated_run_id: str | None = None
+
+    @property
+    def tool_call(self) -> ToolCallRecord | None:
+        """Return the latest call for compatibility with single-round callers."""
+
+        return self.tool_iterations[-1].tool_call if self.tool_iterations else None
 
     @property
     def failure_kind(self) -> StepFailureKind | None:
@@ -819,6 +835,7 @@ class RunCoordinator:
             if step.tool_declarations:
                 payload["tools"] = self._tool_declarations_payload(step.tool_declarations)
                 payload["tool_iteration_budget"] = step.tool_iteration_budget
+            self._add_tool_iterations_payload(payload, step)
             if step.delegation is not None:
                 payload["delegation"] = self._delegation_payload(step.delegation)
             if step.delegated_run_id is not None:
@@ -1110,17 +1127,18 @@ class RunCoordinator:
                 )
                 for tool in running_step.tool_declarations
             )
-            request = ChatRequest(
-                messages,
-                temperature=running_step.message.temperature,
-                max_tokens=running_step.message.max_tokens,
-                tools=tool_declarations,
+            response = adapter.complete(
+                ChatRequest(
+                    messages,
+                    temperature=running_step.message.temperature,
+                    max_tokens=running_step.message.max_tokens,
+                    tools=tool_declarations,
+                )
             )
-            response = adapter.complete(request)
         except (ValueError, RuntimeError, NotImplementedError) as error:
             return self.fail_step_from_error(running_step.step_id, error)
 
-        if response.tool_call is not None:
+        while response.tool_call is not None:
             declaration = next(
                 (
                     tool
@@ -1130,6 +1148,12 @@ class RunCoordinator:
                 None,
             )
             if declaration is None:
+                running_step = self._persist_tool_call_requested(
+                    run,
+                    running_step,
+                    response,
+                    phase=ToolCallPhase.REJECTED_UNDECLARED,
+                )
                 return self.fail_step_from_error(
                     running_step.step_id,
                     ValueError(
@@ -1138,7 +1162,39 @@ class RunCoordinator:
                     tool_name=response.tool_call.name,
                     tool_outcome="rejected_undeclared",
                 )
+            completed_iterations = sum(
+                iteration.tool_call.phase is ToolCallPhase.EXECUTED
+                for iteration in running_step.tool_iterations
+            )
+            if running_step.tool_iteration_budget is None:
+                return self.fail_step_from_error(
+                    running_step.step_id,
+                    ValueError(
+                        "tool-declaring provider step has no durable iteration budget: "
+                        f"{running_step.step_id}"
+                    ),
+                )
+            if completed_iterations >= running_step.tool_iteration_budget:
+                running_step = self._persist_tool_call_requested(
+                    run,
+                    running_step,
+                    response,
+                    phase=ToolCallPhase.REJECTED_BUDGET,
+                )
+                return self.fail_step_from_error(
+                    running_step.step_id,
+                    ValueError(
+                        "tool iteration budget exhausted before a final response: "
+                        f"{running_step.step_id} "
+                        f"({running_step.tool_iteration_budget})"
+                    ),
+                    tool_name=response.tool_call.name,
+                    tool_outcome="rejected_budget",
+                )
             if sandbox_resolver is None:
+                running_step = self._persist_tool_call_requested(
+                    run, running_step, response
+                )
                 return self.fail_step_from_error(
                     running_step.step_id,
                     ValueError(
@@ -1148,7 +1204,7 @@ class RunCoordinator:
                 )
             assert running_step.sandbox_policy is not None  # enforced by _validate_tool_declarations
             running_step = self._persist_tool_call_requested(
-                run, running_step, response.tool_call
+                run, running_step, response
             )
             tool_executor = sandbox_resolver(running_step.sandbox_policy)
             tool_result = tool_executor.execute(declaration.command)
@@ -1162,7 +1218,7 @@ class RunCoordinator:
                     "stderr": tool_call_record.stderr,
                 }
             )
-            followup_messages = messages + (
+            messages = messages + (
                 ChatMessage("assistant", response.content, tool_call=response.tool_call),
                 ChatMessage(
                     "tool",
@@ -1173,7 +1229,7 @@ class RunCoordinator:
             try:
                 response = adapter.complete(
                     ChatRequest(
-                        followup_messages,
+                        messages,
                         temperature=running_step.message.temperature,
                         max_tokens=running_step.message.max_tokens,
                         tools=tool_declarations,
@@ -1181,14 +1237,6 @@ class RunCoordinator:
                 )
             except (ValueError, RuntimeError, NotImplementedError) as error:
                 return self.fail_step_from_error(running_step.step_id, error)
-            if response.tool_call is not None:
-                return self.fail_step_from_error(
-                    running_step.step_id,
-                    ValueError(
-                        "provider requested a second tool call in a single-round "
-                        f"tool step: {running_step.step_id}"
-                    ),
-                )
 
         return self.complete_step_from_chat_response(running_step.step_id, response)
 
@@ -1212,6 +1260,7 @@ class RunCoordinator:
                 step.tool_declarations
             )
             payload["tool_iteration_budget"] = step.tool_iteration_budget
+        RunCoordinator._add_tool_iterations_payload(payload, step)
         if step.response_artifact_name is not None:
             payload["response_artifact_name"] = step.response_artifact_name
         RunCoordinator._add_context_step_ids_payload(payload, step)
@@ -1219,30 +1268,52 @@ class RunCoordinator:
         return payload
 
     def _persist_tool_call_requested(
-        self, run: AgentRun, step: RunStep, tool_call: ChatToolCall
+        self,
+        run: AgentRun,
+        step: RunStep,
+        response: ChatResponse,
+        *,
+        phase: ToolCallPhase = ToolCallPhase.REQUESTED,
     ) -> RunStep:
         """Durably record a model's tool-call request before its command executes."""
 
-        record = ToolCallRecord(
-            tool_name=tool_call.name,
-            arguments=dict(tool_call.arguments),
-            call_id=tool_call.call_id,
-            phase=ToolCallPhase.REQUESTED,
+        assert response.tool_call is not None
+        call_record = ToolCallRecord(
+            tool_name=response.tool_call.name,
+            arguments=dict(response.tool_call.arguments),
+            call_id=response.tool_call.call_id,
+            phase=phase,
+        )
+        iteration = ToolIterationRecord(
+            response=self._chat_response_payload(response),
+            tool_call=call_record,
         )
         payload = self._running_provider_step_payload(step)
-        payload["tool_call"] = self._tool_call_payload(record)
+        payload["tool_iterations"] = self._tool_iterations_payload(
+            step.tool_iterations + (iteration,)
+        )
+        history_entry = RunHistoryEntry(
+            step.run_id,
+            0,
+            (
+                "tool_call_requested"
+                if phase is ToolCallPhase.REQUESTED
+                else "tool_response_recorded"
+            ),
+            StepStatus.RUNNING,
+            step_id=step.step_id,
+            agent_id=run.agent_id,
+            execution_kind="provider",
+            tool_name=(
+                call_record.tool_name if phase is ToolCallPhase.REQUESTED else None
+            ),
+            tool_outcome=(phase.value if phase is ToolCallPhase.REQUESTED else None),
+        )
         try:
             stored = self.store.put_many(
                 (("step", step.step_id, StepStatus.RUNNING, payload),),
                 expected=(("step", step.step_id, StepStatus.RUNNING, step.revision),),
-                history=(
-                    RunHistoryEntry(
-                        step.run_id, 0, "tool_call_requested", StepStatus.RUNNING,
-                        step_id=step.step_id, agent_id=run.agent_id,
-                        execution_kind="provider", tool_name=record.tool_name,
-                        tool_outcome="requested",
-                    ),
-                ),
+                history=(history_entry,),
             )
         except StateConflictError as error:
             raise ValueError(f"step transition conflict: {step.step_id}") from error
@@ -1253,6 +1324,7 @@ class RunCoordinator:
     ) -> RunStep:
         """Durably record a tool's sandboxed result before the follow-up model request."""
 
+        assert step.tool_iterations
         assert step.tool_call is not None
         result_command = list(result.command)
         if step.sandbox_policy is not None:
@@ -1263,7 +1335,7 @@ class RunCoordinator:
                 name, separator, _ = argument.partition("=")
                 if separator and name in passthrough_names:
                     result_command[index] = name
-        record = ToolCallRecord(
+        call_record = ToolCallRecord(
             tool_name=step.tool_call.tool_name,
             arguments=step.tool_call.arguments,
             call_id=step.tool_call.call_id,
@@ -1273,8 +1345,14 @@ class RunCoordinator:
             stdout=result.stdout,
             stderr=result.stderr,
         )
+        iteration = ToolIterationRecord(
+            response=step.tool_iterations[-1].response,
+            tool_call=call_record,
+        )
         payload = self._running_provider_step_payload(step)
-        payload["tool_call"] = self._tool_call_payload(record)
+        payload["tool_iterations"] = self._tool_iterations_payload(
+            step.tool_iterations[:-1] + (iteration,)
+        )
         try:
             stored = self.store.put_many(
                 (("step", step.step_id, StepStatus.RUNNING, payload),),
@@ -1283,7 +1361,7 @@ class RunCoordinator:
                     RunHistoryEntry(
                         step.run_id, 0, "tool_call_executed", StepStatus.RUNNING,
                         step_id=step.step_id, agent_id=run.agent_id,
-                        execution_kind="provider", tool_name=record.tool_name,
+                        execution_kind="provider", tool_name=call_record.tool_name,
                         tool_outcome=("succeeded" if result.returncode == 0 else "failed"),
                     ),
                 ),
@@ -1894,8 +1972,7 @@ class RunCoordinator:
         if current.tool_declarations:
             payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
             payload["tool_iteration_budget"] = current.tool_iteration_budget
-        if current.tool_call is not None:
-            payload["tool_call"] = self._tool_call_payload(current.tool_call)
+        self._add_tool_iterations_payload(payload, current)
         if current.artifact_declarations:
             payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -2089,6 +2166,7 @@ class RunCoordinator:
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
             step_payload["tool_iteration_budget"] = current.tool_iteration_budget
+        self._add_tool_iterations_payload(step_payload, current)
         if current.artifact_declarations:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -2166,6 +2244,9 @@ class RunCoordinator:
         }
         if current.tool_call is not None:
             output["tool_call"] = self._tool_call_payload(current.tool_call)
+            output["tool_iterations"] = self._tool_iterations_payload(
+                current.tool_iterations
+            )
         run = self.get(current.run_id)
         if run is None:
             raise KeyError(f"run does not exist: {current.run_id}")
@@ -2185,8 +2266,7 @@ class RunCoordinator:
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
             step_payload["tool_iteration_budget"] = current.tool_iteration_budget
-        if current.tool_call is not None:
-            step_payload["tool_call"] = self._tool_call_payload(current.tool_call)
+        self._add_tool_iterations_payload(step_payload, current)
         if current.response_artifact_name is not None:
             step_payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(step_payload, current)
@@ -2254,6 +2334,9 @@ class RunCoordinator:
         }
         if current.tool_call is not None:
             output["tool_call"] = self._tool_call_payload(current.tool_call)
+            output["tool_iterations"] = self._tool_iterations_payload(
+                current.tool_iterations
+            )
         step_payload: dict[str, object] = {
             "run_id": current.run_id,
             "position": current.position,
@@ -2271,8 +2354,7 @@ class RunCoordinator:
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
             step_payload["tool_iteration_budget"] = current.tool_iteration_budget
-        if current.tool_call is not None:
-            step_payload["tool_call"] = self._tool_call_payload(current.tool_call)
+        self._add_tool_iterations_payload(step_payload, current)
         if current.artifact_declarations:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -2360,6 +2442,9 @@ class RunCoordinator:
             output["recovery_detail"] = detail
         if current.tool_call is not None:
             output["tool_call"] = self._tool_call_payload(current.tool_call)
+            output["tool_iterations"] = self._tool_iterations_payload(
+                current.tool_iterations
+            )
         step_payload: dict[str, object] = {
             "run_id": current.run_id,
             "position": current.position,
@@ -2377,8 +2462,7 @@ class RunCoordinator:
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
             step_payload["tool_iteration_budget"] = current.tool_iteration_budget
-        if current.tool_call is not None:
-            step_payload["tool_call"] = self._tool_call_payload(current.tool_call)
+        self._add_tool_iterations_payload(step_payload, current)
         if current.artifact_declarations:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -2484,6 +2568,7 @@ class RunCoordinator:
         tools = record.payload.get("tools")
         tool_iteration_budget = record.payload.get("tool_iteration_budget")
         tool_call = record.payload.get("tool_call")
+        tool_iterations = record.payload.get("tool_iterations")
         artifacts = record.payload.get("artifacts")
         response_artifact_name = record.payload.get("response_artifact_name")
         approval_required = record.payload.get("approval_required", False)
@@ -2530,8 +2615,11 @@ class RunCoordinator:
             has_tools=bool(normalized_tools),
             require_explicit=False,
         )
-        normalized_tool_call = RunCoordinator._validate_tool_call(
-            tool_call, tool_declarations=normalized_tools
+        normalized_tool_iterations = RunCoordinator._validate_tool_iterations(
+            tool_iterations,
+            legacy_tool_call=tool_call,
+            output=output,
+            tool_declarations=normalized_tools,
         )
         normalized_artifacts = RunCoordinator._validate_artifact_declarations(
             artifacts, sandbox_policy=normalized_sandbox_policy
@@ -2573,7 +2661,7 @@ class RunCoordinator:
             sandbox_policy=normalized_sandbox_policy,
             tool_declarations=normalized_tools,
             tool_iteration_budget=normalized_tool_iteration_budget,
-            tool_call=normalized_tool_call,
+            tool_iterations=normalized_tool_iterations,
             artifact_declarations=normalized_artifacts,
             response_artifact_name=normalized_response_artifact_name,
             delegation=normalized_delegation,
@@ -3278,6 +3366,122 @@ class RunCoordinator:
         return payload
 
     @staticmethod
+    def _chat_response_payload(response: ChatResponse) -> dict[str, object]:
+        """Return the complete normalized response evidence for one tool iteration."""
+
+        payload: dict[str, object] = {
+            "content": response.content,
+            "model": response.model,
+            "usage": {
+                "available": response.usage.available,
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "raw": None if response.usage.raw is None else dict(response.usage.raw),
+                "unavailable_reason": response.usage.unavailable_reason,
+            },
+        }
+        if response.raw is not None:
+            payload["raw"] = dict(response.raw)
+        return payload
+
+    @staticmethod
+    def _tool_iterations_payload(
+        iterations: Sequence[ToolIterationRecord],
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "response": dict(iteration.response),
+                "tool_call": RunCoordinator._tool_call_payload(iteration.tool_call),
+            }
+            for iteration in iterations
+        ]
+
+    @staticmethod
+    def _add_tool_iterations_payload(
+        payload: dict[str, object], step: RunStep
+    ) -> None:
+        if step.tool_iterations:
+            payload["tool_iterations"] = RunCoordinator._tool_iterations_payload(
+                step.tool_iterations
+            )
+
+    @staticmethod
+    def _validate_tool_iterations(
+        value: object | None,
+        *,
+        legacy_tool_call: object | None,
+        output: Mapping[str, object] | None,
+        tool_declarations: Sequence[ToolDeclaration],
+    ) -> tuple[ToolIterationRecord, ...]:
+        """Validate ordered iteration evidence and upgrade legacy single-call records."""
+
+        if value is None:
+            if legacy_tool_call is None:
+                return ()
+            response = {
+                "content": "" if output is None else output.get("content", ""),
+                "model": None if output is None else output.get("model"),
+                "usage": {} if output is None else output.get("usage", {}),
+            }
+            if output is not None and "raw" in output:
+                response["raw"] = output["raw"]
+            return (
+                ToolIterationRecord(
+                    response=RunCoordinator._validate_iteration_response(response),
+                    tool_call=RunCoordinator._validate_tool_call(
+                        legacy_tool_call, tool_declarations=tool_declarations
+                    ),
+                ),
+            )
+        if legacy_tool_call is not None:
+            raise ValueError("step record has both legacy and ordered tool-call evidence")
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            raise ValueError("step tool iterations must be a sequence")
+        normalized = []
+        for item in value:
+            if not isinstance(item, Mapping) or set(item) != {"response", "tool_call"}:
+                raise ValueError("step tool iteration must contain response and tool_call")
+            response = RunCoordinator._validate_iteration_response(item["response"])
+            call = RunCoordinator._validate_tool_call(
+                item["tool_call"], tool_declarations=tool_declarations
+            )
+            normalized.append(ToolIterationRecord(response=response, tool_call=call))
+        if any(
+            iteration.tool_call.phase is not ToolCallPhase.EXECUTED
+            for iteration in normalized[:-1]
+        ):
+            raise ValueError("only the final tool iteration may be incomplete")
+        return tuple(normalized)
+
+    @staticmethod
+    def _validate_iteration_response(value: object) -> Mapping[str, object]:
+        if not isinstance(value, Mapping):
+            raise ValueError("tool iteration response must be an object")
+        allowed = {"content", "model", "raw", "usage"}
+        if set(value) - allowed:
+            raise ValueError("tool iteration response has unknown fields")
+        content = value.get("content")
+        model = value.get("model")
+        raw = value.get("raw")
+        usage = value.get("usage", {})
+        if not isinstance(content, str):
+            raise ValueError("tool iteration response content must be a string")
+        if model is not None and not isinstance(model, str):
+            raise ValueError("tool iteration response model must be a string")
+        if raw is not None and not isinstance(raw, Mapping):
+            raise ValueError("tool iteration response raw evidence must be an object")
+        if not isinstance(usage, Mapping):
+            raise ValueError("tool iteration response usage must be an object")
+        normalized: dict[str, object] = {
+            "content": content,
+            "model": model,
+            "usage": dict(usage),
+        }
+        if raw is not None:
+            normalized["raw"] = dict(raw)
+        return normalized
+
+    @staticmethod
     def _validate_tool_call(
         value: ToolCallRecord | Mapping[str, object] | object | None,
         *,
@@ -3298,10 +3502,6 @@ class RunCoordinator:
         tool_name = value.get("tool_name")
         if not isinstance(tool_name, str) or not tool_name:
             raise ValueError("step tool call name must be a non-empty string")
-        if not any(declaration.name == tool_name for declaration in tool_declarations):
-            raise ValueError(
-                f"step tool call does not match a declared tool: {tool_name}"
-            )
         arguments = value.get("arguments")
         if not isinstance(arguments, Mapping):
             raise ValueError("step tool call arguments must be a JSON object")
@@ -3312,6 +3512,15 @@ class RunCoordinator:
             phase = ToolCallPhase(value.get("phase"))
         except (TypeError, ValueError) as error:
             raise ValueError("step tool call phase is invalid") from error
+        declared = any(
+            declaration.name == tool_name for declaration in tool_declarations
+        )
+        if not declared and phase is not ToolCallPhase.REJECTED_UNDECLARED:
+            raise ValueError(
+                f"step tool call does not match a declared tool: {tool_name}"
+            )
+        if declared and phase is ToolCallPhase.REJECTED_UNDECLARED:
+            raise ValueError("declared tool call cannot be rejected as undeclared")
         command = value.get("command")
         if command is not None:
             if isinstance(command, (str, bytes)) or not isinstance(command, Sequence):

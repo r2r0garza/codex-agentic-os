@@ -104,12 +104,14 @@ def _redact_step_for_http(step_payload: dict[str, object]) -> dict[str, object]:
             if key in output:
                 output[key] = _REDACTED
         _redact_tool_call_for_http(output.get("tool_call"))
+        _redact_tool_iterations_for_http(output.get("tool_iterations"))
     declarations = step_payload.get("tool_declarations")
     if isinstance(declarations, list):
         for declaration in declarations:
             if isinstance(declaration, dict) and "command" in declaration:
                 declaration["command"] = _REDACTED
     _redact_tool_call_for_http(step_payload.get("tool_call"))
+    _redact_tool_iterations_for_http(step_payload.get("tool_iterations"))
     return step_payload
 
 
@@ -121,6 +123,22 @@ def _redact_tool_call_for_http(tool_call: object) -> None:
     for key in _REDACTED_TOOL_CALL_KEYS:
         if key in tool_call:
             tool_call[key] = _REDACTED
+
+
+def _redact_tool_iterations_for_http(iterations: object) -> None:
+    """Redact provider response and tool evidence in ordered iterations."""
+
+    if not isinstance(iterations, list):
+        return
+    for iteration in iterations:
+        if not isinstance(iteration, dict):
+            continue
+        response = iteration.get("response")
+        if isinstance(response, dict):
+            for key in ("content", "raw"):
+                if key in response:
+                    response[key] = _REDACTED
+        _redact_tool_call_for_http(iteration.get("tool_call"))
 
 
 def _is_revision(value: object) -> bool:

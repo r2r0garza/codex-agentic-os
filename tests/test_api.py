@@ -815,6 +815,24 @@ def test_http_redaction_covers_tool_declarations_calls_and_nested_results() -> N
             "stdout": "private stdout",
             "stderr": "private stderr",
         },
+        "tool_iterations": [
+            {
+                "response": {
+                    "content": "private iterative response",
+                    "raw": {"private": "provider envelope"},
+                    "model": "safe-model",
+                },
+                "tool_call": {
+                    "tool_name": "inspect",
+                    "arguments": {"token": "private iterative argument"},
+                    "phase": "executed",
+                    "command": ["docker", "private iterative command"],
+                    "exit_code": 0,
+                    "stdout": "private iterative stdout",
+                    "stderr": "private iterative stderr",
+                },
+            }
+        ],
         "output": {
             "content": "private response",
             "tool_call": {
@@ -839,6 +857,12 @@ def test_http_redaction_covers_tool_declarations_calls_and_nested_results() -> N
         assert tool_call["exit_code"] == 0
         for key in ("arguments", "command", "stdout", "stderr"):
             assert tool_call[key] == "<redacted>"
+    iteration = redacted["tool_iterations"][0]
+    assert iteration["response"]["content"] == "<redacted>"
+    assert iteration["response"]["raw"] == "<redacted>"
+    assert iteration["response"]["model"] == "safe-model"
+    assert iteration["tool_call"]["tool_name"] == "inspect"
+    assert iteration["tool_call"]["arguments"] == "<redacted>"
     assert "private" not in json.dumps(redacted)
 
 
