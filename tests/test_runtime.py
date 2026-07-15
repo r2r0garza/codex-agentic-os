@@ -5972,3 +5972,205 @@ def test_recovery_after_executed_phase_does_not_reexecute_tool(tmp_path) -> None
     assert step.tool_call.stdout == "3 files\n"
     assert run.status is RunStatus.FAILED
     assert execute_calls == [("ls", "-la")]
+
+
+def test_execute_next_step_resumes_after_executed_phase_without_reexecuting_tool(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1")
+
+    execute_calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            execute_calls.append(tuple(argv))
+            return SandboxResult(tuple(argv), 0, "3 files\n", "")
+
+    class CrashingAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResponse(
+                    "", tool_call=ChatToolCall(name="list_files", arguments={})
+                )
+            raise TimeoutError("worker crashed before the follow-up response")
+
+    with pytest.raises(TimeoutError):
+        coordinator.execute_next_step(
+            "run-1",
+            adapter_resolver=lambda _: CrashingAdapter(),
+            sandbox_resolver=lambda _: Executor(),
+        )
+
+    running = coordinator.get_step("step-1")
+    assert running.status is StepStatus.RUNNING
+    assert running.tool_call.phase is ToolCallPhase.EXECUTED
+
+    class ReplacementAdapter:
+        def complete(self, request):
+            return ChatResponse("done", model="fixture-model")
+
+    step, run = coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda _: ReplacementAdapter(),
+        sandbox_resolver=lambda _: Executor(),
+    )
+
+    assert execute_calls == [("ls", "-la")]
+    assert step.status is StepStatus.SUCCEEDED
+    assert step.output["content"] == "done"
+    assert len(step.tool_iterations) == 1
+    assert step.tool_iterations[0].tool_call.phase is ToolCallPhase.EXECUTED
+    assert run.status is RunStatus.SUCCEEDED
+
+
+def test_execute_next_step_resume_replays_completed_iteration_as_context(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1", tool_iteration_budget=2)
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "3 files\n", "")
+
+    class CrashingAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResponse(
+                    "calling-1",
+                    model="fixture-model",
+                    tool_call=ChatToolCall(
+                        name="list_files", arguments={"round": 1}, call_id="call-1"
+                    ),
+                )
+            raise TimeoutError("worker crashed after the first executed iteration")
+
+    with pytest.raises(TimeoutError):
+        coordinator.execute_next_step(
+            "run-1",
+            adapter_resolver=lambda _: CrashingAdapter(),
+            sandbox_resolver=lambda _: Executor(),
+        )
+
+    running = coordinator.get_step("step-1")
+    assert running.status is StepStatus.RUNNING
+    assert running.tool_call.phase is ToolCallPhase.EXECUTED
+
+    seen_requests = []
+
+    class ReplacementAdapter:
+        def complete(self, request):
+            seen_requests.append(request)
+            return ChatResponse("done", model="fixture-model")
+
+    step, run = coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda _: ReplacementAdapter(),
+        sandbox_resolver=lambda _: Executor(),
+    )
+
+    assert run.status is RunStatus.SUCCEEDED
+    assert step.output["content"] == "done"
+    assert [message.role for message in seen_requests[0].messages[-2:]] == ["assistant", "tool"]
+    assert "3 files" in seen_requests[0].messages[-1].content
+
+
+def test_execute_next_step_stops_cleanly_when_cancelled_between_iterations(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Inspect twice")
+    _add_tool_step(coordinator, "run-1", "step-1", tool_iteration_budget=2)
+
+    execute_calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            execute_calls.append(tuple(argv))
+            return SandboxResult(tuple(argv), 0, "3 files\n", "")
+
+    requests = []
+
+    class Adapter:
+        def complete(self, request):
+            requests.append(request)
+            if len(requests) == 1:
+                return ChatResponse(
+                    "calling-1",
+                    model="fixture-model",
+                    tool_call=ChatToolCall(
+                        name="list_files", arguments={"round": 1}, call_id="call-1"
+                    ),
+                )
+            # Simulate an operator cancelling the run concurrently while the
+            # model produces the second round's response.
+            coordinator.cancel("run-1")
+            return ChatResponse(
+                "calling-2",
+                model="fixture-model",
+                tool_call=ChatToolCall(
+                    name="list_files", arguments={"round": 2}, call_id="call-2"
+                ),
+            )
+
+    step, run = coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda _: Adapter(),
+        sandbox_resolver=lambda _: Executor(),
+    )
+
+    assert execute_calls == [("ls", "-la")]
+    assert len(requests) == 2
+    assert step.status is StepStatus.CANCELLED
+    assert run.status is RunStatus.CANCELLED
+    assert len(step.tool_iterations) == 1
+    assert step.tool_iterations[0].tool_call.phase is ToolCallPhase.EXECUTED
+
+
+def test_execute_next_step_stops_cleanly_when_cancelled_during_tool_execution(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Summarize files")
+    _add_tool_step(coordinator, "run-1", "step-1")
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            # Simulate an operator cancellation landing while the sandbox
+            # command is still executing, before its result is durable.
+            coordinator.cancel("run-1")
+            return SandboxResult(tuple(argv), 0, "3 files\n", "")
+
+    class Adapter:
+        def complete(self, request):
+            return ChatResponse(
+                "calling-1",
+                model="fixture-model",
+                tool_call=ChatToolCall(name="list_files", arguments={}, call_id="call-1"),
+            )
+
+    step, run = coordinator.execute_next_step(
+        "run-1",
+        adapter_resolver=lambda _: Adapter(),
+        sandbox_resolver=lambda _: Executor(),
+    )
+
+    assert step.status is StepStatus.CANCELLED
+    assert run.status is RunStatus.CANCELLED
+    assert len(step.tool_iterations) == 1
+    assert step.tool_iterations[0].tool_call.phase is ToolCallPhase.REQUESTED

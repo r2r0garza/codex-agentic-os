@@ -410,14 +410,26 @@ until the model returns a final response. A budget of `N` permits at most `N`
 sandbox tool executions; if the model requests another tool after those
 executions, that response is persisted as `rejected_budget`, no command runs,
 and the step/run fail definitively with the complete ordered evidence. Both
-phases are written while the step stays `running`, so an
-interruption between them leaves an inspectable `tool_call` (`phase`
-`requested` or `executed`) for `run recover`; recovery always fails the step
-definitively and never resumes or re-executes the tool, exactly like recovery
-for a command or provider step. A model request for a tool name the step
-never declared or a tool call with no sandbox resolver available fails the
-step definitively without executing a command. Provider responses containing
-multiple simultaneous calls remain rejected by every adapter before dispatch.
+phases are written while the step stays `running`, so an interruption between
+them leaves an inspectable `tool_call` (`phase` `requested` or `executed`).
+A step whose last durable iteration is still `requested` is a genuinely
+uncertain in-progress execution and remains for `run recover`, which always
+fails it definitively without resuming or re-executing the tool, exactly like
+recovery for a command or provider step. A step whose last durable iteration
+is `executed` is a safe boundary instead: calling `execute_next_step` again —
+whether from `run execute-next` or a replacement `worker run` process reusing
+the same durable state — replays every completed iteration's assistant/tool
+turns from stored evidence and issues the next provider request, without
+re-executing any already-durable sandboxed command. A run or step cancelled
+while a tool loop is in progress is checked at the top of every loop pass
+before it acts on a provider response and, on a conflicting concurrent write,
+when persisting a requested or executed phase; either path stops the loop
+with no further provider request or sandbox execution, leaving completed
+iterations exactly as durably recorded and no more added. A model request for
+a tool name the step never declared or a tool call with no sandbox resolver
+available fails the step definitively without executing a command. Provider
+responses containing multiple simultaneous calls remain rejected by every
+adapter before dispatch.
 `run inspect`/`run inspect-step` show `tool_iterations` in order, including
 each normalized provider response and call outcome, plus `tool_call` as a
 compatibility alias for the latest call; a step with no tool call omits both

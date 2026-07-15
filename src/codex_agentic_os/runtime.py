@@ -110,6 +110,15 @@ class PlanProposalError(ValueError):
     """
 
 
+class _ToolLoopCancelled(Exception):
+    """Internal signal that a concurrent cancellation superseded a durable tool-loop write.
+
+    Raised only by the tool-loop's own CAS-guarded persist helpers when their
+    write conflicts because the run or step left ``RUNNING``; caught inside
+    the loop to stop cleanly instead of surfacing a generic conflict error.
+    """
+
+
 class StepRecoveryReason(StrEnum):
     """Explicit reasons for failing a running step with an uncertain result."""
 
@@ -211,9 +220,13 @@ class ToolCallPhase(StrEnum):
     """Durable phase of one in-flight or completed tool call within a step.
 
     ``REQUESTED`` is written before the tool's sandboxed command executes;
-    ``EXECUTED`` is written once its result is durable. Recovery never
-    resumes past a persisted phase, so a step interrupted at either phase
-    fails definitively instead of silently re-executing the tool.
+    ``EXECUTED`` is written once its result is durable. A step found
+    ``RUNNING`` whose last iteration is still ``REQUESTED`` is a genuinely
+    uncertain in-progress execution and fails definitively through the
+    existing recovery contract instead of silently re-executing the tool.
+    A step whose last iteration is durably ``EXECUTED`` is a safe boundary:
+    a replacement worker resumes provider continuation from there without
+    repeating the completed sandbox execution.
     """
 
     REQUESTED = "requested"
@@ -1030,6 +1043,19 @@ class RunCoordinator:
         if running_step is not None:
             if running_step.delegation is not None:
                 return self._reconcile_delegation_step(run, running_step)
+            if (
+                running_step.tool_iterations
+                and running_step.tool_iterations[-1].tool_call.phase
+                is ToolCallPhase.EXECUTED
+            ):
+                return self._resume_tool_loop(
+                    run,
+                    running_step,
+                    sandbox_resolver=sandbox_resolver,
+                    adapter_resolver=adapter_resolver,
+                    routing_policy=routing_policy,
+                    provider_specs=provider_specs,
+                )
             raise ValueError(f"run already has a running step: {run_id}")
         next_step = next(
             (step for step in steps if step.status is StepStatus.QUEUED), None
@@ -1138,7 +1164,163 @@ class RunCoordinator:
         except (ValueError, RuntimeError, NotImplementedError) as error:
             return self.fail_step_from_error(running_step.step_id, error)
 
+        return self._advance_tool_loop(
+            run, running_step, adapter, messages, tool_declarations, response, sandbox_resolver
+        )
+
+    def _resume_tool_loop(
+        self,
+        run: AgentRun,
+        running_step: RunStep,
+        *,
+        sandbox_resolver: SandboxPolicyResolver | None,
+        adapter_resolver: ChatAdapterResolver | None,
+        routing_policy: ProviderRoutingPolicy,
+        provider_specs: Sequence[ProviderSpec],
+    ) -> tuple[RunStep, AgentRun]:
+        """Resume a tool-declaring step whose durable iterations end at a completed boundary.
+
+        Only reached when the step's last persisted iteration is
+        :attr:`ToolCallPhase.EXECUTED`, which durably implies every prior
+        iteration is too, so the full turn history safely replays from
+        stored evidence without re-executing any sandboxed tool call.
+        """
+
+        assert running_step.message is not None
+        if adapter_resolver is None:
+            raise ValueError(
+                f"next provider-message step requires an adapter: {running_step.step_id}"
+            )
+        provider_route = None
+        if running_step.message.required_capability is not None:
+            try:
+                provider_route = routing_policy.resolve(
+                    running_step.message.required_capability,
+                    tuple(provider_specs),
+                    model=running_step.message.model,
+                )
+            except ValueError as error:
+                return self.fail_step_from_error(running_step.step_id, error)
+        resolved_message = running_step.message
+        if provider_route is not None:
+            resolved_message = ProviderMessage(
+                provider=provider_route.provider.value,
+                content=running_step.message.content,
+                model=provider_route.model,
+                system=running_step.message.system,
+                temperature=running_step.message.temperature,
+                max_tokens=running_step.message.max_tokens,
+            )
+        try:
+            adapter = adapter_resolver(resolved_message)
+            system_messages = (
+                (ChatMessage("system", running_step.message.system),)
+                if running_step.message.system is not None
+                else ()
+            )
+            context_messages = self._resolve_context_messages(running_step)
+            tool_declarations = tuple(
+                ChatToolDeclaration(
+                    name=tool.name,
+                    description=tool.description,
+                    parameters=tool.parameters,
+                )
+                for tool in running_step.tool_declarations
+            )
+            messages = (
+                system_messages
+                + context_messages
+                + (ChatMessage("user", running_step.message.content),)
+                + self._replay_tool_iteration_messages(running_step)
+            )
+            response = adapter.complete(
+                ChatRequest(
+                    messages,
+                    temperature=running_step.message.temperature,
+                    max_tokens=running_step.message.max_tokens,
+                    tools=tool_declarations,
+                )
+            )
+        except (ValueError, RuntimeError, NotImplementedError) as error:
+            return self.fail_step_from_error(running_step.step_id, error)
+
+        return self._advance_tool_loop(
+            run, running_step, adapter, messages, tool_declarations, response, sandbox_resolver
+        )
+
+    @staticmethod
+    def _replay_tool_iteration_messages(step: RunStep) -> tuple[ChatMessage, ...]:
+        """Rebuild the assistant/tool turn history from durable completed iterations."""
+
+        messages: list[ChatMessage] = []
+        for iteration in step.tool_iterations:
+            call = iteration.tool_call
+            content = iteration.response.get("content")
+            messages.append(
+                ChatMessage(
+                    "assistant",
+                    content if isinstance(content, str) else "",
+                    tool_call=ChatToolCall(
+                        name=call.tool_name,
+                        arguments=dict(call.arguments),
+                        call_id=call.call_id,
+                    ),
+                )
+            )
+            tool_result_text = json.dumps(
+                {
+                    "exit_code": call.exit_code,
+                    "stdout": call.stdout,
+                    "stderr": call.stderr,
+                }
+            )
+            messages.append(
+                ChatMessage(
+                    "tool",
+                    tool_result_text,
+                    tool_result_for=call.call_id or call.tool_name,
+                )
+            )
+        return tuple(messages)
+
+    def _tool_loop_cancelled(
+        self, run_id: str, step_id: str
+    ) -> tuple[RunStep, AgentRun] | None:
+        """Return the current (step, run) pair if either left ``RUNNING`` mid-loop, else ``None``."""
+
+        current_run = self.get(run_id)
+        current_step = self.get_step(step_id)
+        if current_run is None or current_step is None:
+            return None  # Defensive: a durably referenced run/step must still exist.
+        if (
+            current_run.status is RunStatus.RUNNING
+            and current_step.status is StepStatus.RUNNING
+        ):
+            return None
+        return current_step, current_run
+
+    def _advance_tool_loop(
+        self,
+        run: AgentRun,
+        running_step: RunStep,
+        adapter: ChatAdapter,
+        messages: tuple[ChatMessage, ...],
+        tool_declarations: tuple[ChatToolDeclaration, ...],
+        response: ChatResponse,
+        sandbox_resolver: SandboxPolicyResolver | None,
+    ) -> tuple[RunStep, AgentRun]:
+        """Run, or continue, the bounded tool-call loop from a fresh provider response.
+
+        Checked at the top of every pass so a concurrent cancellation
+        discovered before acting on ``response`` stops the loop without
+        persisting another requested call or executing another sandboxed
+        command; completed iterations already durable are left untouched.
+        """
+
         while response.tool_call is not None:
+            cancelled = self._tool_loop_cancelled(run.run_id, running_step.step_id)
+            if cancelled is not None:
+                return cancelled
             declaration = next(
                 (
                     tool
@@ -1203,12 +1385,27 @@ class RunCoordinator:
                     ),
                 )
             assert running_step.sandbox_policy is not None  # enforced by _validate_tool_declarations
-            running_step = self._persist_tool_call_requested(
-                run, running_step, response
-            )
+            try:
+                running_step = self._persist_tool_call_requested(
+                    run, running_step, response
+                )
+            except _ToolLoopCancelled:
+                cancelled = self._tool_loop_cancelled(run.run_id, running_step.step_id)
+                assert cancelled is not None
+                return cancelled
             tool_executor = sandbox_resolver(running_step.sandbox_policy)
+            cancelled = self._tool_loop_cancelled(run.run_id, running_step.step_id)
+            if cancelled is not None:
+                return cancelled
             tool_result = tool_executor.execute(declaration.command)
-            running_step = self._persist_tool_call_executed(run, running_step, tool_result)
+            try:
+                running_step = self._persist_tool_call_executed(
+                    run, running_step, tool_result
+                )
+            except _ToolLoopCancelled:
+                cancelled = self._tool_loop_cancelled(run.run_id, running_step.step_id)
+                assert cancelled is not None
+                return cancelled
             tool_call_record = running_step.tool_call
             assert tool_call_record is not None
             tool_result_text = json.dumps(
@@ -1316,6 +1513,8 @@ class RunCoordinator:
                 history=(history_entry,),
             )
         except StateConflictError as error:
+            if self._tool_loop_cancelled(step.run_id, step.step_id) is not None:
+                raise _ToolLoopCancelled from error
             raise ValueError(f"step transition conflict: {step.step_id}") from error
         return self._step(stored[0])
 
@@ -1367,6 +1566,8 @@ class RunCoordinator:
                 ),
             )
         except StateConflictError as error:
+            if self._tool_loop_cancelled(step.run_id, step.step_id) is not None:
+                raise _ToolLoopCancelled from error
             raise ValueError(f"step transition conflict: {step.step_id}") from error
         return self._step(stored[0])
 

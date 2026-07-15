@@ -587,6 +587,87 @@ def test_run_worker_executes_a_declared_tool_call_from_queued_run(tmp_path) -> N
     assert run.status is RunStatus.SUCCEEDED
 
 
+def test_run_worker_replacement_resumes_tool_loop_after_interruption(tmp_path) -> None:
+    from codex_agentic_os.chat import ChatToolCall
+    from codex_agentic_os.runtime import SandboxPolicy, StepStatus, ToolDeclaration
+    from codex_agentic_os.sandboxes import SandboxKind
+
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-1", objective="Summarize files", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1",
+        "only",
+        objective="Summarize",
+        message=ProviderMessage(provider="local", content="List files"),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+        tools=[ToolDeclaration(name="list_files", command=("ls", "-la"))],
+        tool_iteration_budget=1,
+    )
+
+    execute_calls = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            execute_calls.append(tuple(argv))
+            return SandboxResult(tuple(argv), 0, "3 files\n", "")
+
+    class CrashingAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResponse(
+                    "", tool_call=ChatToolCall(name="list_files", arguments={})
+                )
+            raise TimeoutError("worker process crashed after the executed iteration")
+
+    with pytest.raises(TimeoutError):
+        run_worker(
+            coordinator,
+            registry,
+            "agent-1",
+            heartbeat_interval=60,
+            poll_interval=1,
+            sandbox_resolver=lambda _policy: Executor(),
+            adapter_resolver=lambda _message: CrashingAdapter(),
+            should_continue=_bounded_should_continue(2),
+        )
+
+    stuck = coordinator.get_step("only")
+    assert stuck.status is StepStatus.RUNNING
+    assert stuck.tool_call.phase.value == "executed"
+    assert execute_calls == [("ls", "-la")]
+
+    class ReplacementAdapter:
+        def complete(self, request):
+            return ChatResponse("Found 3 files.")
+
+    summary = run_worker(
+        RunCoordinator(StateStore(database)),
+        AgentRegistry(StateStore(database)),
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        sandbox_resolver=lambda _policy: Executor(),
+        adapter_resolver=lambda _message: ReplacementAdapter(),
+        should_continue=_bounded_should_continue(2),
+    )
+
+    assert summary.executed_step_ids == ("only",)
+    assert execute_calls == [("ls", "-la")]
+    step = coordinator.get_step("only")
+    assert step.status is StepStatus.SUCCEEDED
+    assert step.output["content"] == "Found 3 files."
+    run = coordinator.get("run-1")
+    assert run.status is RunStatus.SUCCEEDED
+
+
 def test_run_worker_dispatches_delegation_step_then_moves_on_without_crashing(
     tmp_path,
 ) -> None:
