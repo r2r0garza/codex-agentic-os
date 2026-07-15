@@ -54,6 +54,8 @@ def _step_payload(
         payload.pop("message")
     if not step.context_step_ids:
         payload.pop("context_step_ids")
+    if not step.memory_names:
+        payload.pop("memory_names")
     if step.sandbox_policy is None:
         payload.pop("sandbox_policy")
     else:

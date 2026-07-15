@@ -696,6 +696,69 @@ def test_google_adapter_maps_resolved_context_into_ordered_native_contents() -> 
     ]
 
 
+_RESOLVED_MEMORY_MESSAGES = (
+    ChatMessage("user", "Recall memory 'policy/retry' (decision)."),
+    ChatMessage("assistant", "Retry twice then fail."),
+    ChatMessage("user", "Current objective"),
+)
+
+
+def test_compatible_adapter_orders_resolved_memory_before_current_user_message() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["body"] = json.loads(body)
+        return json.dumps({"choices": [{"message": {"content": "final"}}]}).encode()
+
+    adapter = OpenAICompatibleAdapter(
+        ProviderSpec(ProviderKind.OPENAI_COMPATIBLE, model="test-model", base_url="http://localhost:9000/v1"),
+        transport=transport,
+    )
+    adapter.complete(ChatRequest(_RESOLVED_MEMORY_MESSAGES))
+
+    assert captured["body"]["messages"] == [
+        {"role": "user", "content": "Recall memory 'policy/retry' (decision)."},
+        {"role": "assistant", "content": "Retry twice then fail."},
+        {"role": "user", "content": "Current objective"},
+    ]
+
+
+def test_anthropic_adapter_maps_resolved_memory_into_alternating_native_messages() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["body"] = json.loads(body)
+        return json.dumps({"content": [{"type": "text", "text": "final"}]}).encode()
+
+    adapter = AnthropicAdapter(ProviderSpec(ProviderKind.ANTHROPIC, model="claude-test"), transport=transport)
+    adapter.complete(ChatRequest(_RESOLVED_MEMORY_MESSAGES))
+
+    assert captured["body"]["messages"] == [
+        {"role": "user", "content": "Recall memory 'policy/retry' (decision)."},
+        {"role": "assistant", "content": "Retry twice then fail."},
+        {"role": "user", "content": "Current objective"},
+    ]
+
+
+def test_google_adapter_maps_resolved_memory_into_ordered_native_contents() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
+        captured["body"] = json.loads(body)
+        return json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": "final"}]}}]}
+        ).encode()
+
+    adapter = GoogleAdapter(ProviderSpec(ProviderKind.GOOGLE, model="gemini-test"), transport=transport)
+    adapter.complete(ChatRequest(_RESOLVED_MEMORY_MESSAGES))
+
+    assert captured["body"]["contents"] == [
+        {"role": "user", "parts": [{"text": "Recall memory 'policy/retry' (decision)."}]},
+        {"role": "model", "parts": [{"text": "Retry twice then fail."}]},
+        {"role": "user", "parts": [{"text": "Current objective"}]},
+    ]
+
+
 def test_openai_compatible_adapter_parses_tool_call_response() -> None:
     def transport(url: str, headers: dict[str, str], body: bytes) -> bytes:
         return json.dumps(

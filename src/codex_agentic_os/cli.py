@@ -224,6 +224,16 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     add_step.add_argument(
+        "--memory",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "include a durable named memory entry as provider context; "
+            "repeat to preserve order"
+        ),
+    )
+    add_step.add_argument(
         "--approval-required",
         action="store_true",
         help="require an explicit operator decision before dispatch",
@@ -1191,6 +1201,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     timeout=arguments.timeout,
                     message=message,
                     context_step_ids=arguments.context_step,
+                    memory_names=arguments.memory,
                     approval_required=arguments.approval_required,
                     sandbox_policy=sandbox_policy,
                     tools=_parse_tools(arguments.tool) or None,

@@ -35,6 +35,7 @@ class RunHistoryEntry:
     step_id: str | None = None
     retried_step_id: str | None = None
     context_step_ids: tuple[str, ...] | None = None
+    memory_names: tuple[str, ...] | None = None
     plan_id: str | None = None
     required_capability: str | None = None
     resolved_provider: str | None = None
@@ -158,6 +159,10 @@ class StateStore:
                 connection.execute(
                     "ALTER TABLE run_history ADD COLUMN context_step_ids TEXT"
                 )
+            if "memory_names" not in history_columns:
+                connection.execute(
+                    "ALTER TABLE run_history ADD COLUMN memory_names TEXT"
+                )
             if "plan_id" not in history_columns:
                 connection.execute("ALTER TABLE run_history ADD COLUMN plan_id TEXT")
             for column in (
@@ -267,6 +272,7 @@ class StateStore:
                         execution_kind=entry.execution_kind,
                         retried_step_id=entry.retried_step_id,
                         context_step_ids=entry.context_step_ids,
+                        memory_names=entry.memory_names,
                         plan_id=entry.plan_id,
                         required_capability=entry.required_capability,
                         resolved_provider=entry.resolved_provider,
@@ -334,6 +340,7 @@ class StateStore:
                     execution_kind=entry.execution_kind,
                     retried_step_id=entry.retried_step_id,
                     context_step_ids=entry.context_step_ids,
+                    memory_names=entry.memory_names,
                     plan_id=entry.plan_id,
                     required_capability=entry.required_capability,
                     resolved_provider=entry.resolved_provider,
@@ -645,6 +652,7 @@ class StateStore:
                 "message",
                 "sandbox_policy",
                 "context_step_ids",
+                "memory_names",
                 "tools",
                 "tool_iteration_budget",
                 "response_artifact_name",
@@ -920,6 +928,7 @@ class StateStore:
         agent_id: str | None = None,
         execution_kind: str | None = None,
         context_step_ids: Sequence[str] | None = None,
+        memory_names: Sequence[str] | None = None,
         required_capability: str | None = None,
         resolved_provider: str | None = None,
         resolved_model: str | None = None,
@@ -975,6 +984,7 @@ class StateStore:
                     agent_id=agent_id,
                     execution_kind=execution_kind,
                     context_step_ids=context_step_ids,
+                    memory_names=memory_names,
                     required_capability=required_capability,
                     resolved_provider=resolved_provider,
                     resolved_model=resolved_model,
@@ -1239,6 +1249,7 @@ class StateStore:
                     execution_kind=entry.execution_kind,
                     retried_step_id=entry.retried_step_id,
                     context_step_ids=entry.context_step_ids,
+                    memory_names=entry.memory_names,
                     plan_id=entry.plan_id,
                     required_capability=entry.required_capability,
                     resolved_provider=entry.resolved_provider,
@@ -1267,7 +1278,7 @@ class StateStore:
             rows = connection.execute(
                 """
                 SELECT run_id, sequence, transition, status, step_id, agent_id,
-                       execution_kind, retried_step_id, context_step_ids, plan_id,
+                       execution_kind, retried_step_id, context_step_ids, memory_names, plan_id,
                        required_capability, resolved_provider, resolved_model,
                        routing_reason, artifact_name, parent_run_id, parent_step_id,
                        delegated_run_id, tool_name, tool_outcome,
@@ -1287,21 +1298,22 @@ class StateStore:
                 execution_kind=row[6],
                 retried_step_id=row[7],
                 context_step_ids=None if row[8] is None else tuple(json.loads(row[8])),
-                plan_id=row[9],
-                required_capability=row[10],
-                resolved_provider=row[11],
-                resolved_model=row[12],
-                routing_reason=row[13],
-                artifact_name=row[14],
-                parent_run_id=row[15],
-                parent_step_id=row[16],
-                delegated_run_id=row[17],
-                tool_name=row[18],
-                tool_outcome=row[19],
-                tool_iteration=row[20],
-                tool_phase=row[21],
-                policy_rule_id=row[22],
-                policy_reason=row[23],
+                memory_names=None if row[9] is None else tuple(json.loads(row[9])),
+                plan_id=row[10],
+                required_capability=row[11],
+                resolved_provider=row[12],
+                resolved_model=row[13],
+                routing_reason=row[14],
+                artifact_name=row[15],
+                parent_run_id=row[16],
+                parent_step_id=row[17],
+                delegated_run_id=row[18],
+                tool_name=row[19],
+                tool_outcome=row[20],
+                tool_iteration=row[21],
+                tool_phase=row[22],
+                policy_rule_id=row[23],
+                policy_reason=row[24],
             )
             for row in rows
         )
@@ -1414,6 +1426,7 @@ class StateStore:
         step_id: str | None = None,
         retried_step_id: str | None = None,
         context_step_ids: Sequence[str] | None = None,
+        memory_names: Sequence[str] | None = None,
         plan_id: str | None = None,
         required_capability: str | None = None,
         resolved_provider: str | None = None,
@@ -1440,12 +1453,12 @@ class StateStore:
             """
             INSERT INTO run_history
                 (run_id, sequence, transition, status, step_id, agent_id,
-                 execution_kind, retried_step_id, context_step_ids, plan_id,
+                 execution_kind, retried_step_id, context_step_ids, memory_names, plan_id,
                  required_capability, resolved_provider, resolved_model,
                  routing_reason, artifact_name, parent_run_id, parent_step_id,
                  delegated_run_id, tool_name, tool_outcome, tool_iteration, tool_phase,
                  policy_rule_id, policy_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1457,6 +1470,7 @@ class StateStore:
                 execution_kind,
                 retried_step_id,
                 None if context_step_ids is None else json.dumps(list(context_step_ids)),
+                None if memory_names is None else json.dumps(list(memory_names)),
                 plan_id,
                 required_capability,
                 resolved_provider,

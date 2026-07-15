@@ -272,6 +272,7 @@ class RunStep:
     timeout: float | None = None
     message: ProviderMessage | None = None
     context_step_ids: tuple[str, ...] = ()
+    memory_names: tuple[str, ...] = ()
     approval_required: bool = False
     approval_status: ApprovalStatus | None = None
     sandbox_policy: SandboxPolicy | None = None
@@ -856,6 +857,7 @@ class RunCoordinator:
             if step.delegated_run_id is not None:
                 payload["delegated_run_id"] = step.delegated_run_id
             self._add_context_step_ids_payload(payload, step)
+            self._add_memory_names_payload(payload, step)
             self._add_approval_payload(payload, step)
             records.append(("step", step.step_id, StepStatus.CANCELLED, payload))
             expected.append(("step", step.step_id, step.status, step.revision))
@@ -974,6 +976,7 @@ class RunCoordinator:
             if next_step.response_artifact_name is not None:
                 step_payload["response_artifact_name"] = next_step.response_artifact_name
             self._add_context_step_ids_payload(step_payload, next_step)
+            self._add_memory_names_payload(step_payload, next_step)
             self._add_approval_payload(step_payload, next_step)
             stored = self.store.put_many(
                 (
@@ -994,6 +997,7 @@ class RunCoordinator:
                         step_id=next_step.step_id, agent_id=run.agent_id,
                         execution_kind=self._execution_kind(next_step),
                         context_step_ids=next_step.context_step_ids or None,
+                        memory_names=next_step.memory_names or None,
                         required_capability=(
                             None
                             if next_step.message is None
@@ -1019,6 +1023,7 @@ class RunCoordinator:
             next_step.step_id,
             StepStatus.RUNNING,
             resolved_context_step_ids=next_step.context_step_ids or None,
+            resolved_memory_names=next_step.memory_names or None,
             provider_route=provider_route,
             expected_policy_rule_ids=policy_rule_ids,
         )
@@ -1147,9 +1152,11 @@ class RunCoordinator:
                 if running_step.message.system is not None
                 else ()
             )
+            memory_messages = self._resolve_memory_messages(running_step)
             context_messages = self._resolve_context_messages(running_step)
             messages = (
                 system_messages
+                + memory_messages
                 + context_messages
                 + (ChatMessage("user", running_step.message.content),)
             )
@@ -1226,6 +1233,7 @@ class RunCoordinator:
                 if running_step.message.system is not None
                 else ()
             )
+            memory_messages = self._resolve_memory_messages(running_step)
             context_messages = self._resolve_context_messages(running_step)
             tool_declarations = tuple(
                 ChatToolDeclaration(
@@ -1237,6 +1245,7 @@ class RunCoordinator:
             )
             messages = (
                 system_messages
+                + memory_messages
                 + context_messages
                 + (ChatMessage("user", running_step.message.content),)
                 + self._replay_tool_iteration_messages(running_step)
@@ -1473,6 +1482,7 @@ class RunCoordinator:
         if step.response_artifact_name is not None:
             payload["response_artifact_name"] = step.response_artifact_name
         RunCoordinator._add_context_step_ids_payload(payload, step)
+        RunCoordinator._add_memory_names_payload(payload, step)
         RunCoordinator._add_approval_payload(payload, step)
         return payload
 
@@ -1635,6 +1645,7 @@ class RunCoordinator:
             "output": output,
         }
         self._add_context_step_ids_payload(step_payload, step)
+        self._add_memory_names_payload(step_payload, step)
         self._add_approval_payload(step_payload, step)
 
         superseded_step_ids = self._superseded_step_ids(run.run_id)
@@ -1752,6 +1763,7 @@ class RunCoordinator:
             "delegated_run_id": child_run_id,
         }
         self._add_context_step_ids_payload(step_payload, next_step)
+        self._add_memory_names_payload(step_payload, next_step)
         self._add_approval_payload(step_payload, next_step)
 
         child_payload: dict[str, object] = {
@@ -1796,6 +1808,7 @@ class RunCoordinator:
         timeout: float | None = None,
         message: ProviderMessage | Mapping[str, object] | None = None,
         context_step_ids: Sequence[str] | None = None,
+        memory_names: Sequence[str] | None = None,
         approval_required: bool = False,
         sandbox_policy: SandboxPolicy | Mapping[str, object] | None = None,
         tools: Sequence[ToolDeclaration | Mapping[str, object]] | None = None,
@@ -1829,6 +1842,10 @@ class RunCoordinator:
         normalized_context_step_ids = self._validate_context_step_ids(
             run_id,
             context_step_ids,
+            has_message=normalized_message is not None,
+        )
+        normalized_memory_names = self._validate_memory_names(
+            memory_names,
             has_message=normalized_message is not None,
         )
         if not isinstance(approval_required, bool):
@@ -1868,6 +1885,8 @@ class RunCoordinator:
             payload["message"] = self._message_payload(normalized_message)
         if normalized_context_step_ids:
             payload["context_step_ids"] = list(normalized_context_step_ids)
+        if normalized_memory_names:
+            payload["memory_names"] = list(normalized_memory_names)
         if normalized_sandbox_policy is not None:
             payload["sandbox_policy"] = self._sandbox_policy_payload(normalized_sandbox_policy)
         if normalized_tools:
@@ -2154,6 +2173,7 @@ class RunCoordinator:
         *,
         output: Mapping[str, object] | None = None,
         resolved_context_step_ids: Sequence[str] | None = None,
+        resolved_memory_names: Sequence[str] | None = None,
         provider_route: ProviderRoute | None = None,
         expected_policy_rule_ids: Sequence[str] | None = None,
     ) -> RunStep:
@@ -2169,6 +2189,10 @@ class RunCoordinator:
         if resolved_context_step_ids is not None and status is not StepStatus.RUNNING:
             raise ValueError(
                 "resolved context step ids are only valid when starting a step"
+            )
+        if resolved_memory_names is not None and status is not StepStatus.RUNNING:
+            raise ValueError(
+                "resolved memory names are only valid when starting a step"
             )
         if provider_route is not None:
             if status is not StepStatus.RUNNING:
@@ -2207,6 +2231,7 @@ class RunCoordinator:
         if current.delegated_run_id is not None:
             payload["delegated_run_id"] = current.delegated_run_id
         self._add_context_step_ids_payload(payload, current)
+        self._add_memory_names_payload(payload, current)
         self._add_approval_payload(payload, current)
         if output is not None:
             payload["output"] = dict(output)
@@ -2224,6 +2249,7 @@ class RunCoordinator:
                 agent_id=run.agent_id,
                 execution_kind=self._execution_kind(current),
                 context_step_ids=resolved_context_step_ids,
+                memory_names=resolved_memory_names,
                 required_capability=(
                     None if current.message is None else current.message.required_capability
                 ),
@@ -2398,6 +2424,7 @@ class RunCoordinator:
         if current.response_artifact_name is not None:
             step_payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(step_payload, current)
+        self._add_memory_names_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
         run_status: RunStatus | None = None
@@ -2494,6 +2521,7 @@ class RunCoordinator:
         if current.response_artifact_name is not None:
             step_payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(step_payload, current)
+        self._add_memory_names_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
         superseded_step_ids = self._superseded_step_ids(run.run_id)
         final = all(
@@ -2592,6 +2620,7 @@ class RunCoordinator:
         if current.response_artifact_name is not None:
             step_payload["response_artifact_name"] = current.response_artifact_name
         self._add_context_step_ids_payload(step_payload, current)
+        self._add_memory_names_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
         run_payload: dict[str, object] = self._base_run_payload(run)
@@ -2706,6 +2735,7 @@ class RunCoordinator:
         if current.delegated_run_id is not None:
             step_payload["delegated_run_id"] = current.delegated_run_id
         self._add_context_step_ids_payload(step_payload, current)
+        self._add_memory_names_payload(step_payload, current)
         self._add_approval_payload(step_payload, current)
 
         run_payload: dict[str, object] = self._base_run_payload(run)
@@ -2796,6 +2826,7 @@ class RunCoordinator:
         timeout = record.payload.get("timeout")
         message = record.payload.get("message")
         context_step_ids = record.payload.get("context_step_ids")
+        memory_names = record.payload.get("memory_names")
         sandbox_policy = record.payload.get("sandbox_policy")
         tools = record.payload.get("tools")
         tool_iteration_budget = record.payload.get("tool_iteration_budget")
@@ -2822,6 +2853,9 @@ class RunCoordinator:
         normalized_delegation = RunCoordinator._validate_delegation(delegation)
         normalized_context_step_ids = RunCoordinator._validate_stored_context_step_ids(
             context_step_ids, has_message=normalized_message is not None
+        )
+        normalized_memory_names = RunCoordinator._validate_stored_memory_names(
+            memory_names, has_message=normalized_message is not None
         )
         if sum(
             value is not None
@@ -2900,6 +2934,7 @@ class RunCoordinator:
             timeout=timeout,
             message=normalized_message,
             context_step_ids=normalized_context_step_ids,
+            memory_names=normalized_memory_names,
             approval_required=approval_required,
             approval_status=approval_status,
             sandbox_policy=normalized_sandbox_policy,
@@ -3009,6 +3044,7 @@ class RunCoordinator:
         if step.message is not None:
             payload["message"] = RunCoordinator._message_payload(step.message)
         RunCoordinator._add_context_step_ids_payload(payload, step)
+        RunCoordinator._add_memory_names_payload(payload, step)
         if step.sandbox_policy is not None:
             payload["sandbox_policy"] = RunCoordinator._sandbox_policy_payload(
                 step.sandbox_policy
@@ -3036,6 +3072,35 @@ class RunCoordinator:
 
         if step.context_step_ids:
             payload["context_step_ids"] = list(step.context_step_ids)
+
+    @staticmethod
+    def _add_memory_names_payload(payload: dict[str, object], step: RunStep) -> None:
+        """Preserve declared memory references without resolving their bodies."""
+
+        if step.memory_names:
+            payload["memory_names"] = list(step.memory_names)
+
+    def _resolve_memory_messages(self, step: RunStep) -> tuple[ChatMessage, ...]:
+        """Map a step's declared memory references into provider-neutral turns.
+
+        Each reference replays as one alternating (user, assistant) pair, the
+        same shape :meth:`_resolve_context_messages` uses, so every adapter
+        family receives a valid ordered sequence. Existence was already
+        validated before the reference was persisted; a name that no longer
+        resolves here is a defensive failure surfaced before provider contact.
+        """
+
+        messages: list[ChatMessage] = []
+        registry = MemoryRegistry(self.store)
+        for name in step.memory_names:
+            entry = registry.get(name)
+            if entry is None:
+                raise ValueError(f"memory entry does not exist: {name}")
+            messages.append(
+                ChatMessage("user", f"Recall memory '{entry.name}' ({entry.kind}).")
+            )
+            messages.append(ChatMessage("assistant", entry.body))
+        return tuple(messages)
 
     def _resolve_context_messages(self, step: RunStep) -> tuple[ChatMessage, ...]:
         """Map a step's resolved context references into provider-neutral turns.
@@ -3089,6 +3154,7 @@ class RunCoordinator:
         if step.message is not None:
             payload["message"] = RunCoordinator._message_payload(step.message)
         RunCoordinator._add_context_step_ids_payload(payload, step)
+        RunCoordinator._add_memory_names_payload(payload, step)
         if step.sandbox_policy is not None:
             payload["sandbox_policy"] = RunCoordinator._sandbox_policy_payload(
                 step.sandbox_policy
@@ -3362,6 +3428,42 @@ class RunCoordinator:
             raise ValueError("context step ids must be unique")
         if normalized and not has_message:
             raise ValueError("context step ids require a provider message")
+        return normalized
+
+    def _validate_memory_names(
+        self,
+        memory_names: Sequence[str] | None,
+        *,
+        has_message: bool,
+    ) -> tuple[str, ...]:
+        normalized = self._validate_stored_memory_names(
+            memory_names, has_message=has_message
+        )
+        registry = MemoryRegistry(self.store)
+        for name in normalized:
+            if registry.get(name) is None:
+                raise ValueError(f"memory entry does not exist: {name}")
+        return normalized
+
+    @staticmethod
+    def _validate_stored_memory_names(
+        memory_names: Sequence[str] | object | None,
+        *,
+        has_message: bool,
+    ) -> tuple[str, ...]:
+        if memory_names is None:
+            return ()
+        if isinstance(memory_names, (str, bytes)) or not isinstance(
+            memory_names, Sequence
+        ):
+            raise ValueError("memory names must be a sequence")
+        normalized = tuple(memory_names)
+        if any(not isinstance(name, str) or not name for name in normalized):
+            raise ValueError("memory names must be non-empty strings")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("memory names must be unique")
+        if normalized and not has_message:
+            raise ValueError("memory names require a provider message")
         return normalized
 
     @staticmethod

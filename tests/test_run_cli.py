@@ -606,6 +606,58 @@ def test_cli_inspects_only_declared_provider_context_step_ids(tmp_path, capsys) 
     assert "persisted output" not in json.dumps(inspected)
 
 
+def test_cli_inspects_only_declared_provider_memory_names(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    main(
+        [
+            "memory", "create", "policy/retry", "--body", "Retry twice then fail.",
+            "--kind", "decision", "--state-db", str(database),
+        ]
+    )
+    main(
+        [
+            "memory", "create", "handoff", "--body", "Resume issue 140.",
+            "--kind", "note", "--state-db", str(database),
+        ]
+    )
+    RunCoordinator(StateStore(database)).create("run-1", objective="Compose durable work")
+    capsys.readouterr()
+
+    main(
+        [
+            "run", "add-step", "run-1", "model", "--objective", "Synthesize",
+            "--provider", "local", "--message", "Use prior results",
+            "--memory", "handoff", "--memory", "policy/retry",
+            "--state-db", str(database),
+        ]
+    )
+    capsys.readouterr()
+    main(["run", "inspect-step", "model", "--state-db", str(database)])
+    inspected = json.loads(capsys.readouterr().out)
+
+    assert inspected["memory_names"] == ["handoff", "policy/retry"]
+    assert "Retry twice then fail." not in json.dumps(inspected)
+
+
+def test_cli_add_step_rejects_unknown_memory_name_without_mutation(tmp_path, capsys) -> None:
+    database = tmp_path / "state.sqlite3"
+    RunCoordinator(StateStore(database)).create("run-1", objective="Compose durable work")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "run", "add-step", "run-1", "model", "--objective", "Synthesize",
+                "--provider", "local", "--message", "Use prior results",
+                "--memory", "missing",
+                "--state-db", str(database),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "memory entry does not exist: missing" in capsys.readouterr().err
+    assert RunCoordinator(StateStore(database)).list_steps("run-1") == ()
+
+
 def test_cli_add_step_accepts_hyphen_prefixed_command_after_double_dash(
     tmp_path, capsys
 ) -> None:
@@ -2978,6 +3030,7 @@ def test_cli_history_reconstructs_mixed_command_and_provider_run_across_processe
             "step_id",
             "retried_step_id",
             "context_step_ids",
+            "memory_names",
         }
 
     reconstructed = RunCoordinator(StateStore(database)).list_history("run-1")
@@ -3205,6 +3258,7 @@ def test_cli_watch_output_omits_command_env_provider_and_terminal_secrets(
             "step_id",
             "retried_step_id",
             "context_step_ids",
+            "memory_names",
             "plan_id",
             "required_capability",
             "resolved_provider",

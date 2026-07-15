@@ -507,6 +507,30 @@ supported adapter family (OpenAI-compatible, Anthropic, Google) maps this
 same ordered sequence into its native multi-message shape; a provider step
 with no context references keeps today's exact single-turn payload.
 
+Declare durable named memory entries (created with `memory create`, see below) as
+explicit provider context by repeating `--memory` in the order their bodies should
+later be resolved. The declaration stores and displays memory names only; it does
+not copy resolved bodies into inspection payloads. Unknown names are rejected
+before the provider step is appended:
+
+```bash
+codex-agentic-os run add-step run-002 step-004 --objective "Apply the decision" \
+  --provider ollama --message "Apply the recorded decision" \
+  --memory retry-policy-decision \
+  --state-db .codex-agentic-os/state.sqlite3
+```
+
+Dispatch resolves every declared memory name against durable memory state
+immediately before provider contact, using the same `(user, assistant)`-pair
+provider-neutral message path as context-step references — one pair per
+declared name, ordered before any context-step turns and the step's own
+current user message. A name that no longer resolves (memory entries are
+never deleted today, so this is a defensive path) fails the step explicitly
+before the provider is contacted, recording a safe reason; it never dispatches
+with a silently dropped reference. The durable `step_started` history entry
+records the declared memory names (not their bodies) as auditable evidence
+that resolution was attempted.
+
 Add `--approval-required` to either form to keep the step queued until an operator
 records an explicit decision:
 
@@ -1181,8 +1205,9 @@ codex-agentic-os memory inspect architecture/database \
   --state-db /path/to/state.sqlite3
 ```
 
-Memory entries are create-only in this slice. Provider-step references and
-dispatch-time memory resolution are introduced separately.
+Memory entries are create-only; there is no edit, versioning, or deletion.
+Provider steps reference them by name with `--memory` on `run add-step` (see
+above); dispatch resolves referenced bodies into the provider payload.
 
 With Docker and `jq` available, run the committed policy-gated network review:
 

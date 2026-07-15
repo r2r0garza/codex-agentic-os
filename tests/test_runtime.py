@@ -21,6 +21,7 @@ from codex_agentic_os.runtime import (
     DelegationSpec,
     ExecutionPolicyRegistry,
     ExecutionPolicyRule,
+    MemoryRegistry,
     PLAN_PROPOSAL_SYSTEM_PROMPT,
     PlanDraft,
     PlanProposalError,
@@ -1117,6 +1118,181 @@ def test_provider_step_with_failed_context_reference_remains_queued_ineligible(
     assert coordinator.get("run-1") == run_before
     assert coordinator.get_step("model") == step_before
     assert coordinator.get_step("first").status is StepStatus.FAILED
+
+
+def test_provider_memory_names_round_trip_in_declared_order(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = MemoryRegistry(StateStore(database))
+    registry.create("policy/retry", body="Retry twice then fail.", kind="decision")
+    registry.create("handoff", body="Resume issue 140.", kind="note")
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Compose durable work")
+
+    created = coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage(provider="local", content="Synthesize the results"),
+        memory_names=("handoff", "policy/retry"),
+    )
+
+    assert created.memory_names == ("handoff", "policy/retry")
+    assert RunCoordinator(StateStore(database)).get_step("model") == created
+
+
+@pytest.mark.parametrize(
+    ("memory_names", "command", "message", "error"),
+    [
+        (("missing",), None, ProviderMessage("local", "Use it"), "does not exist"),
+        (("known",), ("true",), None, "require a provider message"),
+        (("known", "known"), None, ProviderMessage("local", "Use it"), "unique"),
+    ],
+)
+def test_provider_memory_names_reject_invalid_references_without_mutation(
+    tmp_path, memory_names, command, message, error
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    MemoryRegistry(StateStore(database)).create(
+        "known", body="Known decision.", kind="decision"
+    )
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Compose durable work")
+    before = coordinator.list_steps("run-1")
+
+    with pytest.raises(ValueError, match=error):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Synthesize",
+            command=command,
+            message=message,
+            memory_names=memory_names,
+        )
+
+    assert coordinator.list_steps("run-1") == before
+
+
+def test_provider_memory_names_survive_lifecycle_payload_rewrites(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    MemoryRegistry(StateStore(database)).create(
+        "policy/retry", body="Retry twice then fail.", kind="decision"
+    )
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage("local", "Use the result"),
+        memory_names=("policy/retry",),
+    )
+
+    running = coordinator.transition_step("model", StepStatus.RUNNING)
+    failed = coordinator.transition_step(
+        "model", StepStatus.FAILED, output={"error": "no adapter", "error_type": "ValueError"}
+    )
+
+    assert running.memory_names == ("policy/retry",)
+    assert failed.memory_names == ("policy/retry",)
+
+
+def test_execute_next_step_sends_resolved_memory_before_context_and_current_message(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    MemoryRegistry(StateStore(database)).create(
+        "policy/retry", body="Retry twice then fail.", kind="decision"
+    )
+    requests = []
+
+    class CommandExecutor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "first-stdout", "")
+
+    class SynthesisAdapter:
+        def complete(self, request):
+            requests.append(request)
+            return ChatResponse("Synthesized", model="served-model")
+
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step("run-1", "first", objective="Gather input", command=("true",))
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage(
+            provider="local", content="Synthesize the results", system="Be concise"
+        ),
+        context_step_ids=("first",),
+        memory_names=("policy/retry",),
+    )
+
+    coordinator.execute_next_step("run-1", CommandExecutor())
+    step, run = coordinator.execute_next_step(
+        "run-1", CommandExecutor(), adapter_resolver=lambda _: SynthesisAdapter()
+    )
+
+    assert len(requests) == 1
+    assert requests[0].messages == (
+        ChatMessage("system", "Be concise"),
+        ChatMessage("user", "Recall memory 'policy/retry' (decision)."),
+        ChatMessage("assistant", "Retry twice then fail."),
+        ChatMessage("user", "Gather input"),
+        ChatMessage("assistant", "exit_code=0\nstdout:\nfirst-stdout\nstderr:\n"),
+        ChatMessage("user", "Synthesize the results"),
+    )
+    assert step.status is StepStatus.SUCCEEDED
+    assert run.status is RunStatus.SUCCEEDED
+
+    started = next(
+        entry
+        for entry in coordinator.list_history("run-1")
+        if entry.transition == "step_started" and entry.step_id == "model"
+    )
+    assert started.memory_names == ("policy/retry",)
+
+    reloaded_started = next(
+        entry
+        for entry in RunCoordinator(StateStore(database)).list_history("run-1")
+        if entry.transition == "step_started" and entry.step_id == "model"
+    )
+    assert reloaded_started.memory_names == ("policy/retry",)
+
+
+def test_execute_next_step_fails_explicitly_when_referenced_memory_disappears(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    MemoryRegistry(store).create(
+        "policy/retry", body="Retry twice then fail.", kind="decision"
+    )
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Compose durable work")
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Synthesize",
+        message=ProviderMessage(provider="local", content="Synthesize the results"),
+        memory_names=("policy/retry",),
+    )
+
+    class Adapter:
+        def complete(self, request):
+            raise AssertionError("provider must not be contacted")
+
+    assert store.delete("memory_entry", "policy/retry") is True
+
+    step, run = coordinator.execute_next_step(
+        "run-1", adapter_resolver=lambda _: Adapter()
+    )
+
+    assert step.status is StepStatus.FAILED
+    assert step.output["error"] == "memory entry does not exist: policy/retry"
+    assert step.output["error_type"] == "ValueError"
+    assert run.status is RunStatus.FAILED
 
 
 def test_provider_step_context_eligibility_is_resolved_fresh_at_dispatch_time(
