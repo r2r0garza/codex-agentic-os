@@ -1009,11 +1009,17 @@ def test_cli_execute_next_runs_a_declared_tool_call_end_to_end(
     history = json.loads(capsys.readouterr().out)
     activity = [entry for entry in history if "tool_name" in entry]
     assert [
-        (entry["transition"], entry["tool_name"], entry["tool_outcome"])
+        (
+            entry["transition"],
+            entry["tool_name"],
+            entry["tool_outcome"],
+            entry["tool_iteration"],
+            entry["tool_phase"],
+        )
         for entry in activity
     ] == [
-        ("tool_call_requested", "list_files", "requested"),
-        ("tool_call_executed", "list_files", "succeeded"),
+        ("tool_call_requested", "list_files", "requested", 1, "requested"),
+        ("tool_call_executed", "list_files", "succeeded", 1, "executed"),
     ]
     assert "stdout" not in json.dumps(activity)
 

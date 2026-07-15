@@ -5624,11 +5624,17 @@ def test_execute_next_step_runs_a_declared_tool_call_end_to_end(tmp_path) -> Non
         if entry.tool_name is not None
     ]
     assert [
-        (entry.transition, entry.tool_name, entry.tool_outcome)
+        (
+            entry.transition,
+            entry.tool_name,
+            entry.tool_outcome,
+            entry.tool_iteration,
+            entry.tool_phase,
+        )
         for entry in activity
     ] == [
-        ("tool_call_requested", "list_files", "requested"),
-        ("tool_call_executed", "list_files", "succeeded"),
+        ("tool_call_requested", "list_files", "requested", 1, "requested"),
+        ("tool_call_executed", "list_files", "succeeded", 1, "executed"),
     ]
 
 
@@ -5733,6 +5739,8 @@ def test_execute_next_step_fails_definitively_on_undeclared_tool_call(tmp_path) 
             "rejected_undeclared",
         )
     ]
+    assert activity[0].tool_iteration == 1
+    assert activity[0].tool_phase == "rejected_undeclared"
     assert step.retry_eligible is True
     retried, retried_run = coordinator.retry_step(
         "step-1",
@@ -5826,6 +5834,15 @@ def test_execute_next_step_fails_when_tool_iteration_budget_is_exhausted(tmp_pat
         ToolCallPhase.EXECUTED,
         ToolCallPhase.REJECTED_BUDGET,
     ]
+    activity = [entry for entry in coordinator.list_history("run-1") if entry.tool_name]
+    assert [
+        (entry.tool_iteration, entry.tool_phase, entry.tool_outcome)
+        for entry in activity
+    ] == [
+        (1, "requested", "requested"),
+        (1, "executed", "succeeded"),
+        (2, "rejected_budget", "rejected_budget"),
+    ]
     assert run.status is RunStatus.FAILED
 
 
@@ -5892,6 +5909,16 @@ def test_execute_next_step_runs_multiple_ordered_tool_iterations(tmp_path) -> No
     assert len(step.output["tool_iterations"]) == 2
     assert run.status is RunStatus.SUCCEEDED
     assert RunCoordinator(StateStore(database)).get_step("step-1").tool_iterations == step.tool_iterations
+    activity = [entry for entry in coordinator.list_history("run-1") if entry.tool_name]
+    assert [
+        (entry.tool_iteration, entry.tool_phase, entry.tool_outcome)
+        for entry in activity
+    ] == [
+        (1, "requested", "requested"),
+        (1, "executed", "succeeded"),
+        (2, "requested", "requested"),
+        (2, "executed", "succeeded"),
+    ]
 
 
 def test_recovery_after_requested_phase_does_not_reexecute_tool(tmp_path) -> None:
@@ -6028,6 +6055,11 @@ def test_execute_next_step_resumes_after_executed_phase_without_reexecuting_tool
     assert len(step.tool_iterations) == 1
     assert step.tool_iterations[0].tool_call.phase is ToolCallPhase.EXECUTED
     assert run.status is RunStatus.SUCCEEDED
+    activity = [entry for entry in coordinator.list_history("run-1") if entry.tool_name]
+    assert [(entry.tool_iteration, entry.tool_phase) for entry in activity] == [
+        (1, "requested"),
+        (1, "executed"),
+    ]
 
 
 def test_execute_next_step_resume_replays_completed_iteration_as_context(
@@ -6139,6 +6171,14 @@ def test_execute_next_step_stops_cleanly_when_cancelled_between_iterations(
     assert run.status is RunStatus.CANCELLED
     assert len(step.tool_iterations) == 1
     assert step.tool_iterations[0].tool_call.phase is ToolCallPhase.EXECUTED
+    activity = [entry for entry in coordinator.list_history("run-1") if entry.tool_name]
+    assert [
+        (entry.tool_iteration, entry.tool_phase, entry.tool_outcome)
+        for entry in activity
+    ] == [
+        (1, "requested", "requested"),
+        (1, "executed", "succeeded"),
+    ]
 
 
 def test_execute_next_step_stops_cleanly_when_cancelled_during_tool_execution(
@@ -6174,3 +6214,8 @@ def test_execute_next_step_stops_cleanly_when_cancelled_during_tool_execution(
     assert run.status is RunStatus.CANCELLED
     assert len(step.tool_iterations) == 1
     assert step.tool_iterations[0].tool_call.phase is ToolCallPhase.REQUESTED
+    activity = [entry for entry in coordinator.list_history("run-1") if entry.tool_name]
+    assert [
+        (entry.tool_iteration, entry.tool_phase, entry.tool_outcome)
+        for entry in activity
+    ] == [(1, "requested", "requested")]

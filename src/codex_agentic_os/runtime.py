@@ -1343,6 +1343,8 @@ class RunCoordinator:
                     ),
                     tool_name=response.tool_call.name,
                     tool_outcome="rejected_undeclared",
+                    tool_iteration=len(running_step.tool_iterations),
+                    tool_phase=ToolCallPhase.REJECTED_UNDECLARED.value,
                 )
             completed_iterations = sum(
                 iteration.tool_call.phase is ToolCallPhase.EXECUTED
@@ -1372,6 +1374,8 @@ class RunCoordinator:
                     ),
                     tool_name=response.tool_call.name,
                     tool_outcome="rejected_budget",
+                    tool_iteration=len(running_step.tool_iterations),
+                    tool_phase=ToolCallPhase.REJECTED_BUDGET.value,
                 )
             if sandbox_resolver is None:
                 running_step = self._persist_tool_call_requested(
@@ -1505,6 +1509,8 @@ class RunCoordinator:
                 call_record.tool_name if phase is ToolCallPhase.REQUESTED else None
             ),
             tool_outcome=(phase.value if phase is ToolCallPhase.REQUESTED else None),
+            tool_iteration=len(step.tool_iterations) + 1,
+            tool_phase=phase.value,
         )
         try:
             stored = self.store.put_many(
@@ -1562,6 +1568,8 @@ class RunCoordinator:
                         step_id=step.step_id, agent_id=run.agent_id,
                         execution_kind="provider", tool_name=call_record.tool_name,
                         tool_outcome=("succeeded" if result.returncode == 0 else "failed"),
+                        tool_iteration=len(step.tool_iterations),
+                        tool_phase=ToolCallPhase.EXECUTED.value,
                     ),
                 ),
             )
@@ -2513,6 +2521,8 @@ class RunCoordinator:
         *,
         tool_name: str | None = None,
         tool_outcome: str | None = None,
+        tool_iteration: int | None = None,
+        tool_phase: str | None = None,
     ) -> tuple[RunStep, AgentRun]:
         """Fail a running provider-message step on an adapter error, without orphaning it."""
 
@@ -2528,6 +2538,10 @@ class RunCoordinator:
             raise ValueError(f"step must be running to record a failure: {step_id}")
         if (tool_name is None) != (tool_outcome is None):
             raise ValueError("tool failure history requires both tool name and outcome")
+        if tool_name is None and (tool_iteration is not None or tool_phase is not None):
+            raise ValueError("tool iteration evidence requires tool name and outcome")
+        if tool_name is not None and (tool_iteration is None or tool_phase is None):
+            raise ValueError("tool failure history requires iteration and phase")
 
         output: dict[str, object] = {
             "error": str(error),
@@ -2589,6 +2603,8 @@ class RunCoordinator:
                             execution_kind="provider",
                             tool_name=tool_name,
                             tool_outcome=tool_outcome,
+                            tool_iteration=tool_iteration,
+                            tool_phase=tool_phase,
                         ),
                     )
                     if tool_name is not None

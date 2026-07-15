@@ -18,7 +18,7 @@ from codex_agentic_os.api import (
     is_loopback_bind_host,
     serve_until_stopped,
 )
-from codex_agentic_os.chat import ChatResponse, ChatUsage
+from codex_agentic_os.chat import ChatResponse, ChatToolCall, ChatUsage
 from codex_agentic_os.cli import main
 from codex_agentic_os.payloads import (
     _approval_payload,
@@ -34,6 +34,7 @@ from codex_agentic_os.runtime import (
     RunStatus,
     SandboxPolicy,
     StepStatus,
+    ToolDeclaration,
 )
 from codex_agentic_os.sandboxes import SandboxKind, SandboxResult
 from codex_agentic_os.state import StateStore
@@ -369,6 +370,68 @@ def test_http_api_run_history_matches_cli_run_history_output(tmp_path, capsys) -
         http_payload = _get_json(port, "/api/v1/runs/run-1/history")
 
     assert http_payload == cli_payload
+
+
+def test_http_api_history_exposes_safe_iteration_evidence_without_tool_details(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-tool", objective="Inspect twice")
+    coordinator.add_step(
+        "run-tool",
+        "tool-step",
+        objective="Inspect twice",
+        message=ProviderMessage(provider="local", content="private request"),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
+        tools=[ToolDeclaration(name="inspect", command=("private-command",))],
+        tool_iteration_budget=2,
+    )
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "private stdout", "private stderr")
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request):
+            self.calls += 1
+            if self.calls <= 2:
+                return ChatResponse(
+                    "private provider response",
+                    raw={"private": "provider envelope"},
+                    tool_call=ChatToolCall(
+                        name="inspect",
+                        arguments={"secret": "private argument"},
+                        call_id=f"call-{self.calls}",
+                    ),
+                )
+            return ChatResponse("private final response")
+
+    coordinator.execute_next_step(
+        "run-tool",
+        adapter_resolver=lambda _message: Adapter(),
+        sandbox_resolver=lambda _policy: Executor(),
+    )
+
+    with _running_server(RunCoordinator(StateStore(database, read_only=True))) as port:
+        raw_body = urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/v1/runs/run-tool/history"
+        ).read().decode("utf-8")
+    activity = [entry for entry in json.loads(raw_body) if "tool_name" in entry]
+
+    assert [
+        (entry["tool_iteration"], entry["tool_phase"], entry["tool_outcome"])
+        for entry in activity
+    ] == [
+        (1, "requested", "requested"),
+        (1, "executed", "succeeded"),
+        (2, "requested", "requested"),
+        (2, "executed", "succeeded"),
+    ]
+    assert "private" not in raw_body
 
 
 def test_http_api_approvals_matches_shared_and_cli_contracts(tmp_path, capsys) -> None:

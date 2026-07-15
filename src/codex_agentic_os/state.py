@@ -46,6 +46,8 @@ class RunHistoryEntry:
     delegated_run_id: str | None = None
     tool_name: str | None = None
     tool_outcome: str | None = None
+    tool_iteration: int | None = None
+    tool_phase: str | None = None
 
 
 class StateConflictError(ValueError):
@@ -144,11 +146,16 @@ class StateStore:
                 "delegated_run_id",
                 "tool_name",
                 "tool_outcome",
+                "tool_phase",
             ):
                 if column not in history_columns:
                     connection.execute(
                         f"ALTER TABLE run_history ADD COLUMN {column} TEXT"
                     )
+            if "tool_iteration" not in history_columns:
+                connection.execute(
+                    "ALTER TABLE run_history ADD COLUMN tool_iteration INTEGER"
+                )
             connection.commit()
 
     def put(
@@ -244,6 +251,8 @@ class StateStore:
                         delegated_run_id=entry.delegated_run_id,
                         tool_name=entry.tool_name,
                         tool_outcome=entry.tool_outcome,
+                        tool_iteration=entry.tool_iteration,
+                        tool_phase=entry.tool_phase,
                     )
                 connection.commit()
         except sqlite3.IntegrityError as error:
@@ -305,6 +314,8 @@ class StateStore:
                     delegated_run_id=entry.delegated_run_id,
                     tool_name=entry.tool_name,
                     tool_outcome=entry.tool_outcome,
+                    tool_iteration=entry.tool_iteration,
+                    tool_phase=entry.tool_phase,
                 )
             connection.commit()
         return tuple(stored)
@@ -1202,6 +1213,8 @@ class StateStore:
                     delegated_run_id=entry.delegated_run_id,
                     tool_name=entry.tool_name,
                     tool_outcome=entry.tool_outcome,
+                    tool_iteration=entry.tool_iteration,
+                    tool_phase=entry.tool_phase,
                 )
             connection.commit()
         return stored_plan, tuple(stored_steps)
@@ -1218,7 +1231,8 @@ class StateStore:
                        execution_kind, retried_step_id, context_step_ids, plan_id,
                        required_capability, resolved_provider, resolved_model,
                        routing_reason, artifact_name, parent_run_id, parent_step_id,
-                       delegated_run_id, tool_name, tool_outcome
+                       delegated_run_id, tool_name, tool_outcome,
+                       tool_iteration, tool_phase
                 FROM run_history WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
@@ -1245,6 +1259,8 @@ class StateStore:
                 delegated_run_id=row[17],
                 tool_name=row[18],
                 tool_outcome=row[19],
+                tool_iteration=row[20],
+                tool_phase=row[21],
             )
             for row in rows
         )
@@ -1350,6 +1366,8 @@ class StateStore:
         delegated_run_id: str | None = None,
         tool_name: str | None = None,
         tool_outcome: str | None = None,
+        tool_iteration: int | None = None,
+        tool_phase: str | None = None,
     ) -> None:
         """Append one ordered history entry on a caller-owned run mutation transaction."""
 
@@ -1364,8 +1382,8 @@ class StateStore:
                  execution_kind, retried_step_id, context_step_ids, plan_id,
                  required_capability, resolved_provider, resolved_model,
                  routing_reason, artifact_name, parent_run_id, parent_step_id,
-                 delegated_run_id, tool_name, tool_outcome)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 delegated_run_id, tool_name, tool_outcome, tool_iteration, tool_phase)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1388,6 +1406,8 @@ class StateStore:
                 delegated_run_id,
                 tool_name,
                 tool_outcome,
+                tool_iteration,
+                tool_phase,
             ),
         )
 

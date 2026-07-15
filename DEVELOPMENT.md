@@ -437,9 +437,10 @@ keys exactly as before. `worker run` and `run execute-next` both pass the same
 persisted sandbox resolver used for command steps; `run execute-next` only
 supplies it when the next step declares tools.
 
-`run history` records the non-sensitive tool name plus a bounded outcome for
-each durable phase: `requested`, `succeeded`, `failed`,
-`rejected_undeclared`, or `rejected_budget`. It never duplicates model arguments, command argv,
+`run history` identifies each durable tool-loop mutation with a one-based
+`tool_iteration`, its persisted `tool_phase`, the non-sensitive tool name, and
+a bounded outcome: `requested`, `succeeded`, `failed`, `rejected_undeclared`,
+or `rejected_budget`. It never duplicates model arguments, command argv,
 environment values, provider request bodies, stdout, or stderr. An undeclared
 request's rejection entry is atomic with the definitive step/run failure and
 remains eligible for the established failed-step retry classification. Trusted
@@ -447,6 +448,17 @@ local CLI inspection still shows the full durable step record; the loopback
 HTTP run-detail surface redacts tool declaration commands, every iteration's
 provider content/raw response, and tool-call arguments, commands, stdout, and
 stderr under Decision 0008.
+
+With Docker and `jq` available, run the committed worker-replacement proof:
+
+```bash
+./scripts/tool-call-history-review.sh
+```
+
+The first worker process stops after one executed iteration is durable. A
+second process reconstructs that iteration from SQLite, performs the second
+tool call, reaches the final provider response, and verifies both trusted
+inspection and the safe per-iteration history projection.
 
 ```bash
 codex-agentic-os run add-step run-002 step-002b --objective "Summarize output" \
