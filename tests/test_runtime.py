@@ -2149,6 +2149,7 @@ def test_execute_next_step_passes_command_free_tool_declarations_to_adapter(
                 },
             )
         ],
+        tool_iteration_budget=1,
     )
 
     coordinator.execute_next_step("run-1", adapter_resolver=lambda _: Adapter())
@@ -4633,6 +4634,7 @@ def test_add_step_persists_tool_declarations_across_restart(tmp_path) -> None:
                 parameters={"type": "object", "properties": {}},
             )
         ],
+        tool_iteration_budget=5,
     )
 
     assert created.tool_declarations == (
@@ -4643,9 +4645,11 @@ def test_add_step_persists_tool_declarations_across_restart(tmp_path) -> None:
             parameters={"type": "object", "properties": {}},
         ),
     )
+    assert created.tool_iteration_budget == 5
     reloaded = RunCoordinator(StateStore(database)).get_step("model")
     assert reloaded is not None
     assert reloaded.tool_declarations == created.tool_declarations
+    assert reloaded.tool_iteration_budget == 5
     assert reloaded.sandbox_policy == policy
 
 
@@ -4661,6 +4665,7 @@ def test_add_step_without_tools_has_no_tool_declarations(tmp_path) -> None:
     )
 
     assert created.tool_declarations == ()
+    assert created.tool_iteration_budget is None
     assert created.sandbox_policy is None
 
 
@@ -4713,9 +4718,11 @@ def test_sandbox_policy_is_valid_for_tool_declaring_provider_steps(tmp_path) -> 
         message=ProviderMessage(provider="local", content="Hello"),
         sandbox_policy=policy,
         tools=[ToolDeclaration(name="list_files", command=("ls",))],
+        tool_iteration_budget=1,
     )
 
     assert step.sandbox_policy == policy
+    assert step.tool_iteration_budget == 1
 
 
 def test_sandbox_policy_still_rejected_for_provider_steps_without_tools(tmp_path) -> None:
@@ -4792,6 +4799,7 @@ def test_tool_declarations_survive_provider_step_failure_and_recovery(tmp_path) 
         message=ProviderMessage(provider="local", content="Hello"),
         sandbox_policy=policy,
         tools=tools,
+        tool_iteration_budget=2,
     )
     coordinator.start_next_step("run-1")
 
@@ -4799,12 +4807,135 @@ def test_tool_declarations_survive_provider_step_failure_and_recovery(tmp_path) 
         "model", RuntimeError("adapter unavailable")
     )
     assert failed_step.tool_declarations == tuple(tools)
+    assert failed_step.tool_iteration_budget == 2
     assert failed_step.sandbox_policy == policy
     assert failed_run.status is RunStatus.FAILED
 
     reloaded = RunCoordinator(StateStore(coordinator.store.path)).get_step("model")
     assert reloaded.tool_declarations == tuple(tools)
+    assert reloaded.tool_iteration_budget == 2
     assert reloaded.sandbox_policy == policy
+
+
+def test_tool_declaring_step_requires_an_explicit_iteration_budget(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    run = coordinator.create("run-1", objective="Ask a model to use a tool")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+
+    with pytest.raises(
+        ValueError, match="require an explicit maximum tool-iteration budget"
+    ):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize with a tool",
+            message=ProviderMessage(provider="local", content="Hello"),
+            sandbox_policy=policy,
+            tools=[ToolDeclaration(name="list_files", command=("ls",))],
+        )
+
+    assert coordinator.get("run-1") == run
+    assert coordinator.list_steps("run-1") == ()
+
+
+@pytest.mark.parametrize("budget", [0, -1, 1.5, True, "3"])
+def test_tool_iteration_budget_rejects_invalid_values(tmp_path, budget) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model to use a tool")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+
+    with pytest.raises(ValueError, match="positive integer"):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize with a tool",
+            message=ProviderMessage(provider="local", content="Hello"),
+            sandbox_policy=policy,
+            tools=[ToolDeclaration(name="list_files", command=("ls",))],
+            tool_iteration_budget=budget,
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_tool_iteration_budget_is_rejected_for_steps_without_tools(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model")
+
+    with pytest.raises(
+        ValueError, match="only valid for tool-declaring provider steps"
+    ):
+        coordinator.add_step(
+            "run-1",
+            "model",
+            objective="Summarize",
+            message=ProviderMessage(provider="local", content="Hello"),
+            tool_iteration_budget=3,
+        )
+
+    assert coordinator.list_steps("run-1") == ()
+
+
+def test_tool_iteration_budget_survives_retry(tmp_path) -> None:
+    coordinator = RunCoordinator(StateStore(tmp_path / "state.sqlite3"))
+    coordinator.create("run-1", objective="Ask a model to use a tool")
+    policy = SandboxPolicy(kind=SandboxKind.DOCKER, mounts=(("/host/data", "/workspace"),))
+    coordinator.add_step(
+        "run-1",
+        "model",
+        objective="Summarize with a tool",
+        message=ProviderMessage(provider="local", content="Hello"),
+        sandbox_policy=policy,
+        tools=[ToolDeclaration(name="list_files", command=("ls",))],
+        tool_iteration_budget=4,
+    )
+    coordinator.start_next_step("run-1")
+    failed_step, failed_run = coordinator.fail_step_from_error(
+        "model", RuntimeError("adapter unavailable")
+    )
+
+    retried_step, _ = coordinator.retry_step(
+        "model",
+        "model-retry",
+        expected_step_revision=failed_step.revision,
+        expected_run_revision=failed_run.revision,
+    )
+
+    assert retried_step.tool_declarations == failed_step.tool_declarations
+    assert retried_step.tool_iteration_budget == 4
+
+
+def test_legacy_tool_declaring_step_without_budget_still_loads(tmp_path) -> None:
+    """A step persisted before this budget field existed must still load.
+
+    Only creating a new tool-declaring step requires an explicit budget;
+    reading back an already durable record must not fail closed.
+    """
+
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Ask a model to use a tool")
+    store.put(
+        "step",
+        "model",
+        status="queued",
+        payload={
+            "run_id": "run-1",
+            "position": 1,
+            "objective": "Summarize with a tool",
+            "message": {"provider": "local", "content": "Hello"},
+            "sandbox_policy": {"kind": "docker"},
+            "tools": [{"name": "list_files", "command": ["ls"]}],
+        },
+    )
+
+    reloaded = coordinator.get_step("model")
+
+    assert reloaded is not None
+    assert reloaded.tool_declarations == (
+        ToolDeclaration(name="list_files", command=("ls",)),
+    )
+    assert reloaded.tool_iteration_budget is None
 
 
 def test_add_step_rejects_delegation_combined_with_command_or_message(tmp_path) -> None:
@@ -5425,6 +5556,7 @@ def _add_tool_step(
         message=ProviderMessage(provider="local", content="List files"),
         sandbox_policy=sandbox_policy or SandboxPolicy(kind=SandboxKind.DOCKER),
         tools=[ToolDeclaration(name="list_files", command=("ls", "-la"))],
+        tool_iteration_budget=1,
     )
 
 

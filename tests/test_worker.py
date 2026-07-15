@@ -544,6 +544,7 @@ def test_run_worker_executes_a_declared_tool_call_from_queued_run(tmp_path) -> N
         message=ProviderMessage(provider="local", content="List files"),
         sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER),
         tools=[ToolDeclaration(name="list_files", command=("ls", "-la"))],
+        tool_iteration_budget=1,
     )
 
     execute_calls = []

@@ -602,6 +602,7 @@ class StateStore:
                 "sandbox_policy",
                 "context_step_ids",
                 "tools",
+                "tool_iteration_budget",
                 "response_artifact_name",
             ):
                 if key in step_payload:

@@ -929,6 +929,7 @@ def test_cli_adds_provider_step_with_tool_declaration_and_matches_inspection(
                     "parameters": {"type": "object", "properties": {}},
                 }
             ),
+            "--tool-iteration-budget", "4",
             "--state-db", str(database),
         ]
     )
@@ -942,6 +943,7 @@ def test_cli_adds_provider_step_with_tool_declaration_and_matches_inspection(
             "parameters": {"type": "object", "properties": {}},
         }
     ]
+    assert payload["steps"][0]["tool_iteration_budget"] == 4
     assert payload["steps"][0]["sandbox_policy"]["kind"] == "docker"
 
     main(["run", "inspect-step", "step-1", "--state-db", str(database)])
@@ -963,6 +965,7 @@ def test_cli_execute_next_runs_a_declared_tool_call_end_to_end(
             "--provider", "ollama", "--message", "Hello",
             "--sandbox", "docker", "--mount", "/host/data:/workspace",
             "--tool", json.dumps({"name": "list_files", "command": ["ls", "-la"]}),
+            "--tool-iteration-budget", "1",
             "--state-db", str(database),
         ]
     )

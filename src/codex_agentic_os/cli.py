@@ -281,6 +281,15 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     add_step.add_argument(
+        "--tool-iteration-budget",
+        type=int,
+        metavar="COUNT",
+        help=(
+            "required positive maximum tool-iteration count for a step that "
+            "declares at least one --tool; rejected for steps without tools"
+        ),
+    )
+    add_step.add_argument(
         "--delegate-objective",
         metavar="OBJECTIVE",
         help=(
@@ -1087,6 +1096,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     approval_required=arguments.approval_required,
                     sandbox_policy=sandbox_policy,
                     tools=_parse_tools(arguments.tool) or None,
+                    tool_iteration_budget=arguments.tool_iteration_budget,
                     artifacts=_parse_artifacts(arguments.artifact) or None,
                     response_artifact_name=arguments.response_artifact,
                     delegation=delegation,

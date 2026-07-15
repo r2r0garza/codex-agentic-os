@@ -253,6 +253,7 @@ class RunStep:
     approval_status: ApprovalStatus | None = None
     sandbox_policy: SandboxPolicy | None = None
     tool_declarations: tuple[ToolDeclaration, ...] = ()
+    tool_iteration_budget: int | None = None
     tool_call: ToolCallRecord | None = None
     artifact_declarations: tuple[ArtifactDeclaration, ...] = ()
     response_artifact_name: str | None = None
@@ -817,6 +818,7 @@ class RunCoordinator:
                 payload["sandbox_policy"] = self._sandbox_policy_payload(step.sandbox_policy)
             if step.tool_declarations:
                 payload["tools"] = self._tool_declarations_payload(step.tool_declarations)
+                payload["tool_iteration_budget"] = step.tool_iteration_budget
             if step.delegation is not None:
                 payload["delegation"] = self._delegation_payload(step.delegation)
             if step.delegated_run_id is not None:
@@ -931,6 +933,7 @@ class RunCoordinator:
                 step_payload["tools"] = self._tool_declarations_payload(
                     next_step.tool_declarations
                 )
+                step_payload["tool_iteration_budget"] = next_step.tool_iteration_budget
             if next_step.artifact_declarations:
                 step_payload["artifacts"] = self._artifact_declarations_payload(
                     next_step.artifact_declarations
@@ -1208,6 +1211,7 @@ class RunCoordinator:
             payload["tools"] = RunCoordinator._tool_declarations_payload(
                 step.tool_declarations
             )
+            payload["tool_iteration_budget"] = step.tool_iteration_budget
         if step.response_artifact_name is not None:
             payload["response_artifact_name"] = step.response_artifact_name
         RunCoordinator._add_context_step_ids_payload(payload, step)
@@ -1495,6 +1499,7 @@ class RunCoordinator:
         approval_required: bool = False,
         sandbox_policy: SandboxPolicy | Mapping[str, object] | None = None,
         tools: Sequence[ToolDeclaration | Mapping[str, object]] | None = None,
+        tool_iteration_budget: int | None = None,
         artifacts: Sequence[ArtifactDeclaration | Mapping[str, object]] | None = None,
         response_artifact_name: str | None = None,
         delegation: DelegationSpec | Mapping[str, object] | None = None,
@@ -1538,6 +1543,11 @@ class RunCoordinator:
             has_message=normalized_message is not None,
             sandbox_policy=normalized_sandbox_policy,
         )
+        normalized_tool_iteration_budget = self._validate_tool_iteration_budget(
+            tool_iteration_budget,
+            has_tools=bool(normalized_tools),
+            require_explicit=True,
+        )
         normalized_artifacts = self._validate_artifact_declarations(
             artifacts, sandbox_policy=normalized_sandbox_policy
         )
@@ -1562,6 +1572,7 @@ class RunCoordinator:
             payload["sandbox_policy"] = self._sandbox_policy_payload(normalized_sandbox_policy)
         if normalized_tools:
             payload["tools"] = self._tool_declarations_payload(normalized_tools)
+            payload["tool_iteration_budget"] = normalized_tool_iteration_budget
         if normalized_artifacts:
             payload["artifacts"] = self._artifact_declarations_payload(normalized_artifacts)
         if normalized_response_artifact_name is not None:
@@ -1882,6 +1893,7 @@ class RunCoordinator:
             payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         if current.tool_declarations:
             payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
+            payload["tool_iteration_budget"] = current.tool_iteration_budget
         if current.tool_call is not None:
             payload["tool_call"] = self._tool_call_payload(current.tool_call)
         if current.artifact_declarations:
@@ -2076,6 +2088,7 @@ class RunCoordinator:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
+            step_payload["tool_iteration_budget"] = current.tool_iteration_budget
         if current.artifact_declarations:
             step_payload["artifacts"] = self._artifact_declarations_payload(
                 current.artifact_declarations
@@ -2171,6 +2184,7 @@ class RunCoordinator:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
+            step_payload["tool_iteration_budget"] = current.tool_iteration_budget
         if current.tool_call is not None:
             step_payload["tool_call"] = self._tool_call_payload(current.tool_call)
         if current.response_artifact_name is not None:
@@ -2256,6 +2270,7 @@ class RunCoordinator:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
+            step_payload["tool_iteration_budget"] = current.tool_iteration_budget
         if current.tool_call is not None:
             step_payload["tool_call"] = self._tool_call_payload(current.tool_call)
         if current.artifact_declarations:
@@ -2361,6 +2376,7 @@ class RunCoordinator:
             step_payload["sandbox_policy"] = self._sandbox_policy_payload(current.sandbox_policy)
         if current.tool_declarations:
             step_payload["tools"] = self._tool_declarations_payload(current.tool_declarations)
+            step_payload["tool_iteration_budget"] = current.tool_iteration_budget
         if current.tool_call is not None:
             step_payload["tool_call"] = self._tool_call_payload(current.tool_call)
         if current.artifact_declarations:
@@ -2466,6 +2482,7 @@ class RunCoordinator:
         context_step_ids = record.payload.get("context_step_ids")
         sandbox_policy = record.payload.get("sandbox_policy")
         tools = record.payload.get("tools")
+        tool_iteration_budget = record.payload.get("tool_iteration_budget")
         tool_call = record.payload.get("tool_call")
         artifacts = record.payload.get("artifacts")
         response_artifact_name = record.payload.get("response_artifact_name")
@@ -2507,6 +2524,11 @@ class RunCoordinator:
             tools,
             has_message=normalized_message is not None,
             sandbox_policy=normalized_sandbox_policy,
+        )
+        normalized_tool_iteration_budget = RunCoordinator._validate_tool_iteration_budget(
+            tool_iteration_budget,
+            has_tools=bool(normalized_tools),
+            require_explicit=False,
         )
         normalized_tool_call = RunCoordinator._validate_tool_call(
             tool_call, tool_declarations=normalized_tools
@@ -2550,6 +2572,7 @@ class RunCoordinator:
             approval_status=approval_status,
             sandbox_policy=normalized_sandbox_policy,
             tool_declarations=normalized_tools,
+            tool_iteration_budget=normalized_tool_iteration_budget,
             tool_call=normalized_tool_call,
             artifact_declarations=normalized_artifacts,
             response_artifact_name=normalized_response_artifact_name,
@@ -2634,6 +2657,7 @@ class RunCoordinator:
             payload["tools"] = RunCoordinator._tool_declarations_payload(
                 step.tool_declarations
             )
+            payload["tool_iteration_budget"] = step.tool_iteration_budget
         if step.artifact_declarations:
             payload["artifacts"] = RunCoordinator._artifact_declarations_payload(
                 step.artifact_declarations
@@ -3195,6 +3219,44 @@ class RunCoordinator:
                 )
             )
         return tuple(normalized)
+
+    @staticmethod
+    def _validate_tool_iteration_budget(
+        budget: object,
+        *,
+        has_tools: bool,
+        require_explicit: bool,
+    ) -> int | None:
+        """Validate a step's explicit maximum tool-iteration count.
+
+        ``require_explicit`` distinguishes creating a new tool-declaring step
+        (which must state a budget before any mutation, per the milestone's
+        "no default unlimited loop" contract) from reading back an already
+        durable record (where a tool-declaring step persisted before this
+        budget existed must still load rather than fail closed).
+        """
+
+        if not has_tools:
+            if budget is not None:
+                raise ValueError(
+                    "tool iteration budget is only valid for tool-declaring "
+                    "provider steps"
+                )
+            return None
+        if budget is None:
+            if require_explicit:
+                raise ValueError(
+                    "tool-declaring provider steps require an explicit "
+                    "maximum tool-iteration budget"
+                )
+            return None
+        if (
+            not isinstance(budget, int)
+            or isinstance(budget, bool)
+            or budget < 1
+        ):
+            raise ValueError("tool iteration budget must be a positive integer")
+        return budget
 
     @staticmethod
     def _tool_call_payload(record: ToolCallRecord) -> dict[str, object]:

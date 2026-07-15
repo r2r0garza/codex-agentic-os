@@ -366,18 +366,31 @@ tool's command later executes through that same sandbox boundary. Declaring a
 sandbox policy on a provider step that declares no tools remains rejected exactly as
 before:
 
+A tool-declaring provider step also requires an explicit
+`--tool-iteration-budget COUNT` — a positive integer maximum number of
+tool-execution iterations the step may run before it must complete with a
+final response. There is no default and no implicit unlimited loop: a
+tool-declaring step created without a budget, or with a zero, negative, or
+non-integer budget, is rejected before any run or step mutation. Steps that
+declare no tools reject `--tool-iteration-budget` exactly like they reject
+`--sandbox`.
+
 ```bash
 codex-agentic-os run add-step run-002 step-007 --objective "Summarize with a tool" \
   --provider ollama --message "Summarize the repository" \
   --sandbox docker --mount /path/to/repository:/workspace \
   --tool '{"name": "list_files", "command": ["ls", "-la"], "description": "List workspace files"}' \
+  --tool-iteration-budget 3 \
   --state-db .codex-agentic-os/state.sqlite3
 ```
 
 `run inspect` and `run inspect-step` show each step's `tool_declarations` (name,
-command, optional description, optional parameters) and, when present, its
-`sandbox_policy`; a provider step declaring no tools omits both keys exactly as
-before. At dispatch, the provider-neutral request carries only the tool name,
+command, optional description, optional parameters), its `tool_iteration_budget`,
+and, when present, its `sandbox_policy`; a provider step declaring no tools omits
+all three keys exactly as before. A durable step persisted before this budget
+existed and declares tools without one still loads for trusted inspection with
+`tool_iteration_budget` omitted, rather than failing closed; only step creation
+requires the budget explicitly. At dispatch, the provider-neutral request carries only the tool name,
 optional description, and object-input schema — never the sandbox command template.
 OpenAI-compatible adapters emit `tools` with function definitions, Anthropic emits
 native tools with `input_schema`, and Google emits `functionDeclarations`. Omitting

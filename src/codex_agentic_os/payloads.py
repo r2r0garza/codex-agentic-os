@@ -60,6 +60,8 @@ def _step_payload(
         payload["sandbox_policy"]["kind"] = step.sandbox_policy.kind.value
     if not step.tool_declarations:
         payload.pop("tool_declarations")
+    if step.tool_iteration_budget is None:
+        payload.pop("tool_iteration_budget")
     if step.tool_call is None:
         payload.pop("tool_call")
     else:
