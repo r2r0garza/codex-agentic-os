@@ -34,5 +34,5 @@ persisted shapes; list ordering follows the store's stable key ordering.
 Verification: 68 focused memory/state tests passed, including simultaneous
 duplicate writers, migration, fresh read-only store/CLI processes, stable
 ordering, and deterministic invalid/unknown paths. Full `pytest` passed 941.
-The index rebuilt to 28 files / 1407 symbols / 8177 relationships and `index
+The index rebuilt to 30 files / 1424 symbols / 8268 relationships and `index
 check` reported current; `git diff --check` passed.
