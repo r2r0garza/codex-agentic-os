@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-15T03:36:23Z — implementation plus close-or-remediate review (scheduled).
+- Active milestone: Sprint 24 "Durable cross-run agent memory" (#24). Selected #140 (priority:1, `agent-ready`), the oldest and sole unblocked ready issue; #141/#142 were dependency-blocked.
+- Completed: added immutable `MemoryEntry`/`MemoryRegistry` persistence on a new migrated `memory_entry` state kind with required unique name, non-empty body, finite `decision`/`note` kind, UTC creation time, and optional validated creating agent/run/step provenance. Creation uses the existing insert-only immediate SQLite transaction, so duplicate names cannot overwrite under competing stores. Added read-only `memory create|list|inspect` CLI flows with stable name ordering and defensive persisted-shape validation, Plan 0125, exports, DEVELOPMENT guidance, restart coverage, deterministic invalid/unknown failures, and a real two-writer race regression. Provider-step references and dispatch resolution remain scoped to #141.
+- Verification: activated `.venv`; 68 focused memory/CLI/state tests passed; full `pytest` passed 941; index rebuilt to 28 files / 1407 symbols / 8177 relationships and `index check` reported current; `git diff --check` passed.
+- Durable state: implementation commit `69502fd` pushed to `origin/main`; #140 auto-closed by the commit's "Closes #140" keyword and received verification evidence. Blocked review removed `blocked` from #141 and added `agent-ready` after its sole dependency resolved; #142 remains correctly blocked on open #141. Sprint 24 is not retrospective-ready because #141/#142 remain open, so no milestone close/remediation was performed.
+- Roadmap horizon: 19 ordered open milestones before and after the run (Sprint 24 through Sprint 42), above the three-sprint threshold; no planning handoff was needed.
+- Next eligible action: implement #141 ("Resolve explicit memory references in provider steps"), the sole active-milestone ready issue. Final target `main`; after the MEMORY handoff commit, the worktree is clean except for the preserved unrelated untracked `.claude/` directory.
+
+---
+
 - Run: 2026-07-15T03:12:39Z — implementation plus close-or-remediate review (scheduled).
 - Active milestone at start: Sprint 23 "Declarative execution policy gates" (#23). Selected #138 (priority:2, `agent-ready`), the sole unblocked ready issue.
 - Completed: added 8 focused runtime regressions proving execution policy rule changes never retroactively alter an already pending, approved, rejected, or terminal step's `policy_rule_id`/`policy_reason` or add a duplicate `step_policy_gated` history entry; proving a manually flagged `approval_required` step is unaffected by a matching policy rule; and reconstructing a held-then-approved step's policy decision from a fresh `StateStore`/`RunCoordinator` standing in for a process restart. Added `scripts/policy-gated-network-review.sh`, a Docker/`jq`-based executable review that holds a network-enabled command step via a matching `sandbox_network_access` rule under a real `worker run` process, approves and executes it through the normal worker/dispatch path, then reconstructs the triggering rule id/reason from `run history` in fresh CLI processes after the worker exits (no live provider credentials needed). Added Plan 0124 and documented the review script in DEVELOPMENT.md.
@@ -38,9 +48,3 @@
 - Blocked review: repository-wide open `blocked` search is empty. Sprint 23 "Declarative execution policy gates" is active with zero open and zero `agent-ready` issues.
 - Roadmap horizon: 21 ordered open milestones before Sprint 22 closure and 20 after (Sprint 23 through Sprint 42), above the three-sprint threshold; no planning handoff was needed.
 - Next eligible action: replenishment-only review for Sprint 23 against its declarative execution-policy objective and exit criteria. Final target `main`; after the MEMORY handoff commit, the worktree is clean except for the preserved unrelated untracked `.claude/` directory.
-
----
-
-- Run: 2026-07-15T01:38:07Z — implementation run (scheduled).
-- Sprint 22; selected and closed #133 in pushed commit `26c6bf2`. Replacement workers resume an `executed` tool-loop boundary from stored turns without repeating sandbox execution; proactive and CAS-conflict cancellation stop cleanly. Full `pytest` passed 858; index current at 27 files / 1328 symbols / 7732 relationships; diff check passed.
-- Blocked review unblocked #134; horizon stayed 21; next action was #134. Final `main` state was clean except preserved `.claude/`.
