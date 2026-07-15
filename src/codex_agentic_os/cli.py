@@ -36,8 +36,11 @@ from .runtime import (
     ClaimStaleness,
     DelegationPendingError,
     DelegationSpec,
+    ExecutionPolicyRegistry,
+    ExecutionPolicyRule,
     PlanDraft,
     PlanStepProposal,
+    POLICY_CRITERION_KINDS,
     ProviderMessage,
     RunCoordinator,
     RunHistoryEntry,
@@ -556,6 +559,56 @@ def _parser() -> argparse.ArgumentParser:
             help="path to the runtime state database",
         )
 
+    policy = commands.add_parser(
+        "policy", help="persist and inspect declarative execution policy rules"
+    )
+    policy_commands = policy.add_subparsers(dest="policy_command", required=True)
+    policy_create = policy_commands.add_parser(
+        "create", help="persist a new finite-criterion execution policy rule"
+    )
+    policy_create.add_argument("rule_id")
+    policy_create.add_argument(
+        "--criterion-kind",
+        required=True,
+        choices=sorted(POLICY_CRITERION_KINDS),
+        help="finite criterion kind this rule matches on",
+    )
+    policy_create.add_argument(
+        "--criterion-value",
+        required=True,
+        help="value the criterion kind must match",
+    )
+    policy_create.add_argument(
+        "--reason",
+        required=True,
+        help="operator-readable reason for this rule",
+    )
+    policy_create.add_argument(
+        "--precedence",
+        type=int,
+        required=True,
+        help="non-negative integer precedence used to order rules",
+    )
+    policy_create.add_argument(
+        "--disabled",
+        action="store_true",
+        help="persist the rule in a disabled state (default: enabled)",
+    )
+    policy_list = policy_commands.add_parser(
+        "list", help="list persisted execution policy rules"
+    )
+    policy_inspect = policy_commands.add_parser(
+        "inspect", help="show one persisted execution policy rule"
+    )
+    policy_inspect.add_argument("rule_id")
+    for command in (policy_create, policy_list, policy_inspect):
+        command.add_argument(
+            "--state-db",
+            type=Path,
+            default=Path(".codex-agentic-os/state.sqlite3"),
+            help="path to the runtime state database",
+        )
+
     worker = commands.add_parser("worker", help="run a foreground autonomous worker")
     worker_commands = worker.add_subparsers(dest="worker_command", required=True)
     worker_run = worker_commands.add_parser(
@@ -855,6 +908,12 @@ def _agent_payload(agent: Agent) -> dict[str, object]:
     """Return the standard JSON-compatible view of one registered agent."""
 
     return asdict(agent)
+
+
+def _policy_rule_payload(rule: ExecutionPolicyRule) -> dict[str, object]:
+    """Return the standard JSON-compatible view of one policy rule."""
+
+    return asdict(rule)
 
 
 def _chat_provider_spec(
@@ -1577,6 +1636,39 @@ def main(argv: Sequence[str] | None = None) -> None:
                 print(
                     json.dumps(
                         [_agent_payload(agent) for agent in registry.list_agents()],
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+        elif arguments.command == "policy":
+            if arguments.policy_command != "create" and not arguments.state_db.is_file():
+                raise ValueError(f"state database does not exist: {arguments.state_db}")
+            read_only = arguments.policy_command in {"inspect", "list"}
+            policy_registry = ExecutionPolicyRegistry(
+                StateStore(arguments.state_db, read_only=read_only)
+            )
+            if arguments.policy_command == "create":
+                created = policy_registry.create_rule(
+                    arguments.rule_id,
+                    criterion_kind=arguments.criterion_kind,
+                    criterion_value=arguments.criterion_value,
+                    reason=arguments.reason,
+                    precedence=arguments.precedence,
+                    enabled=not arguments.disabled,
+                )
+                print(json.dumps(_policy_rule_payload(created), indent=2, sort_keys=True))
+            elif arguments.policy_command == "inspect":
+                rule = policy_registry.get(arguments.rule_id)
+                if rule is None:
+                    raise ValueError(f"policy rule does not exist: {arguments.rule_id}")
+                print(json.dumps(_policy_rule_payload(rule), indent=2, sort_keys=True))
+            else:
+                print(
+                    json.dumps(
+                        [
+                            _policy_rule_payload(rule)
+                            for rule in policy_registry.list_rules()
+                        ],
                         indent=2,
                         sort_keys=True,
                     )

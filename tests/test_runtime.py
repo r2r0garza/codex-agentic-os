@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
+import re
 
 import pytest
 
@@ -18,10 +19,13 @@ from codex_agentic_os.runtime import (
     ContextReferencesUnresolvedError,
     DelegationPendingError,
     DelegationSpec,
+    ExecutionPolicyRegistry,
+    ExecutionPolicyRule,
     PLAN_PROPOSAL_SYSTEM_PROMPT,
     PlanDraft,
     PlanProposalError,
     PlanStepProposal,
+    POLICY_CRITERION_KINDS,
     ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
@@ -3270,6 +3274,298 @@ def test_agent_registration_is_atomic_across_registries(tmp_path) -> None:
         competing.register("agent-1", label="Replacement")
 
     assert AgentRegistry(StateStore(database)).list_agents() == (original,)
+
+
+def test_policy_rule_creation_is_durable_and_revisioned(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = ExecutionPolicyRegistry(StateStore(database))
+
+    created = registry.create_rule(
+        "rule-1",
+        criterion_kind="sandbox_network_access",
+        criterion_value="disabled",
+        reason="Deny network access by default",
+        precedence=10,
+    )
+
+    assert created.rule_id == "rule-1"
+    assert created.enabled is True
+    assert created.precedence == 10
+    assert created.criterion_kind == "sandbox_network_access"
+    assert created.criterion_value == "disabled"
+    assert created.reason == "Deny network access by default"
+    assert created.created_at is not None
+    assert ExecutionPolicyRegistry(StateStore(database)).list_rules() == (created,)
+    assert ExecutionPolicyRegistry(
+        StateStore(database, read_only=True)
+    ).get("rule-1") == created
+
+
+def test_policy_rule_creation_supports_explicit_disabled_state(tmp_path) -> None:
+    registry = ExecutionPolicyRegistry(StateStore(tmp_path / "state.sqlite3"))
+
+    created = registry.create_rule(
+        "rule-1",
+        criterion_kind="declared_tool_name",
+        criterion_value="search_files",
+        reason="Only search_files may run without approval",
+        precedence=0,
+        enabled=False,
+    )
+
+    assert created.enabled is False
+
+
+def test_policy_rule_creation_with_injected_clock(tmp_path) -> None:
+    moment = datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
+    registry = ExecutionPolicyRegistry(
+        StateStore(tmp_path / "state.sqlite3"), clock=lambda: moment
+    )
+
+    created = registry.create_rule(
+        "rule-1",
+        criterion_kind="execution_kind",
+        criterion_value="delegation",
+        reason="Delegated steps require review",
+        precedence=1,
+    )
+
+    assert created.created_at == "2026-07-12T12:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    ("criterion_kind", "criterion_value"),
+    [
+        ("sandbox_network_access", "enabled"),
+        ("sandbox_network_access", "disabled"),
+        ("declared_tool_name", "read_file"),
+        ("execution_kind", "command"),
+        ("execution_kind", "provider"),
+        ("execution_kind", "delegation"),
+    ],
+)
+def test_policy_rule_creation_accepts_every_finite_criterion(
+    tmp_path, criterion_kind, criterion_value
+) -> None:
+    registry = ExecutionPolicyRegistry(StateStore(tmp_path / "state.sqlite3"))
+
+    created = registry.create_rule(
+        "rule-1",
+        criterion_kind=criterion_kind,
+        criterion_value=criterion_value,
+        reason="Cover the finite criterion set",
+        precedence=0,
+    )
+
+    assert created.criterion_kind == criterion_kind
+    assert created.criterion_value == criterion_value
+
+
+def test_policy_rule_get_returns_none_for_missing_record_without_mutation(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = ExecutionPolicyRegistry(StateStore(database))
+    original = registry.create_rule(
+        "rule-1",
+        criterion_kind="execution_kind",
+        criterion_value="command",
+        reason="Only command steps run unattended",
+        precedence=0,
+    )
+
+    assert ExecutionPolicyRegistry(StateStore(database, read_only=True)).get(
+        "missing"
+    ) is None
+    assert ExecutionPolicyRegistry(StateStore(database)).list_rules() == (original,)
+
+
+@pytest.mark.parametrize("rule_id", ["", " "])
+def test_policy_rule_get_rejects_empty_identity_without_mutation(
+    tmp_path, rule_id
+) -> None:
+    registry = ExecutionPolicyRegistry(StateStore(tmp_path / "state.sqlite3"))
+    original = registry.create_rule(
+        "rule-1",
+        criterion_kind="execution_kind",
+        criterion_value="command",
+        reason="Only command steps run unattended",
+        precedence=0,
+    )
+
+    with pytest.raises(ValueError, match="policy rule id must not be empty"):
+        registry.get(rule_id)
+
+    assert registry.list_rules() == (original,)
+
+
+def test_policy_rules_are_listed_in_stable_identifier_order(tmp_path) -> None:
+    registry = ExecutionPolicyRegistry(StateStore(tmp_path / "state.sqlite3"))
+    second = registry.create_rule(
+        "rule-b",
+        criterion_kind="execution_kind",
+        criterion_value="command",
+        reason="Second rule",
+        precedence=1,
+    )
+    first = registry.create_rule(
+        "rule-a",
+        criterion_kind="execution_kind",
+        criterion_value="provider",
+        reason="First rule",
+        precedence=0,
+    )
+
+    assert registry.list_rules() == (first, second)
+
+
+def test_policy_rule_list_is_empty_when_no_rules_exist(tmp_path) -> None:
+    registry = ExecutionPolicyRegistry(StateStore(tmp_path / "state.sqlite3"))
+
+    assert registry.list_rules() == ()
+
+
+def test_policy_rule_creation_rejects_duplicate_without_mutation(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = ExecutionPolicyRegistry(StateStore(database))
+    original = registry.create_rule(
+        "rule-1",
+        criterion_kind="execution_kind",
+        criterion_value="command",
+        reason="First",
+        precedence=0,
+    )
+
+    with pytest.raises(ValueError, match="policy rule already exists: rule-1"):
+        registry.create_rule(
+            "rule-1",
+            criterion_kind="execution_kind",
+            criterion_value="provider",
+            reason="Replacement",
+            precedence=1,
+        )
+
+    assert ExecutionPolicyRegistry(StateStore(database)).list_rules() == (original,)
+
+
+def test_policy_rule_creation_is_atomic_across_registries(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    first = ExecutionPolicyRegistry(StateStore(database))
+    competing = ExecutionPolicyRegistry(StateStore(database))
+
+    original = first.create_rule(
+        "rule-1",
+        criterion_kind="execution_kind",
+        criterion_value="command",
+        reason="Original",
+        precedence=0,
+    )
+    with pytest.raises(ValueError, match="policy rule already exists: rule-1"):
+        competing.create_rule(
+            "rule-1",
+            criterion_kind="execution_kind",
+            criterion_value="provider",
+            reason="Replacement",
+            precedence=1,
+        )
+
+    assert ExecutionPolicyRegistry(StateStore(database)).list_rules() == (original,)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        (
+            {"rule_id": " "},
+            "policy rule id must not be empty",
+        ),
+        (
+            {"criterion_kind": "free_form_expression"},
+            "policy rule criterion kind must be one of: "
+            + ", ".join(sorted(POLICY_CRITERION_KINDS)),
+        ),
+        (
+            {"criterion_kind": "sandbox_network_access", "criterion_value": "maybe"},
+            "policy rule sandbox_network_access value must be one of: disabled, enabled",
+        ),
+        (
+            {
+                "criterion_kind": "declared_tool_name",
+                "criterion_value": "not a valid name",
+            },
+            "policy rule declared_tool_name value must be a valid identifier",
+        ),
+        (
+            {
+                "criterion_kind": "execution_kind",
+                "criterion_value": "command == provider",
+            },
+            "policy rule execution_kind value must be one of: command, delegation, "
+            "provider",
+        ),
+        (
+            {"criterion_value": " "},
+            "policy rule criterion value must be a non-empty string",
+        ),
+        (
+            {"criterion_value": " command"},
+            "policy rule criterion value must not have leading or trailing whitespace",
+        ),
+        (
+            {"reason": " "},
+            "policy rule reason must not be empty",
+        ),
+        (
+            {"precedence": -1},
+            "policy rule precedence must be a non-negative integer",
+        ),
+        (
+            {"precedence": True},
+            "policy rule precedence must be a non-negative integer",
+        ),
+        (
+            {"precedence": 1.5},
+            "policy rule precedence must be a non-negative integer",
+        ),
+        (
+            {"enabled": "yes"},
+            "policy rule enabled state must be a boolean",
+        ),
+    ],
+)
+def test_policy_rule_creation_rejects_malformed_input_without_mutation(
+    tmp_path, kwargs, message
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    registry = ExecutionPolicyRegistry(StateStore(database))
+    defaults = {
+        "rule_id": "rule-1",
+        "criterion_kind": "execution_kind",
+        "criterion_value": "command",
+        "reason": "Baseline rule",
+        "precedence": 0,
+    }
+    defaults.update(kwargs)
+    rule_id = defaults.pop("rule_id")
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        registry.create_rule(rule_id, **defaults)
+
+    assert registry.list_rules() == ()
+
+
+def test_policy_rule_get_rejects_legacy_record_with_invalid_payload(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    store.insert(
+        "policy_rule",
+        "legacy",
+        status="active",
+        payload={"criterion_kind": "free_form_expression"},
+    )
+
+    with pytest.raises(ValueError, match="policy rule record has invalid enabled state"):
+        ExecutionPolicyRegistry(StateStore(database, read_only=True)).get("legacy")
 
 
 PLAN_PROPOSAL_CONTENT = (

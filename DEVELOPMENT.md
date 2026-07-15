@@ -1136,6 +1136,32 @@ codex-agentic-os agent list --state-db /path/to/state.sqlite3
 The registry only records that an agent id exists; it does not track liveness and
 `run claim`/`run add-step --agent-id` still accept any unchecked identifier.
 
+Persist and inspect finite-criterion execution policy rules. `create` rejects an
+unknown criterion kind, a malformed value, an empty reason, a negative precedence,
+and a duplicate rule id without mutation; `list` and `inspect` are read-only and
+never contact a provider, sandbox, or step:
+
+```bash
+codex-agentic-os policy create rule-1 \
+  --criterion-kind sandbox_network_access --criterion-value disabled \
+  --reason "Deny network access by default" --precedence 10
+codex-agentic-os policy create rule-2 \
+  --criterion-kind declared_tool_name --criterion-value search_files \
+  --reason "Only search_files may run without approval" --precedence 0 --disabled
+codex-agentic-os policy list
+codex-agentic-os policy inspect rule-1 --state-db /path/to/state.sqlite3
+```
+
+`--criterion-kind` is restricted to the finite enumerated set
+`sandbox_network_access`, `declared_tool_name`, and `execution_kind`; each kind
+further restricts `--criterion-value` to its own closed value set or identifier
+shape (`enabled`/`disabled`; a valid identifier; `command`/`provider`/`delegation`).
+There is no way to persist a compound or free-form expression — see Decision 0009.
+`--disabled` persists the rule with `enabled: false`; rules are enabled by default.
+This registry only persists and lists rules; nothing in the runtime evaluates them
+yet, so creating a rule does not change `run claim`, `run add-step`, or
+`run execute-next` behavior.
+
 Run a foreground autonomous worker for one durable agent identity. The command
 registers a new agent id, or heartbeats and resumes an already-registered one, then
 repeatedly claims and executes queued run steps until stopped:

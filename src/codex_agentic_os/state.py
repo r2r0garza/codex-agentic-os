@@ -57,7 +57,9 @@ class StateConflictError(ValueError):
 class StateStore:
     """Persist runtime state in a repository-local SQLite database."""
 
-    KINDS = frozenset({"plan", "decision", "run", "step", "agent", "artifact"})
+    KINDS = frozenset(
+        {"plan", "decision", "run", "step", "agent", "artifact", "policy_rule"}
+    )
     _CREATE_TABLE = """
         CREATE TABLE {clause} state_records (
             kind TEXT NOT NULL,
@@ -66,7 +68,9 @@ class StateStore:
             payload TEXT NOT NULL,
             revision INTEGER NOT NULL,
             PRIMARY KEY (kind, key),
-            CHECK (kind IN ('plan', 'decision', 'run', 'step', 'agent', 'artifact')),
+            CHECK (kind IN (
+                'plan', 'decision', 'run', 'step', 'agent', 'artifact', 'policy_rule'
+            )),
             CHECK (revision > 0)
         )
     """
@@ -103,7 +107,11 @@ class StateStore:
                 table = connection.execute(
                     "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'state_records'"
                 ).fetchone()
-            if table is None or "'step'" not in str(table[0]) or "'artifact'" not in str(table[0]):
+            if (
+                table is None
+                or "'step'" not in str(table[0])
+                or "'artifact'" not in str(table[0])
+            ):
                 raise ValueError(f"state database has an incompatible schema: {self.path}")
             return
 
@@ -113,7 +121,11 @@ class StateStore:
             schema = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'state_records'"
             ).fetchone()[0]
-            if "'step'" not in schema or "'artifact'" not in schema:
+            if (
+                "'step'" not in schema
+                or "'artifact'" not in schema
+                or "'policy_rule'" not in schema
+            ):
                 connection.execute("ALTER TABLE state_records RENAME TO state_records_old")
                 connection.execute(self._CREATE_TABLE.format(clause=""))
                 connection.execute(

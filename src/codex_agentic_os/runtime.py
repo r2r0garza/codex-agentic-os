@@ -4102,3 +4102,190 @@ class AgentRegistry:
         if moment.tzinfo is None or moment.utcoffset() is None:
             raise ValueError("agent registry clock must return a timezone-aware datetime")
         return moment.astimezone(timezone.utc).isoformat()
+
+
+POLICY_CRITERION_KINDS = frozenset(
+    {"sandbox_network_access", "declared_tool_name", "execution_kind"}
+)
+_POLICY_NETWORK_ACCESS_VALUES = frozenset({"enabled", "disabled"})
+_POLICY_EXECUTION_KIND_VALUES = frozenset({"command", "provider", "delegation"})
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionPolicyRule:
+    """Typed view of a durable, finite-criterion execution policy rule."""
+
+    rule_id: str
+    enabled: bool
+    precedence: int
+    criterion_kind: str
+    criterion_value: str
+    reason: str
+    created_at: str
+
+
+class ExecutionPolicyRegistry:
+    """Persist and list finite-criterion execution policy rules.
+
+    Rules are created once and never edited or deleted here; only an
+    explicitly enumerated criterion kind and a matching, strictly validated
+    value may be stored, so no free-form expression syntax can reach durable
+    state. Rule evaluation is out of scope for this registry.
+    """
+
+    def __init__(
+        self,
+        store: StateStore,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.store = store
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def create_rule(
+        self,
+        rule_id: str,
+        *,
+        criterion_kind: str,
+        criterion_value: str,
+        reason: str,
+        precedence: int,
+        enabled: bool = True,
+    ) -> ExecutionPolicyRule:
+        """Persist a new finite-criterion policy rule at revision one.
+
+        Rejects an unknown criterion kind, a malformed criterion value, a
+        malformed reason or precedence, and a duplicate rule identity before
+        any durable mutation occurs.
+        """
+
+        if not rule_id.strip():
+            raise ValueError("policy rule id must not be empty")
+        normalized_kind = self._validate_criterion_kind(criterion_kind)
+        normalized_value = self._validate_criterion_value(
+            normalized_kind, criterion_value
+        )
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("policy rule reason must not be empty")
+        if (
+            not isinstance(precedence, int)
+            or isinstance(precedence, bool)
+            or precedence < 0
+        ):
+            raise ValueError("policy rule precedence must be a non-negative integer")
+        if not isinstance(enabled, bool):
+            raise ValueError("policy rule enabled state must be a boolean")
+        payload: dict[str, object] = {
+            "enabled": enabled,
+            "precedence": precedence,
+            "criterion_kind": normalized_kind,
+            "criterion_value": normalized_value,
+            "reason": reason,
+            "created_at": self._timestamp(),
+        }
+        try:
+            record = self.store.insert(
+                "policy_rule", rule_id, status="active", payload=payload
+            )
+        except StateConflictError as error:
+            raise ValueError(f"policy rule already exists: {rule_id}") from error
+        return self._rule(record)
+
+    def get(self, rule_id: str) -> ExecutionPolicyRule | None:
+        """Return one policy rule without mutating its durable record."""
+
+        if not rule_id.strip():
+            raise ValueError("policy rule id must not be empty")
+        record = self.store.get("policy_rule", rule_id)
+        return None if record is None else self._rule(record)
+
+    def list_rules(self) -> tuple[ExecutionPolicyRule, ...]:
+        """Return all policy rules in stable identifier order."""
+
+        return tuple(self._rule(record) for record in self.store.list("policy_rule"))
+
+    @staticmethod
+    def _validate_criterion_kind(criterion_kind: object) -> str:
+        if (
+            not isinstance(criterion_kind, str)
+            or criterion_kind not in POLICY_CRITERION_KINDS
+        ):
+            raise ValueError(
+                "policy rule criterion kind must be one of: "
+                + ", ".join(sorted(POLICY_CRITERION_KINDS))
+            )
+        return criterion_kind
+
+    @staticmethod
+    def _validate_criterion_value(criterion_kind: str, criterion_value: object) -> str:
+        if not isinstance(criterion_value, str) or not criterion_value.strip():
+            raise ValueError("policy rule criterion value must be a non-empty string")
+        if criterion_value != criterion_value.strip():
+            raise ValueError(
+                "policy rule criterion value must not have leading or trailing "
+                "whitespace"
+            )
+        if criterion_kind == "sandbox_network_access":
+            if criterion_value not in _POLICY_NETWORK_ACCESS_VALUES:
+                raise ValueError(
+                    "policy rule sandbox_network_access value must be one of: "
+                    + ", ".join(sorted(_POLICY_NETWORK_ACCESS_VALUES))
+                )
+        elif criterion_kind == "declared_tool_name":
+            if not criterion_value.isidentifier():
+                raise ValueError(
+                    "policy rule declared_tool_name value must be a valid identifier"
+                )
+        elif criterion_kind == "execution_kind":
+            if criterion_value not in _POLICY_EXECUTION_KIND_VALUES:
+                raise ValueError(
+                    "policy rule execution_kind value must be one of: "
+                    + ", ".join(sorted(_POLICY_EXECUTION_KIND_VALUES))
+                )
+        return criterion_value
+
+    @staticmethod
+    def _rule(record: StateRecord) -> ExecutionPolicyRule:
+        payload = record.payload
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError(f"policy rule record has invalid enabled state: {record.key}")
+        precedence = payload.get("precedence")
+        if not isinstance(precedence, int) or isinstance(precedence, bool):
+            raise ValueError(f"policy rule record has invalid precedence: {record.key}")
+        criterion_kind = payload.get("criterion_kind")
+        if (
+            not isinstance(criterion_kind, str)
+            or criterion_kind not in POLICY_CRITERION_KINDS
+        ):
+            raise ValueError(
+                f"policy rule record has invalid criterion kind: {record.key}"
+            )
+        criterion_value = payload.get("criterion_value")
+        if not isinstance(criterion_value, str) or not criterion_value:
+            raise ValueError(
+                f"policy rule record has invalid criterion value: {record.key}"
+            )
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason:
+            raise ValueError(f"policy rule record has invalid reason: {record.key}")
+        created_at = payload.get("created_at")
+        if not isinstance(created_at, str) or not created_at:
+            raise ValueError(f"policy rule record has invalid created_at: {record.key}")
+        return ExecutionPolicyRule(
+            rule_id=record.key,
+            enabled=enabled,
+            precedence=precedence,
+            criterion_kind=criterion_kind,
+            criterion_value=criterion_value,
+            reason=reason,
+            created_at=created_at,
+        )
+
+    def _timestamp(self) -> str:
+        moment = self._clock()
+        if moment.tzinfo is None or moment.utcoffset() is None:
+            raise ValueError(
+                "policy registry clock must return a timezone-aware datetime"
+            )
+        return moment.astimezone(timezone.utc).isoformat()
