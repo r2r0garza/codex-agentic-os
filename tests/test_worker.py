@@ -7,6 +7,8 @@ import pytest
 from codex_agentic_os.chat import ChatResponse
 from codex_agentic_os.runtime import (
     AgentRegistry,
+    ApprovalStatus,
+    ExecutionPolicyRegistry,
     ProviderMessage,
     RunCoordinator,
     RunStatus,
@@ -146,6 +148,46 @@ def test_run_worker_claims_assigned_run_and_executes_steps_in_order(tmp_path) ->
     second = coordinator.get_step("second")
     assert first is not None and first.status is StepStatus.SUCCEEDED
     assert second is not None and second.status is StepStatus.SUCCEEDED
+
+
+def test_run_worker_stops_before_policy_gated_step_execution(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    registry = AgentRegistry(store)
+    registry.register("agent-1")
+    coordinator.create("run-1", objective="Deliver", agent_id="agent-1")
+    coordinator.add_step("run-1", "guarded", objective="Guarded", command=("true",))
+    ExecutionPolicyRegistry(store).create_rule(
+        "command-review",
+        criterion_kind="execution_kind",
+        criterion_value="command",
+        reason="Commands require review",
+        precedence=0,
+    )
+    executions = []
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            executions.append(tuple(argv))
+            return SandboxResult(tuple(argv), 0, "ok", "")
+
+    summary = run_worker(
+        coordinator,
+        registry,
+        "agent-1",
+        heartbeat_interval=60,
+        poll_interval=1,
+        executor=Executor(),
+        should_continue=_bounded_should_continue(2),
+    )
+
+    step = coordinator.get_step("guarded")
+    assert summary.executed_step_ids == ()
+    assert executions == []
+    assert step is not None
+    assert step.status is StepStatus.QUEUED
+    assert step.approval_status is ApprovalStatus.PENDING
+    assert step.policy_rule_id == "command-review"
 
 
 def test_run_worker_claims_next_unassigned_eligible_run(tmp_path) -> None:

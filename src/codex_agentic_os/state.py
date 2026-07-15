@@ -48,6 +48,8 @@ class RunHistoryEntry:
     tool_outcome: str | None = None
     tool_iteration: int | None = None
     tool_phase: str | None = None
+    policy_rule_id: str | None = None
+    policy_reason: str | None = None
 
 
 class StateConflictError(ValueError):
@@ -159,6 +161,8 @@ class StateStore:
                 "tool_name",
                 "tool_outcome",
                 "tool_phase",
+                "policy_rule_id",
+                "policy_reason",
             ):
                 if column not in history_columns:
                     connection.execute(
@@ -265,6 +269,8 @@ class StateStore:
                         tool_outcome=entry.tool_outcome,
                         tool_iteration=entry.tool_iteration,
                         tool_phase=entry.tool_phase,
+                        policy_rule_id=entry.policy_rule_id,
+                        policy_reason=entry.policy_reason,
                     )
                 connection.commit()
         except sqlite3.IntegrityError as error:
@@ -279,6 +285,7 @@ class StateStore:
         *,
         expected: Sequence[tuple[str, str, str, int]] = (),
         history: Sequence[RunHistoryEntry] = (),
+        expected_policy_rule_ids: Sequence[str] | None = None,
     ) -> tuple[StateRecord, ...]:
         """Insert or replace several documents in one transaction."""
 
@@ -293,6 +300,7 @@ class StateStore:
         stored: list[StateRecord] = []
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._check_policy_rule_snapshot(connection, expected_policy_rule_ids)
             for kind, key, status, revision in expected:
                 row = connection.execute(
                     "SELECT status, revision FROM state_records WHERE kind = ? AND key = ?",
@@ -328,6 +336,8 @@ class StateStore:
                     tool_outcome=entry.tool_outcome,
                     tool_iteration=entry.tool_iteration,
                     tool_phase=entry.tool_phase,
+                    policy_rule_id=entry.policy_rule_id,
+                    policy_reason=entry.policy_reason,
                 )
             connection.commit()
         return tuple(stored)
@@ -688,6 +698,7 @@ class StateStore:
         run_payload: Mapping[str, object] | None,
         child_payload: Mapping[str, object],
         target_agent_id: str | None,
+        expected_policy_rule_ids: Sequence[str] | None = None,
     ) -> tuple[StateRecord, StateRecord, StateRecord]:
         """Atomically dispatch one queued delegation step and insert its linked child run.
 
@@ -720,6 +731,7 @@ class StateStore:
 
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._check_policy_rule_snapshot(connection, expected_policy_rule_ids)
             step_row = connection.execute(
                 "SELECT status, revision FROM state_records WHERE kind = 'step' AND key = ?",
                 (step_id,),
@@ -901,6 +913,7 @@ class StateStore:
         resolved_provider: str | None = None,
         resolved_model: str | None = None,
         routing_reason: str | None = None,
+        expected_policy_rule_ids: Sequence[str] | None = None,
     ) -> StateRecord:
         """Advance one step in a write transaction when it matches an expected state."""
 
@@ -916,6 +929,7 @@ class StateStore:
 
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._check_policy_rule_snapshot(connection, expected_policy_rule_ids)
             row = connection.execute(
                 """
                 SELECT status, revision
@@ -1227,6 +1241,8 @@ class StateStore:
                     tool_outcome=entry.tool_outcome,
                     tool_iteration=entry.tool_iteration,
                     tool_phase=entry.tool_phase,
+                    policy_rule_id=entry.policy_rule_id,
+                    policy_reason=entry.policy_reason,
                 )
             connection.commit()
         return stored_plan, tuple(stored_steps)
@@ -1244,7 +1260,7 @@ class StateStore:
                        required_capability, resolved_provider, resolved_model,
                        routing_reason, artifact_name, parent_run_id, parent_step_id,
                        delegated_run_id, tool_name, tool_outcome,
-                       tool_iteration, tool_phase
+                       tool_iteration, tool_phase, policy_rule_id, policy_reason
                 FROM run_history WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
@@ -1273,6 +1289,8 @@ class StateStore:
                 tool_outcome=row[19],
                 tool_iteration=row[20],
                 tool_phase=row[21],
+                policy_rule_id=row[22],
+                policy_reason=row[23],
             )
             for row in rows
         )
@@ -1327,6 +1345,24 @@ class StateStore:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    @staticmethod
+    def _check_policy_rule_snapshot(
+        connection: sqlite3.Connection,
+        expected_policy_rule_ids: Sequence[str] | None,
+    ) -> None:
+        """Reject a step-dispatch transaction when its evaluated rule set changed."""
+
+        if expected_policy_rule_ids is None:
+            return
+        current = tuple(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT key FROM state_records WHERE kind = 'policy_rule' ORDER BY key"
+            ).fetchall()
+        )
+        if current != tuple(expected_policy_rule_ids):
+            raise StateConflictError("execution policy rule snapshot changed")
+
     def _put_on_connection(
         self,
         connection: sqlite3.Connection,
@@ -1380,6 +1416,8 @@ class StateStore:
         tool_outcome: str | None = None,
         tool_iteration: int | None = None,
         tool_phase: str | None = None,
+        policy_rule_id: str | None = None,
+        policy_reason: str | None = None,
     ) -> None:
         """Append one ordered history entry on a caller-owned run mutation transaction."""
 
@@ -1394,8 +1432,9 @@ class StateStore:
                  execution_kind, retried_step_id, context_step_ids, plan_id,
                  required_capability, resolved_provider, resolved_model,
                  routing_reason, artifact_name, parent_run_id, parent_step_id,
-                 delegated_run_id, tool_name, tool_outcome, tool_iteration, tool_phase)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 delegated_run_id, tool_name, tool_outcome, tool_iteration, tool_phase,
+                 policy_rule_id, policy_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1420,6 +1459,8 @@ class StateStore:
                 tool_outcome,
                 tool_iteration,
                 tool_phase,
+                policy_rule_id,
+                policy_reason,
             ),
         )
 

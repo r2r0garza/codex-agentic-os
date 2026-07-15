@@ -282,6 +282,8 @@ class RunStep:
     response_artifact_name: str | None = None
     delegation: DelegationSpec | None = None
     delegated_run_id: str | None = None
+    policy_rule_id: str | None = None
+    policy_reason: str | None = None
 
     @property
     def tool_call(self) -> ToolCallRecord | None:
@@ -917,6 +919,7 @@ class RunCoordinator:
                 "delegation step must be dispatched through execute_next_step, "
                 f"which atomically spawns its linked child run: {next_step.step_id}"
             )
+        next_step, policy_rule_ids = self._apply_execution_policy_gate(next_step)
         if provider_route is not None:
             if (
                 next_step.message is None
@@ -1009,6 +1012,7 @@ class RunCoordinator:
                         ),
                     ),
                 ),
+                expected_policy_rule_ids=policy_rule_ids,
             )
             return self._step(stored[1])
         return self.transition_step(
@@ -1016,6 +1020,7 @@ class RunCoordinator:
             StepStatus.RUNNING,
             resolved_context_step_ids=next_step.context_step_ids or None,
             provider_route=provider_route,
+            expected_policy_rule_ids=policy_rule_ids,
         )
 
     def execute_next_step(
@@ -1062,8 +1067,11 @@ class RunCoordinator:
         )
         if next_step is None:
             return None
+        next_step, policy_rule_ids = self._apply_execution_policy_gate(next_step)
         if next_step.delegation is not None:
-            return self._dispatch_delegation_step(run, next_step)
+            return self._dispatch_delegation_step(
+                run, next_step, expected_policy_rule_ids=policy_rule_ids
+            )
         resolved_executor = executor
         if next_step.command is not None:
             if next_step.sandbox_policy is not None:
@@ -1711,7 +1719,11 @@ class RunCoordinator:
         return self._step(stored[0]), self._run(stored[1])
 
     def _dispatch_delegation_step(
-        self, run: AgentRun, next_step: RunStep
+        self,
+        run: AgentRun,
+        next_step: RunStep,
+        *,
+        expected_policy_rule_ids: Sequence[str] | None = None,
     ) -> tuple[RunStep, AgentRun]:
         """Atomically dispatch one queued delegation step and spawn its linked child run.
 
@@ -1766,6 +1778,7 @@ class RunCoordinator:
                 run_payload=run_payload,
                 child_payload=child_payload,
                 target_agent_id=target_agent_id,
+                expected_policy_rule_ids=expected_policy_rule_ids,
             )
         except StateConflictError as error:
             raise ValueError(
@@ -2142,6 +2155,7 @@ class RunCoordinator:
         output: Mapping[str, object] | None = None,
         resolved_context_step_ids: Sequence[str] | None = None,
         provider_route: ProviderRoute | None = None,
+        expected_policy_rule_ids: Sequence[str] | None = None,
     ) -> RunStep:
         """Advance a step through an allowed lifecycle edge."""
 
@@ -2218,6 +2232,7 @@ class RunCoordinator:
                 ),
                 resolved_model=(None if provider_route is None else provider_route.model),
                 routing_reason=(None if provider_route is None else provider_route.reason),
+                expected_policy_rule_ids=expected_policy_rule_ids,
             )
         except StateConflictError as error:
             raise ValueError(f"step transition conflict: {step_id}") from error
@@ -2792,6 +2807,8 @@ class RunCoordinator:
         approval_status_value = record.payload.get("approval_status")
         delegation = record.payload.get("delegation")
         delegated_run_id = record.payload.get("delegated_run_id")
+        policy_rule_id = record.payload.get("policy_rule_id")
+        policy_reason = record.payload.get("policy_reason")
         if not isinstance(run_id, str) or not run_id:
             raise ValueError(f"step record has invalid run id: {record.key}")
         if not isinstance(position, int) or isinstance(position, bool) or position < 1:
@@ -2817,6 +2834,16 @@ class RunCoordinator:
             raise ValueError(f"step record has invalid delegated run id: {record.key}")
         if delegated_run_id is not None and normalized_delegation is None:
             raise ValueError(f"step record has an orphaned delegated run id: {record.key}")
+        if policy_rule_id is not None and (
+            not isinstance(policy_rule_id, str) or not policy_rule_id
+        ):
+            raise ValueError(f"step record has invalid policy rule id: {record.key}")
+        if policy_reason is not None and (
+            not isinstance(policy_reason, str) or not policy_reason
+        ):
+            raise ValueError(f"step record has invalid policy reason: {record.key}")
+        if (policy_rule_id is None) != (policy_reason is None):
+            raise ValueError(f"step record has incomplete policy decision: {record.key}")
         normalized_sandbox_policy = RunCoordinator._validate_sandbox_policy(
             sandbox_policy,
             has_command=normalized_command is not None,
@@ -2883,6 +2910,8 @@ class RunCoordinator:
             response_artifact_name=normalized_response_artifact_name,
             delegation=normalized_delegation,
             delegated_run_id=delegated_run_id,
+            policy_rule_id=policy_rule_id,
+            policy_reason=policy_reason,
         )
 
     @staticmethod
@@ -2892,6 +2921,112 @@ class RunCoordinator:
         payload["approval_required"] = step.approval_required
         if step.approval_status is not None:
             payload["approval_status"] = step.approval_status
+        if step.policy_rule_id is not None:
+            payload["policy_rule_id"] = step.policy_rule_id
+            payload["policy_reason"] = step.policy_reason
+
+    def _apply_execution_policy_gate(
+        self, step: RunStep
+    ) -> tuple[RunStep, tuple[str, ...]]:
+        """Persist the first deterministic policy match before step dispatch."""
+
+        rules = ExecutionPolicyRegistry(self.store).list_rules()
+        policy_rule_ids = tuple(rule.rule_id for rule in rules)
+        if step.approval_status is not None:
+            return step, policy_rule_ids
+        matching_rule = next(
+            (
+                rule
+                for rule in sorted(
+                    rules,
+                    key=lambda candidate: (candidate.precedence, candidate.rule_id),
+                )
+                if rule.enabled and self._execution_policy_rule_matches(rule, step)
+            ),
+            None,
+        )
+        if matching_rule is None:
+            return step, policy_rule_ids
+        payload = self._step_payload_for_policy_gate(step)
+        payload["approval_required"] = True
+        payload["approval_status"] = ApprovalStatus.PENDING
+        payload["policy_rule_id"] = matching_rule.rule_id
+        payload["policy_reason"] = matching_rule.reason
+        try:
+            stored = self.store.put_many(
+                (("step", step.step_id, step.status, payload),),
+                expected=(("step", step.step_id, step.status, step.revision),),
+                history=(
+                    RunHistoryEntry(
+                        step.run_id,
+                        0,
+                        "step_policy_gated",
+                        step.status,
+                        step_id=step.step_id,
+                        execution_kind=self._execution_kind(step),
+                        policy_rule_id=matching_rule.rule_id,
+                        policy_reason=matching_rule.reason,
+                    ),
+                ),
+                expected_policy_rule_ids=policy_rule_ids,
+            )
+        except StateConflictError as error:
+            raise ValueError(f"step policy gate conflict: {step.step_id}") from error
+        gated = self._step(stored[0])
+        raise ApprovalRequiredError(
+            f"step requires approval before dispatch: {gated.step_id} "
+            f"(policy rule {matching_rule.rule_id})"
+        )
+
+    @staticmethod
+    def _execution_policy_rule_matches(
+        rule: "ExecutionPolicyRule", step: RunStep
+    ) -> bool:
+        if rule.criterion_kind == "execution_kind":
+            return rule.criterion_value == RunCoordinator._execution_kind(step)
+        if rule.criterion_kind == "declared_tool_name":
+            return any(
+                tool.name == rule.criterion_value for tool in step.tool_declarations
+            )
+        if rule.criterion_kind == "sandbox_network_access":
+            if step.sandbox_policy is None:
+                return False
+            expected = "enabled" if step.sandbox_policy.network_enabled else "disabled"
+            return rule.criterion_value == expected
+        return False
+
+    @staticmethod
+    def _step_payload_for_policy_gate(step: RunStep) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "run_id": step.run_id,
+            "position": step.position,
+            "objective": step.objective,
+        }
+        if step.command is not None:
+            payload["command"] = list(step.command)
+        if step.timeout is not None:
+            payload["timeout"] = step.timeout
+        if step.message is not None:
+            payload["message"] = RunCoordinator._message_payload(step.message)
+        RunCoordinator._add_context_step_ids_payload(payload, step)
+        if step.sandbox_policy is not None:
+            payload["sandbox_policy"] = RunCoordinator._sandbox_policy_payload(
+                step.sandbox_policy
+            )
+        if step.tool_declarations:
+            payload["tools"] = RunCoordinator._tool_declarations_payload(
+                step.tool_declarations
+            )
+            payload["tool_iteration_budget"] = step.tool_iteration_budget
+        if step.artifact_declarations:
+            payload["artifacts"] = RunCoordinator._artifact_declarations_payload(
+                step.artifact_declarations
+            )
+        if step.response_artifact_name is not None:
+            payload["response_artifact_name"] = step.response_artifact_name
+        if step.delegation is not None:
+            payload["delegation"] = RunCoordinator._delegation_payload(step.delegation)
+        return payload
 
     @staticmethod
     def _add_context_step_ids_payload(
@@ -2975,6 +3110,9 @@ class RunCoordinator:
             payload["delegated_run_id"] = step.delegated_run_id
         payload["approval_required"] = step.approval_required
         payload["approval_status"] = approval_status
+        if step.policy_rule_id is not None:
+            payload["policy_rule_id"] = step.policy_rule_id
+            payload["policy_reason"] = step.policy_reason
         return payload
 
     @staticmethod

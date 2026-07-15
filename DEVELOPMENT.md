@@ -1158,9 +1158,13 @@ further restricts `--criterion-value` to its own closed value set or identifier
 shape (`enabled`/`disabled`; a valid identifier; `command`/`provider`/`delegation`).
 There is no way to persist a compound or free-form expression — see Decision 0009.
 `--disabled` persists the rule with `enabled: false`; rules are enabled by default.
-This registry only persists and lists rules; nothing in the runtime evaluates them
-yet, so creating a rule does not change `run claim`, `run add-step`, or
-`run execute-next` behavior.
+Before `run execute-next` or a worker can dispatch a queued step, enabled rules are
+matched against that step's durable attributes. The lowest `(precedence, rule_id)`
+match marks the step approval-required through the existing approval flow and adds a
+`step_policy_gated` history entry containing the rule id and reason. Approving or
+rejecting the step uses the ordinary `run approve`/`run reject` commands; disabled
+and non-matching rules do not change dispatch, and rule creation never rewrites an
+approval that has already been decided.
 
 Run a foreground autonomous worker for one durable agent identity. The command
 registers a new agent id, or heartbeats and resumes an already-registered one, then

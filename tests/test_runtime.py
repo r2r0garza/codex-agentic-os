@@ -3568,6 +3568,137 @@ def test_policy_rule_get_rejects_legacy_record_with_invalid_payload(tmp_path) ->
         ExecutionPolicyRegistry(StateStore(database, read_only=True)).get("legacy")
 
 
+def test_network_policy_rule_gates_then_allows_approved_command(tmp_path) -> None:
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Ship", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1", "step-1", objective="Fetch", command=("true",),
+        sandbox_policy=SandboxPolicy(
+            kind=SandboxKind.DOCKER, network_enabled=True
+        ),
+    )
+    ExecutionPolicyRegistry(store).create_rule(
+        "network-review",
+        criterion_kind="sandbox_network_access",
+        criterion_value="enabled",
+        reason="Network access needs operator review",
+        precedence=10,
+    )
+
+    with pytest.raises(ApprovalRequiredError, match="network-review"):
+        coordinator.execute_next_step("run-1", sandbox_resolver=lambda policy: None)
+
+    gated = RunCoordinator(StateStore(database)).get_step("step-1")
+    assert gated is not None
+    assert gated.status is StepStatus.QUEUED
+    assert gated.approval_required is True
+    assert gated.approval_status is ApprovalStatus.PENDING
+    assert gated.policy_rule_id == "network-review"
+    assert gated.policy_reason == "Network access needs operator review"
+    history = coordinator.list_history("run-1")[-1]
+    assert history.transition == "step_policy_gated"
+    assert history.policy_rule_id == "network-review"
+    assert history.policy_reason == "Network access needs operator review"
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "ok", "")
+
+    coordinator.approve_step("step-1", agent_id="agent-1")
+    result = coordinator.execute_next_step(
+        "run-1", sandbox_resolver=lambda policy: Executor()
+    )
+    assert result is not None
+    assert result[0].status is StepStatus.SUCCEEDED
+    assert result[0].policy_rule_id == "network-review"
+
+
+@pytest.mark.parametrize(
+    ("criterion_kind", "criterion_value", "step_kwargs"),
+    [
+        ("execution_kind", "provider", {"message": ProviderMessage("local", "go")}),
+        (
+            "declared_tool_name",
+            "lookup",
+            {
+                "message": ProviderMessage("local", "go"),
+                "sandbox_policy": SandboxPolicy(kind=SandboxKind.DOCKER),
+                "tools": (
+                    ToolDeclaration("lookup", ("true",), "Look up", {}),
+                ),
+                "tool_iteration_budget": 1,
+            },
+        ),
+    ],
+)
+def test_policy_rule_gates_supported_durable_step_attributes(
+    tmp_path, criterion_kind, criterion_value, step_kwargs
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Ship", agent_id="agent-1")
+    coordinator.add_step("run-1", "step-1", objective="Work", **step_kwargs)
+    ExecutionPolicyRegistry(store).create_rule(
+        "review", criterion_kind=criterion_kind, criterion_value=criterion_value,
+        reason="Review this step", precedence=0,
+    )
+
+    with pytest.raises(ApprovalRequiredError):
+        coordinator.execute_next_step("run-1")
+
+    assert coordinator.get_step("step-1").policy_rule_id == "review"
+
+
+def test_policy_rule_precedence_is_deterministic(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Ship", agent_id="agent-1")
+    coordinator.add_step("run-1", "step-1", objective="Run", command=("true",))
+    registry = ExecutionPolicyRegistry(store)
+    registry.create_rule(
+        "z-command", criterion_kind="execution_kind", criterion_value="command",
+        reason="Later lexical rule", precedence=1,
+    )
+    registry.create_rule(
+        "a-command", criterion_kind="execution_kind", criterion_value="command",
+        reason="Chosen rule", precedence=1,
+    )
+    registry.create_rule(
+        "network-only", criterion_kind="sandbox_network_access",
+        criterion_value="enabled", reason="Does not match", precedence=0,
+    )
+
+    with pytest.raises(ApprovalRequiredError, match="a-command"):
+        coordinator.start_next_step("run-1")
+
+    assert coordinator.get_step("step-1").policy_rule_id == "a-command"
+
+
+def test_disabled_or_non_matching_policy_rules_preserve_dispatch(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Ship", agent_id="agent-1")
+    coordinator.add_step("run-1", "step-1", objective="Run", command=("true",))
+    registry = ExecutionPolicyRegistry(store)
+    registry.create_rule(
+        "provider-only", criterion_kind="execution_kind", criterion_value="provider",
+        reason="Does not match", precedence=0,
+    )
+    registry.create_rule(
+        "disabled-command", criterion_kind="execution_kind", criterion_value="command",
+        reason="Disabled", precedence=0, enabled=False,
+    )
+
+    started = coordinator.start_next_step("run-1")
+
+    assert started is not None
+    assert started.status is StepStatus.RUNNING
+    assert started.approval_required is False
+    assert started.policy_rule_id is None
+
+
 PLAN_PROPOSAL_CONTENT = (
     '{"steps": ['
     '{"objective": "Write the fix", "execution_kind": "command", '

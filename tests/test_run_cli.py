@@ -12,6 +12,7 @@ from codex_agentic_os.cli import main
 from codex_agentic_os.runtime import (
     AgentRegistry,
     ArtifactDeclaration,
+    ExecutionPolicyRegistry,
     ProviderMessage,
     RunCoordinator as _RunCoordinator,
     RunStatus,
@@ -3657,6 +3658,42 @@ def test_cli_approval_flow_is_sanitized_and_reconstructible(tmp_path, capsys) ->
     history = json.loads(capsys.readouterr().out)
     assert history[-1]["transition"] == "step_approved"
     assert history[-1]["agent_id"] == "operator-1"
+
+
+def test_cli_policy_gate_uses_existing_approval_and_history_surfaces(
+    tmp_path, capsys
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Policy flow")
+    coordinator.add_step(
+        "run-1", "step-1", objective="Ask model",
+        message=ProviderMessage(provider="ollama", content="private request"),
+    )
+    ExecutionPolicyRegistry(StateStore(database)).create_rule(
+        "provider-review",
+        criterion_kind="execution_kind",
+        criterion_value="provider",
+        reason="Provider work requires review",
+        precedence=0,
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "execute-next", "run-1", "--state-db", str(database)])
+    assert exit_info.value.code == 2
+    assert "policy rule provider-review" in capsys.readouterr().err
+
+    main(["run", "approvals", "run-1", "--state-db", str(database)])
+    approvals = json.loads(capsys.readouterr().out)
+    assert approvals[0]["approval_status"] == "pending"
+    assert "private request" not in json.dumps(approvals)
+
+    main(["run", "history", "run-1", "--state-db", str(database)])
+    history = json.loads(capsys.readouterr().out)
+    assert history[-1]["transition"] == "step_policy_gated"
+    assert history[-1]["policy_rule_id"] == "provider-review"
+    assert history[-1]["policy_reason"] == "Provider work requires review"
+    assert "private request" not in json.dumps(history)
 
 
 def test_cli_rejects_pending_step_and_records_terminal_decision(tmp_path, capsys) -> None:

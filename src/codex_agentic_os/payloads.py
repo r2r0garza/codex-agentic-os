@@ -77,6 +77,9 @@ def _step_payload(
         payload.pop("delegation")
     if step.delegated_run_id is None:
         payload.pop("delegated_run_id")
+    if step.policy_rule_id is None:
+        payload.pop("policy_rule_id")
+        payload.pop("policy_reason")
     if artifacts:
         payload["artifacts"] = [_artifact_record_payload(artifact) for artifact in artifacts]
     payload["status"] = step.status.value
@@ -167,6 +170,8 @@ def _history_payload(entries: Sequence[RunHistoryEntry]) -> list[dict[str, objec
             "tool_outcome",
             "tool_iteration",
             "tool_phase",
+            "policy_rule_id",
+            "policy_reason",
         ):
             if getattr(entry, optional_field) is None:
                 payload.pop(optional_field)
