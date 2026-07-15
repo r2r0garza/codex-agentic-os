@@ -1166,6 +1166,20 @@ rejecting the step uses the ordinary `run approve`/`run reject` commands; disabl
 and non-matching rules do not change dispatch, and rule creation never rewrites an
 approval that has already been decided.
 
+With Docker and `jq` available, run the committed policy-gated network review:
+
+```bash
+./scripts/policy-gated-network-review.sh
+```
+
+It creates a network-enabled command step, a matching `sandbox_network_access`
+rule, and a real `worker run` process; waits for the policy gate to hold the
+step; approves and executes it through the normal worker/dispatch path; then,
+in fresh CLI processes against only the durable database, reconstructs the
+triggering rule id and reason from `run history` and confirms the run reached
+`run_succeeded`. The step is a plain command, so the review needs no live
+provider credentials.
+
 Run a foreground autonomous worker for one durable agent identity. The command
 registers a new agent id, or heartbeats and resumes an already-registered one, then
 repeatedly claims and executes queued run steps until stopped:

@@ -3699,6 +3699,235 @@ def test_disabled_or_non_matching_policy_rules_preserve_dispatch(tmp_path) -> No
     assert started.policy_rule_id is None
 
 
+def test_policy_rule_change_while_pending_does_not_alter_held_step(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Ship", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1", "step-1", objective="Fetch", command=("true",),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER, network_enabled=True),
+    )
+    registry = ExecutionPolicyRegistry(store)
+    registry.create_rule(
+        "network-review", criterion_kind="sandbox_network_access",
+        criterion_value="enabled", reason="Network access needs operator review",
+        precedence=10,
+    )
+
+    with pytest.raises(ApprovalRequiredError, match="network-review"):
+        coordinator.execute_next_step("run-1", sandbox_resolver=lambda policy: None)
+
+    # A later, higher-precedence rule that would also match a still-pending
+    # step must not retroactively rewrite its already-recorded decision.
+    registry.create_rule(
+        "network-veto", criterion_kind="sandbox_network_access",
+        criterion_value="enabled", reason="A different later reason", precedence=0,
+    )
+
+    pending = coordinator.get_step("step-1")
+    assert pending.policy_rule_id == "network-review"
+    assert pending.policy_reason == "Network access needs operator review"
+    assert pending.approval_status is ApprovalStatus.PENDING
+
+
+def test_policy_rule_change_after_approval_does_not_retrigger_gate_or_alter_step(
+    tmp_path,
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Ship", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1", "step-1", objective="Fetch", command=("true",),
+        sandbox_policy=SandboxPolicy(kind=SandboxKind.DOCKER, network_enabled=True),
+    )
+    registry = ExecutionPolicyRegistry(store)
+    registry.create_rule(
+        "network-review", criterion_kind="sandbox_network_access",
+        criterion_value="enabled", reason="Network access needs operator review",
+        precedence=10,
+    )
+    with pytest.raises(ApprovalRequiredError, match="network-review"):
+        coordinator.execute_next_step("run-1", sandbox_resolver=lambda policy: None)
+    coordinator.approve_step("step-1", agent_id="agent-1")
+
+    # A new, lower-precedence rule created after the decision must not
+    # re-trigger the gate or overwrite the already-approved provenance.
+    registry.create_rule(
+        "network-veto", criterion_kind="sandbox_network_access",
+        criterion_value="enabled", reason="A different later reason", precedence=0,
+    )
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "ok", "")
+
+    result = coordinator.execute_next_step(
+        "run-1", sandbox_resolver=lambda policy: Executor()
+    )
+    assert result is not None
+    assert result[0].status is StepStatus.SUCCEEDED
+    assert result[0].policy_rule_id == "network-review"
+    assert result[0].policy_reason == "Network access needs operator review"
+
+
+def test_policy_rule_change_after_rejection_does_not_alter_rejected_step(
+    tmp_path,
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Ship", agent_id="agent-1")
+    coordinator.add_step("run-1", "step-1", objective="Run", command=("true",))
+    registry = ExecutionPolicyRegistry(store)
+    registry.create_rule(
+        "command-review", criterion_kind="execution_kind", criterion_value="command",
+        reason="Command steps need review", precedence=0,
+    )
+    with pytest.raises(ApprovalRequiredError, match="command-review"):
+        coordinator.start_next_step("run-1")
+
+    coordinator.reject_step("step-1", agent_id="agent-1")
+
+    registry.create_rule(
+        "command-veto", criterion_kind="execution_kind", criterion_value="command",
+        reason="A different later reason", precedence=0,
+    )
+
+    rejected = coordinator.get_step("step-1")
+    assert rejected.status is StepStatus.FAILED
+    assert rejected.approval_status is ApprovalStatus.REJECTED
+    assert rejected.policy_rule_id == "command-review"
+    assert rejected.policy_reason == "Command steps need review"
+    gated_entries = [
+        entry
+        for entry in coordinator.list_history("run-1")
+        if entry.transition == "step_policy_gated" and entry.step_id == "step-1"
+    ]
+    assert len(gated_entries) == 1
+    assert gated_entries[0].policy_rule_id == "command-review"
+
+
+def test_policy_rule_change_after_success_does_not_alter_terminal_step_or_history(
+    tmp_path,
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Ship", agent_id="agent-1")
+    coordinator.add_step("run-1", "step-1", objective="Run", command=("true",))
+    registry = ExecutionPolicyRegistry(store)
+    registry.create_rule(
+        "command-review", criterion_kind="execution_kind", criterion_value="command",
+        reason="Command steps need review", precedence=0,
+    )
+    with pytest.raises(ApprovalRequiredError, match="command-review"):
+        coordinator.start_next_step("run-1")
+    coordinator.approve_step("step-1", agent_id="agent-1")
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "ok", "")
+
+    result = coordinator.execute_next_step("run-1", Executor())
+    assert result is not None and result[0].status is StepStatus.SUCCEEDED
+
+    registry.create_rule(
+        "command-veto", criterion_kind="execution_kind", criterion_value="command",
+        reason="A different later reason", precedence=0,
+    )
+
+    terminal = coordinator.get_step("step-1")
+    assert terminal.status is StepStatus.SUCCEEDED
+    assert terminal.policy_rule_id == "command-review"
+    assert terminal.policy_reason == "Command steps need review"
+    gated_entries = [
+        entry
+        for entry in coordinator.list_history("run-1")
+        if entry.transition == "step_policy_gated" and entry.step_id == "step-1"
+    ]
+    assert len(gated_entries) == 1
+
+
+def test_manual_approval_required_step_is_unaffected_by_matching_policy_rule(
+    tmp_path,
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(store)
+    coordinator.create("run-1", objective="Ship", agent_id="agent-1")
+    coordinator.add_step(
+        "run-1", "step-1", objective="Run", command=("true",),
+        approval_required=True,
+    )
+    ExecutionPolicyRegistry(store).create_rule(
+        "command-review", criterion_kind="execution_kind", criterion_value="command",
+        reason="Command steps need review", precedence=0,
+    )
+
+    manually_gated = coordinator.get_step("step-1")
+    assert manually_gated.approval_required is True
+    assert manually_gated.approval_status is ApprovalStatus.PENDING
+    assert manually_gated.policy_rule_id is None
+    assert manually_gated.policy_reason is None
+
+    coordinator.approve_step("step-1", agent_id="agent-1")
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "ok", "")
+
+    result = coordinator.execute_next_step("run-1", Executor())
+    assert result is not None
+    assert result[0].status is StepStatus.SUCCEEDED
+    assert result[0].policy_rule_id is None
+    gated_entries = [
+        entry
+        for entry in coordinator.list_history("run-1")
+        if entry.transition == "step_policy_gated"
+    ]
+    assert gated_entries == []
+
+
+def test_policy_decision_is_reconstructable_from_history_after_restart(
+    tmp_path,
+) -> None:
+    database = tmp_path / "state.sqlite3"
+    coordinator = RunCoordinator(StateStore(database))
+    coordinator.create("run-1", objective="Ship", agent_id="agent-1")
+    coordinator.add_step("run-1", "step-1", objective="Run", command=("true",))
+    ExecutionPolicyRegistry(StateStore(database)).create_rule(
+        "command-review", criterion_kind="execution_kind", criterion_value="command",
+        reason="Command steps need review", precedence=0,
+    )
+    with pytest.raises(ApprovalRequiredError, match="command-review"):
+        coordinator.start_next_step("run-1")
+    coordinator.approve_step("step-1", agent_id="agent-1")
+
+    class Executor:
+        def execute(self, argv, *, timeout=None):
+            return SandboxResult(tuple(argv), 0, "ok", "")
+
+    result = coordinator.execute_next_step("run-1", Executor())
+    assert result is not None and result[0].status is StepStatus.SUCCEEDED
+
+    # A fresh coordinator over the same durable database stands in for an
+    # operator inspecting the run after a process restart.
+    restarted = RunCoordinator(StateStore(database))
+    reconstructed_step = restarted.get_step("step-1")
+    assert reconstructed_step.policy_rule_id == "command-review"
+    assert reconstructed_step.policy_reason == "Command steps need review"
+    gated = next(
+        entry
+        for entry in restarted.list_history("run-1")
+        if entry.transition == "step_policy_gated"
+    )
+    assert gated.policy_rule_id == "command-review"
+    assert gated.policy_reason == "Command steps need review"
+    succeeded = next(
+        entry
+        for entry in restarted.list_history("run-1")
+        if entry.transition == "step_succeeded"
+    )
+    assert succeeded.step_id == "step-1"
+
+
 PLAN_PROPOSAL_CONTENT = (
     '{"steps": ['
     '{"objective": "Write the fix", "execution_kind": "command", '
