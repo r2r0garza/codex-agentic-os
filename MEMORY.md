@@ -1,5 +1,15 @@
 # Automation Memory
 
+- Run: 2026-07-15T02:42:04Z — implementation plus close-or-remediate review (scheduled).
+- Active milestone: Sprint 23 "Declarative execution policy gates" (#23). Selected #137 (priority:1, `agent-ready`), the sole unblocked ready issue.
+- Completed: enabled finite-criterion policy rules now evaluate at the queued-step dispatch boundary for command, provider, tool-declaring, and delegation work. The deterministic lowest `(precedence, rule_id)` match durably converts the step into the existing pending approval state and records the safe rule id/reason in step state and `step_policy_gated` history before any side effect. Dispatch compare-and-swaps both the step revision and evaluated rule-id snapshot, so concurrent rule creation forces retry; approved/rejected decisions are never reevaluated. Existing approval CLI/API flows remain the decision path, while disabled and non-matching rules preserve dispatch behavior. Added Plan 0123 and updated DEVELOPMENT.md.
+- Verification: activated `.venv`; 83 focused policy tests passed; full `pytest` passed 910; index rebuilt to 28 files / 1381 symbols / 8037 relationships and `index check` reported current; `git diff --check` passed.
+- Durable state: implementation commit `7999966` pushed to `origin/main`; #137 closed with verification evidence. Blocked review unblocked #138 and marked it `agent-ready`; no other open blocked issue remains. Sprint 23 is not retrospective-ready because #138 still owns the required non-retroactivity matrix and credential-free network-enabled end-to-end review, so no milestone close/remediation was performed.
+- Roadmap horizon: 20 ordered open milestones before and after the run (Sprint 23 through Sprint 42), above the three-sprint threshold; no planning handoff was needed.
+- Next eligible action: implement #138 ("Review policy-gated network execution end to end") for Sprint 23. Final target `main`; after the MEMORY handoff commit, the worktree is clean except for the preserved unrelated untracked `.claude/` directory.
+
+---
+
 - Run: 2026-07-15T02:14:50Z — implementation run (scheduled).
 - Active milestone at start: Sprint 23 "Declarative execution policy gates" (#23), replenished to 3 open issues by an earlier pass (#136 `agent-ready` priority:1; #137/#138 `blocked`). Selected #136, the sole unblocked and ready issue.
 - Completed: added a durable, finite-criterion execution policy rule model (`ExecutionPolicyRule`/`ExecutionPolicyRegistry` in `runtime.py`, a new `policy_rule` `StateStore` kind) and a read-only, credential-free `policy create|list|inspect` CLI mirroring the `agent` command family. Rule creation accepts only one `(criterion_kind, criterion_value)` pair from the enumerated closed set `sandbox_network_access`/`declared_tool_name`/`execution_kind`, so no free-form expression syntax can reach durable state; unknown kind, malformed value, empty reason, invalid precedence, and duplicate rule id are all rejected before mutation. Rule evaluation is explicitly out of scope. Added Plan 0122 and Decision 0009; updated DEVELOPMENT.md with the new `policy` command docs.
@@ -30,9 +40,3 @@
 - Run: 2026-07-15T00:38:07Z — implementation run (scheduled).
 - Sprint 22; selected and closed #132 in pushed commit `7cd5ba6`. Added durable ordered tool iterations, bounded execution, replay, and budget/undeclared rejection evidence. Full `pytest` passed 853; index current at 27 files / 1289 symbols / 7611 relationships; diff check passed.
 - Blocked review unblocked #133 and left #134 blocked; horizon stayed 21; next action was #133. Final `main` state was clean except preserved `.claude/`.
-
----
-
-- Run: 2026-07-15T00:00:00Z — implementation run (scheduled).
-- Sprint 22; selected and closed #131 in pushed commit `fba3081`. Added the required explicit positive durable tool-iteration budget across creation, lifecycle, retry, CLI, and legacy reads. Full `pytest` passed 852; index current at 27 files / 1276 symbols / 7555 relationships; diff check passed.
-- Blocked review unblocked #132 and retained #133/#134 blockers; horizon stayed 21; next action was #132. Final `main` state was clean except preserved `.claude/`.
