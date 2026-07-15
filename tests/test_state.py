@@ -12,7 +12,9 @@ from codex_agentic_os.state import (
 )
 
 
-@pytest.mark.parametrize("kind", ["plan", "decision", "run", "step", "agent"])
+@pytest.mark.parametrize(
+    "kind", ["plan", "decision", "run", "step", "agent", "memory_entry"]
+)
 def test_state_kinds_persist_across_store_instances(tmp_path, kind: str) -> None:
     database = tmp_path / "state.sqlite3"
     stored = StateStore(database).put(
@@ -644,6 +646,10 @@ def test_existing_database_schema_is_upgraded_for_steps(tmp_path) -> None:
 
     assert store.get("run", "run-1") is not None
     assert store.get("step", "step-1") is not None
+    stored_memory = store.insert(
+        "memory_entry", "choice", status="active", payload={"body": "Keep SQLite"}
+    )
+    assert store.get("memory_entry", "choice") == stored_memory
 
 
 def test_dispatch_delegation_step_inserts_child_run_and_starts_parent(tmp_path) -> None:

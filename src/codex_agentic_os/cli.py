@@ -38,6 +38,9 @@ from .runtime import (
     DelegationSpec,
     ExecutionPolicyRegistry,
     ExecutionPolicyRule,
+    MEMORY_ENTRY_KINDS,
+    MemoryEntry,
+    MemoryRegistry,
     PlanDraft,
     PlanStepProposal,
     POLICY_CRITERION_KINDS,
@@ -609,6 +612,36 @@ def _parser() -> argparse.ArgumentParser:
             help="path to the runtime state database",
         )
 
+    memory = commands.add_parser(
+        "memory", help="persist and inspect durable named memory entries"
+    )
+    memory_commands = memory.add_subparsers(dest="memory_command", required=True)
+    memory_create = memory_commands.add_parser(
+        "create", help="persist a new named memory entry"
+    )
+    memory_create.add_argument("name")
+    memory_create.add_argument("--body", required=True, help="memory entry body")
+    memory_create.add_argument(
+        "--kind", required=True, choices=sorted(MEMORY_ENTRY_KINDS)
+    )
+    memory_create.add_argument("--agent-id", help="creating agent provenance")
+    memory_create.add_argument("--run-id", help="creating run provenance")
+    memory_create.add_argument("--step-id", help="creating step provenance")
+    memory_list = memory_commands.add_parser(
+        "list", help="list named memory entries in stable order"
+    )
+    memory_inspect = memory_commands.add_parser(
+        "inspect", help="show one named memory entry"
+    )
+    memory_inspect.add_argument("name")
+    for command in (memory_create, memory_list, memory_inspect):
+        command.add_argument(
+            "--state-db",
+            type=Path,
+            default=Path(".codex-agentic-os/state.sqlite3"),
+            help="path to the runtime state database",
+        )
+
     worker = commands.add_parser("worker", help="run a foreground autonomous worker")
     worker_commands = worker.add_subparsers(dest="worker_command", required=True)
     worker_run = worker_commands.add_parser(
@@ -914,6 +947,12 @@ def _policy_rule_payload(rule: ExecutionPolicyRule) -> dict[str, object]:
     """Return the standard JSON-compatible view of one policy rule."""
 
     return asdict(rule)
+
+
+def _memory_entry_payload(entry: MemoryEntry) -> dict[str, object]:
+    """Return the entry itself and only its explicit provenance."""
+
+    return asdict(entry)
 
 
 def _chat_provider_spec(
@@ -1668,6 +1707,39 @@ def main(argv: Sequence[str] | None = None) -> None:
                         [
                             _policy_rule_payload(rule)
                             for rule in policy_registry.list_rules()
+                        ],
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+        elif arguments.command == "memory":
+            if arguments.memory_command != "create" and not arguments.state_db.is_file():
+                raise ValueError(f"state database does not exist: {arguments.state_db}")
+            read_only = arguments.memory_command in {"inspect", "list"}
+            memory_registry = MemoryRegistry(
+                StateStore(arguments.state_db, read_only=read_only)
+            )
+            if arguments.memory_command == "create":
+                created = memory_registry.create(
+                    arguments.name,
+                    body=arguments.body,
+                    kind=arguments.kind,
+                    agent_id=arguments.agent_id,
+                    run_id=arguments.run_id,
+                    step_id=arguments.step_id,
+                )
+                print(json.dumps(_memory_entry_payload(created), indent=2, sort_keys=True))
+            elif arguments.memory_command == "inspect":
+                entry = memory_registry.get(arguments.name)
+                if entry is None:
+                    raise ValueError(f"memory entry does not exist: {arguments.name}")
+                print(json.dumps(_memory_entry_payload(entry), indent=2, sort_keys=True))
+            else:
+                print(
+                    json.dumps(
+                        [
+                            _memory_entry_payload(entry)
+                            for entry in memory_registry.list_entries()
                         ],
                         indent=2,
                         sort_keys=True,

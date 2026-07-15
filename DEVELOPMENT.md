@@ -1166,6 +1166,24 @@ rejecting the step uses the ordinary `run approve`/`run reject` commands; disabl
 and non-matching rules do not change dispatch, and rule creation never rewrites an
 approval that has already been decided.
 
+Persist immutable named memory entries for deliberate reuse across later runs. Names
+are unique, kinds are restricted to `decision` and `note`, and optional creating
+agent/run/step provenance is stored with the body. Duplicate names and empty values
+fail without replacing existing memory; `list` and `inspect` are read-only and return
+entries in stable name order:
+
+```bash
+codex-agentic-os memory create architecture/database \
+  --kind decision --body "SQLite remains the durable authority." \
+  --agent-id agent-1 --run-id run-7 --step-id step-3
+codex-agentic-os memory list
+codex-agentic-os memory inspect architecture/database \
+  --state-db /path/to/state.sqlite3
+```
+
+Memory entries are create-only in this slice. Provider-step references and
+dispatch-time memory resolution are introduced separately.
+
 With Docker and `jq` available, run the committed policy-gated network review:
 
 ```bash

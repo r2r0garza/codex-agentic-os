@@ -1,4 +1,4 @@
-"""Durable SQLite state for plans, decisions, runs, and agents."""
+"""Durable SQLite state for runtime records, policy, and named memory."""
 
 from __future__ import annotations
 
@@ -60,7 +60,16 @@ class StateStore:
     """Persist runtime state in a repository-local SQLite database."""
 
     KINDS = frozenset(
-        {"plan", "decision", "run", "step", "agent", "artifact", "policy_rule"}
+        {
+            "plan",
+            "decision",
+            "run",
+            "step",
+            "agent",
+            "artifact",
+            "policy_rule",
+            "memory_entry",
+        }
     )
     _CREATE_TABLE = """
         CREATE TABLE {clause} state_records (
@@ -71,7 +80,8 @@ class StateStore:
             revision INTEGER NOT NULL,
             PRIMARY KEY (kind, key),
             CHECK (kind IN (
-                'plan', 'decision', 'run', 'step', 'agent', 'artifact', 'policy_rule'
+                'plan', 'decision', 'run', 'step', 'agent', 'artifact', 'policy_rule',
+                'memory_entry'
             )),
             CHECK (revision > 0)
         )
@@ -127,6 +137,7 @@ class StateStore:
                 "'step'" not in schema
                 or "'artifact'" not in schema
                 or "'policy_rule'" not in schema
+                or "'memory_entry'" not in schema
             ):
                 connection.execute("ALTER TABLE state_records RENAME TO state_records_old")
                 connection.execute(self._CREATE_TABLE.format(clause=""))

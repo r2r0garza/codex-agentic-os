@@ -4427,3 +4427,131 @@ class ExecutionPolicyRegistry:
                 "policy registry clock must return a timezone-aware datetime"
             )
         return moment.astimezone(timezone.utc).isoformat()
+
+
+MEMORY_ENTRY_KINDS = frozenset({"decision", "note"})
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryEntry:
+    """Typed view of one immutable, durable named memory entry."""
+
+    name: str
+    body: str
+    kind: str
+    created_at: str
+    agent_id: str | None = None
+    run_id: str | None = None
+    step_id: str | None = None
+
+
+class MemoryRegistry:
+    """Create and inspect immutable named memory with optional provenance."""
+
+    def __init__(
+        self,
+        store: StateStore,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.store = store
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def create(
+        self,
+        name: str,
+        *,
+        body: str,
+        kind: str,
+        agent_id: str | None = None,
+        run_id: str | None = None,
+        step_id: str | None = None,
+    ) -> MemoryEntry:
+        """Persist a new named memory entry without replacing an existing name."""
+
+        self._validate_name(name)
+        if not isinstance(body, str) or not body.strip():
+            raise ValueError("memory body must not be empty")
+        normalized_kind = self._validate_kind(kind)
+        provenance = {
+            "agent_id": self._validate_optional_provenance("agent id", agent_id),
+            "run_id": self._validate_optional_provenance("run id", run_id),
+            "step_id": self._validate_optional_provenance("step id", step_id),
+        }
+        payload: dict[str, object] = {
+            "body": body,
+            "kind": normalized_kind,
+            "created_at": self._timestamp(),
+            **{key: value for key, value in provenance.items() if value is not None},
+        }
+        try:
+            record = self.store.insert(
+                "memory_entry", name, status="active", payload=payload
+            )
+        except StateConflictError as error:
+            raise ValueError(f"memory entry already exists: {name}") from error
+        return self._entry(record)
+
+    def get(self, name: str) -> MemoryEntry | None:
+        """Return one memory entry without mutating durable state."""
+
+        self._validate_name(name)
+        record = self.store.get("memory_entry", name)
+        return None if record is None else self._entry(record)
+
+    def list_entries(self) -> tuple[MemoryEntry, ...]:
+        """Return all memory entries in stable name order."""
+
+        return tuple(self._entry(record) for record in self.store.list("memory_entry"))
+
+    @staticmethod
+    def _validate_name(name: object) -> str:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("memory name must not be empty")
+        return name
+
+    @staticmethod
+    def _validate_kind(kind: object) -> str:
+        if not isinstance(kind, str) or kind not in MEMORY_ENTRY_KINDS:
+            raise ValueError(
+                "memory kind must be one of: " + ", ".join(sorted(MEMORY_ENTRY_KINDS))
+            )
+        return kind
+
+    @staticmethod
+    def _validate_optional_provenance(label: str, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"memory {label} must not be empty")
+        return value
+
+    @classmethod
+    def _entry(cls, record: StateRecord) -> MemoryEntry:
+        payload = record.payload
+        body = payload.get("body")
+        if not isinstance(body, str) or not body.strip():
+            raise ValueError(f"memory entry has invalid body: {record.key}")
+        kind = cls._validate_kind(payload.get("kind"))
+        created_at = payload.get("created_at")
+        if not isinstance(created_at, str) or not created_at:
+            raise ValueError(f"memory entry has invalid created_at: {record.key}")
+        return MemoryEntry(
+            name=record.key,
+            body=body,
+            kind=kind,
+            created_at=created_at,
+            agent_id=cls._validate_optional_provenance(
+                "agent id", payload.get("agent_id")
+            ),
+            run_id=cls._validate_optional_provenance("run id", payload.get("run_id")),
+            step_id=cls._validate_optional_provenance(
+                "step id", payload.get("step_id")
+            ),
+        )
+
+    def _timestamp(self) -> str:
+        moment = self._clock()
+        if moment.tzinfo is None or moment.utcoffset() is None:
+            raise ValueError("memory registry clock must return a timezone-aware datetime")
+        return moment.astimezone(timezone.utc).isoformat()
